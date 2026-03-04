@@ -3,10 +3,15 @@
   "title": "ImplementOutput",
   "type": "object",
   "additionalProperties": false,
-  "required": ["changes"],
+  "required": ["summary"],
   "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
     "changes": {
       "type": "array",
+      "default": [],
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -17,18 +22,66 @@
         }
       }
     },
+    "actions": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "path", "content"],
+            "properties": {
+              "type": { "const": "write_file" },
+              "path": { "type": "string", "minLength": 1 },
+              "content": { "type": "string" }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "path", "find", "replace"],
+            "properties": {
+              "type": { "const": "patch_file" },
+              "path": { "type": "string", "minLength": 1 },
+              "find": { "type": "string", "minLength": 1 },
+              "replace": { "type": "string" },
+              "all": { "type": "boolean", "default": false }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "command"],
+            "properties": {
+              "type": { "const": "run_command" },
+              "command": { "type": "string", "minLength": 1 },
+              "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": []
+              }
+            }
+          }
+        ]
+      }
+    },
     "notes": {
       "type": "array",
       "items": { "type": "string" },
       "default": []
     },
+    "strategy": {
+      "type": "string"
+    },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
-        "backoffMs": { "type": "integer", "minimum": 0 }
+        "backoffMs": { "type": "integer", "minimum": 0 },
+        "sameFailureLimit": { "type": "integer", "minimum": 1 }
       }
     }
   }

@@ -13,21 +13,30 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "passed"],
+        "required": ["name", "passed", "command", "args"],
         "properties": {
           "name": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
+          "command": { "type": "string", "minLength": 1 },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "details": { "type": "string", "default": "" }
         }
       }
     },
+    "failureSignature": {
+      "type": "string"
+    },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
-        "backoffMs": { "type": "integer", "minimum": 0 }
+        "backoffMs": { "type": "integer", "minimum": 0 },
+        "sameFailureLimit": { "type": "integer", "minimum": 1 }
       }
     }
   }

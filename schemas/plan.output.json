@@ -19,13 +19,24 @@
       "items": { "type": "string" },
       "default": []
     },
+    "targetSymbols": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "successCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
-        "backoffMs": { "type": "integer", "minimum": 0 }
+        "backoffMs": { "type": "integer", "minimum": 0 },
+        "sameFailureLimit": { "type": "integer", "minimum": 1 }
       }
     }
   }

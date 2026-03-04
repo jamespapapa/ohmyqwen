@@ -1,0 +1,29 @@
+{
+  "taskId": "v01-e2e-demo",
+  "objective": "Execute one controlled coding loop and persist artifacts",
+  "constraints": [
+    "short-session",
+    "state-machine-control",
+    "structured-json-io",
+    "quality-gate-before-finish"
+  ],
+  "files": [
+    "src/loop/runner.ts",
+    "src/gates/verify.ts",
+    "src/context/packer.ts"
+  ],
+  "symbols": [
+    "runLoop",
+    "runQualityGates",
+    "packContext"
+  ],
+  "errorLogs": [],
+  "diffSummary": [],
+  "contextTier": "small",
+  "contextTokenBudget": 1200,
+  "retryPolicy": {
+    "maxAttempts": 2,
+    "backoffMs": 0,
+    "sameFailureLimit": 2
+  }
+}

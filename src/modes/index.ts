@@ -1,14 +1,15 @@
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import {
   AnalyzeInput,
   AnalyzeInputSchema,
   PlanOutputSchema,
   VerifyOutputSchema
 } from "../core/types.js";
-import { runLoop } from "../loop/runner.js";
-import { StubLlmClient } from "../llm/client.js";
 import { packContext } from "../context/packer.js";
 import { runQualityGates } from "../gates/verify.js";
+import { OpenAICompatibleLlmClient } from "../llm/client.js";
+import { runLoop } from "../loop/runner.js";
 
 export async function runMode(payload: AnalyzeInput): Promise<void> {
   const parsed = AnalyzeInputSchema.parse(payload);
@@ -18,31 +19,80 @@ export async function runMode(payload: AnalyzeInput): Promise<void> {
 
 export async function planMode(payload: AnalyzeInput): Promise<void> {
   const parsed = AnalyzeInputSchema.parse(payload);
-  const client = new StubLlmClient();
+  const client = new OpenAICompatibleLlmClient();
+
   const context = packContext({
-    taskId: parsed.taskId,
     objective: parsed.objective,
-    shortSession: true,
-    files: parsed.files
+    constraints: parsed.constraints,
+    symbols: parsed.symbols,
+    errorLogs: parsed.errorLogs,
+    diffSummary: parsed.diffSummary,
+    tier: parsed.contextTier,
+    tokenBudget: parsed.contextTokenBudget
   });
 
-  const plan = PlanOutputSchema.parse(await client.proposePlan(parsed, context));
-  process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
+  const planCall = await client.proposePlan({ input: parsed, context });
+  const plan = PlanOutputSchema.parse(planCall.output);
+
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        plan,
+        trace: {
+          mode: planCall.trace.mode,
+          model: planCall.trace.model,
+          endpoint: planCall.trace.endpoint
+        },
+        context
+      },
+      null,
+      2
+    )}\n`
+  );
 }
 
 export async function verifyMode(): Promise<void> {
-  const verify = VerifyOutputSchema.parse(await runQualityGates());
-  process.stdout.write(`${JSON.stringify(verify, null, 2)}\n`);
+  const verifyLogPath = path.resolve(process.cwd(), ".ohmyqwen", "verify.latest.log");
+  await fs.mkdir(path.dirname(verifyLogPath), { recursive: true });
+
+  const verify = VerifyOutputSchema.parse(
+    await runQualityGates({ cwd: process.cwd(), verifyLogPath })
+  );
+
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        verify,
+        verifyLogPath
+      },
+      null,
+      2
+    )}\n`
+  );
 }
 
 export async function readAnalyzeInput(filePath?: string): Promise<AnalyzeInput> {
   if (!filePath) {
     return AnalyzeInputSchema.parse({
-      taskId: "demo-task",
-      objective: "Bootstrap runtime loop",
-      constraints: ["short-session", "state-machine", "quality-gate"],
-      files: ["src/"],
-      retryPolicy: { maxAttempts: 1, backoffMs: 0 }
+      taskId: "sample-v01",
+      objective: "Run one controlled coding loop end-to-end",
+      constraints: [
+        "short-session",
+        "state-machine-control",
+        "structured-json-io",
+        "quality-gate-before-finish"
+      ],
+      files: ["src/loop/runner.ts", "src/gates/verify.ts"],
+      symbols: ["runLoop", "runQualityGates"],
+      errorLogs: [],
+      diffSummary: [],
+      contextTier: "small",
+      contextTokenBudget: 1200,
+      retryPolicy: {
+        maxAttempts: 2,
+        backoffMs: 0,
+        sameFailureLimit: 2
+      }
     });
   }
 

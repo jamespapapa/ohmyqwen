@@ -1,5 +1,8 @@
 node_modules
 dist
+release
+.ohmyqwen
+prompts
 coverage
 *.log
 .DS_Store
