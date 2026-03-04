@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnalyzeInput",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["taskId", "objective"],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1
+    },
+    "constraints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "retryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxAttempts", "backoffMs"],
+      "properties": {
+        "maxAttempts": { "type": "integer", "minimum": 1 },
+        "backoffMs": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "ohmyqwen",
+  "version": "0.1.0",
+  "description": "Local agentic coding runtime skeleton for Qwen3 in closed network",
+  "type": "module",
+  "bin": {
+    "ohmyqwen": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "pnpm run typecheck",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "run": "node dist/cli.js run",
+    "plan": "node dist/cli.js plan",
+    "verify": "node dist/cli.js verify"
+  },
+  "keywords": [
+    "agent",
+    "runtime",
+    "qwen3",
+    "state-machine"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}
