@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const RuntimeStateSchema = z.enum([
   "ANALYZE",
+  "WAIT_CLARIFICATION",
   "PLAN",
   "IMPLEMENT",
   "VERIFY",
@@ -16,10 +17,15 @@ export const ContextTierSchema = z.enum(["small", "mid", "big"]);
 
 export type ContextTier = z.infer<typeof ContextTierSchema>;
 
+export const RunModeSchema = z.enum(["auto", "feature", "refactor", "medium", "microservice"]);
+
+export type RunMode = z.infer<typeof RunModeSchema>;
+
 export const RetryPolicySchema = z.object({
   maxAttempts: z.number().int().min(1).default(2),
   backoffMs: z.number().int().min(0).default(0),
-  sameFailureLimit: z.number().int().min(1).default(2)
+  sameFailureLimit: z.number().int().min(1).default(2),
+  rollbackOnVerifyFail: z.boolean().default(false)
 });
 
 export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
@@ -33,12 +39,17 @@ export const AnalyzeInputSchema = z.object({
   errorLogs: z.array(z.string()).default([]),
   diffSummary: z.array(z.string()).default([]),
   contextTier: ContextTierSchema.default("small"),
-  contextTokenBudget: z.number().int().min(200).max(8000).default(1200),
+  contextTokenBudget: z.number().int().min(200).max(12000).default(1200),
   retryPolicy: RetryPolicySchema.default({
     maxAttempts: 2,
     backoffMs: 0,
-    sameFailureLimit: 2
-  })
+    sameFailureLimit: 2,
+    rollbackOnVerifyFail: false
+  }),
+  mode: RunModeSchema.default("auto"),
+  clarificationAnswers: z.array(z.string()).default([]),
+  gateProfile: z.string().min(1).optional(),
+  dryRun: z.boolean().default(false)
 });
 
 export type AnalyzeInput = z.infer<typeof AnalyzeInputSchema>;
@@ -100,12 +111,35 @@ export const ImplementOutputSchema = z.object({
 
 export type ImplementOutput = z.infer<typeof ImplementOutputSchema>;
 
+export const FailureCategorySchema = z.enum([
+  "compile",
+  "test",
+  "lint",
+  "runtime",
+  "tooling",
+  "infra"
+]);
+
+export type FailureCategory = z.infer<typeof FailureCategorySchema>;
+
+export const FailureSummarySchema = z.object({
+  category: FailureCategorySchema,
+  signature: z.string().min(1),
+  coreLines: z.array(z.string()).default([]),
+  relatedFiles: z.array(z.string()).default([]),
+  recommendation: z.string().default("Apply minimal and targeted patch only")
+});
+
+export type FailureSummary = z.infer<typeof FailureSummarySchema>;
+
 export const VerifyGateResultSchema = z.object({
   name: z.string().min(1),
   passed: z.boolean(),
   command: z.string().min(1),
   args: z.array(z.string()),
-  details: z.string().default("")
+  details: z.string().default(""),
+  durationMs: z.number().int().min(0).default(0),
+  category: FailureCategorySchema.optional()
 });
 
 export type VerifyGateResult = z.infer<typeof VerifyGateResultSchema>;
@@ -114,20 +148,79 @@ export const VerifyOutputSchema = z.object({
   passed: z.boolean(),
   gateResults: z.array(VerifyGateResultSchema),
   failureSignature: z.string().optional(),
+  failureSummary: FailureSummarySchema.optional(),
   retryPolicy: RetryPolicySchema.optional()
 });
 
 export type VerifyOutput = z.infer<typeof VerifyOutputSchema>;
+
+export const RunLockSchema = z.object({
+  pid: z.number().int().min(1),
+  createdAt: z.string()
+});
+
+export type RunLock = z.infer<typeof RunLockSchema>;
+
+export const AttemptCheckpointSchema = z.object({
+  attempt: z.number().int().min(0),
+  strategy: z.string().min(1),
+  implementOutputFile: z.string().min(1),
+  actionsFile: z.string().min(1),
+  verifyFile: z.string().min(1),
+  actionsApplied: z.boolean().default(false),
+  verifyCompleted: z.boolean().default(false),
+  verifyPassed: z.boolean().optional(),
+  rolledBack: z.boolean().default(false),
+  failureSignature: z.string().optional()
+});
+
+export type AttemptCheckpoint = z.infer<typeof AttemptCheckpointSchema>;
+
+export const RunManifestSchema = z.object({
+  runId: z.string().min(1),
+  taskId: z.string().min(1),
+  status: z.enum(["running", "waiting", "finished", "failed"]),
+  currentState: RuntimeStateSchema,
+  mode: RunModeSchema,
+  modeReason: z.string().default(""),
+  loopCount: z.number().int().min(0).default(0),
+  patchAttempts: z.number().int().min(0).default(0),
+  sameFailureCount: z.number().int().min(0).default(0),
+  strategyIndex: z.number().int().min(0).default(0),
+  lastFailureSignature: z.string().default(""),
+  waitingQuestions: z.array(z.string()).default([]),
+  checkpoints: z.object({
+    planCompleted: z.boolean().default(false),
+    attempts: z.array(AttemptCheckpointSchema).default([])
+  }),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export type RunManifest = z.infer<typeof RunManifestSchema>;
 
 export interface RuntimeSnapshot {
   runId: string;
   artifactDir: string;
   state: RuntimeState;
   analyzeInput?: AnalyzeInput;
+  mode?: RunMode;
+  modeReason?: string;
+  waitingQuestions?: string[];
   planOutput?: PlanOutput;
   implementOutput?: ImplementOutput;
   verifyOutput?: VerifyOutput;
   patchAttempts: number;
   sameFailureCount: number;
+  lastFailureSignature?: string;
   failReason?: string;
+}
+
+export interface PluginContribution {
+  plugin: string;
+  phase: "beforeAnalyze" | "beforePlan" | "beforeImplement" | "beforeVerify";
+  summary: string;
+  context?: string[];
+  warnings?: string[];
+  metadata?: Record<string, unknown>;
 }

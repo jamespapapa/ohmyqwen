@@ -5,14 +5,8 @@
   "additionalProperties": false,
   "required": ["taskId", "objective"],
   "properties": {
-    "taskId": {
-      "type": "string",
-      "minLength": 1
-    },
-    "objective": {
-      "type": "string",
-      "minLength": 1
-    },
+    "taskId": { "type": "string", "minLength": 1 },
+    "objective": { "type": "string", "minLength": 1 },
     "constraints": {
       "type": "array",
       "items": { "type": "string" },
@@ -46,18 +40,31 @@
     "contextTokenBudget": {
       "type": "integer",
       "minimum": 200,
-      "maximum": 8000,
+      "maximum": 12000,
       "default": 1200
     },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit", "rollbackOnVerifyFail"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
         "backoffMs": { "type": "integer", "minimum": 0 },
-        "sameFailureLimit": { "type": "integer", "minimum": 1 }
+        "sameFailureLimit": { "type": "integer", "minimum": 1 },
+        "rollbackOnVerifyFail": { "type": "boolean", "default": false }
       }
-    }
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["auto", "feature", "refactor", "medium", "microservice"],
+      "default": "auto"
+    },
+    "clarificationAnswers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    },
+    "gateProfile": { "type": "string", "minLength": 1 },
+    "dryRun": { "type": "boolean", "default": false }
   }
 }

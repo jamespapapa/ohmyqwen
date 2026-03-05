@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "commands": {
+    "npm": {
+      "allowArgPrefixes": [
+        "run",
+        "start",
+        "install",
+        "test",
+        "build",
+        "lint",
+        "typecheck",
+        "serve",
+        "init",
+        "pkg",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    },
+    "pnpm": {
+      "allowArgPrefixes": [
+        "run",
+        "start",
+        "install",
+        "test",
+        "build",
+        "lint",
+        "typecheck",
+        "serve",
+        "init",
+        "pkg",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    },
+    "node": {
+      "allowArgPrefixes": [
+        "-e",
+        "-v",
+        "--version",
+        "dist/",
+        "scripts/"
+      ],
+      "denyArgPatterns": []
+    },
+    "git": {
+      "allowArgPrefixes": [
+        "diff",
+        "status",
+        "log"
+      ],
+      "denyArgPatterns": []
+    },
+    "npx": {
+      "allowArgPrefixes": [
+        "--no-install",
+        "vitest",
+        "tsc",
+        "ohmyqwen"
+      ],
+      "denyArgPatterns": []
+    },
+    "./gradlew": {
+      "allowArgPrefixes": [
+        "wrapper",
+        "build",
+        "test",
+        "check",
+        "bootRun",
+        "clean",
+        "tasks",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    },
+    "gradle": {
+      "allowArgPrefixes": [
+        "wrapper",
+        "build",
+        "test",
+        "check",
+        "bootRun",
+        "clean",
+        "tasks",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    },
+    "./mvnw": {
+      "allowArgPrefixes": [
+        "package",
+        "test",
+        "verify",
+        "clean",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    },
+    "mvn": {
+      "allowArgPrefixes": [
+        "package",
+        "test",
+        "verify",
+        "clean",
+        "-v",
+        "--version"
+      ],
+      "denyArgPatterns": []
+    }
+  },
+  "denyPatterns": [
+    "rm -rf",
+    "shutdown",
+    "reboot",
+    ":(){"
+  ]
+}

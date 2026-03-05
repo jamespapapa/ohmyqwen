@@ -2,7 +2,10 @@ node_modules
 dist
 release
 .ohmyqwen
+.omx
+.env
 prompts
 coverage
 *.log
+.next
 .DS_Store

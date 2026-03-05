@@ -5,10 +5,7 @@
   "additionalProperties": false,
   "required": ["summary"],
   "properties": {
-    "summary": {
-      "type": "string",
-      "minLength": 1
-    },
+    "summary": { "type": "string", "minLength": 1 },
     "changes": {
       "type": "array",
       "default": [],
@@ -71,17 +68,16 @@
       "items": { "type": "string" },
       "default": []
     },
-    "strategy": {
-      "type": "string"
-    },
+    "strategy": { "type": "string" },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit", "rollbackOnVerifyFail"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
         "backoffMs": { "type": "integer", "minimum": 0 },
-        "sameFailureLimit": { "type": "integer", "minimum": 1 }
+        "sameFailureLimit": { "type": "integer", "minimum": 1 },
+        "rollbackOnVerifyFail": { "type": "boolean", "default": false }
       }
     }
   }

@@ -24,6 +24,10 @@
   "retryPolicy": {
     "maxAttempts": 2,
     "backoffMs": 0,
-    "sameFailureLimit": 2
-  }
+    "sameFailureLimit": 2,
+    "rollbackOnVerifyFail": false
+  },
+  "mode": "auto",
+  "clarificationAnswers": [],
+  "dryRun": false
 }

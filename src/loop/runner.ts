@@ -1,29 +1,56 @@
-import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   AnalyzeInput,
   AnalyzeInputSchema,
+  AttemptCheckpoint,
   ContextTier,
+  FailureSummary,
+  ImplementOutput,
   ImplementOutputSchema,
+  PlanOutput,
   PlanOutputSchema,
   RuntimeSnapshot,
+  RuntimeState,
+  RunManifest,
+  VerifyOutput,
   VerifyOutputSchema
 } from "../core/types.js";
 import { RuntimeStateMachine } from "../core/state-machine.js";
-import { packContext } from "../context/packer.js";
-import { runQualityGates } from "../gates/verify.js";
-import { OpenAICompatibleLlmClient } from "../llm/client.js";
-import { executeCommand, executeImplementationActions, readWorkspaceFile } from "../tools/executor.js";
-
-interface RunArtifacts {
-  runId: string;
-  runDir: string;
-  transitionsPath: string;
-  promptsDir: string;
-  outputsDir: string;
-  verifyLogPath: string;
-}
+import { inspectContext, packContext, persistPackedContext } from "../context/packer.js";
+import {
+  appendFailureSummary,
+  failed,
+  finalizeVerifyOutput,
+  listVerifyProfiles,
+  runQualityGates,
+  summarizeFailures
+} from "../gates/verify.js";
+import { runObjectiveContractGate } from "../gates/objective-contract.js";
+import { LlmClient, OpenAICompatibleLlmClient } from "../llm/client.js";
+import { resolveModePolicy } from "../modes/policies.js";
+import {
+  acquireRunLock,
+  appendTransition,
+  createInitialManifest,
+  ensureRunArtifacts,
+  loadManifest,
+  readOutput,
+  releaseRunLock,
+  resolveRunArtifacts,
+  RunArtifacts,
+  saveManifest,
+  updateManifest,
+  writeOutput,
+  writePrompt
+} from "./run-state.js";
+import {
+  executeImplementationActions,
+  PatchTransaction,
+  rollbackTransaction
+} from "../tools/executor.js";
+import { PluginManager } from "../plugins/manager.js";
+import { PluginContribution } from "../core/types.js";
 
 const PATCH_STRATEGIES: Array<{ name: string; tier: ContextTier }> = [
   { name: "focused-fix", tier: "small" },
@@ -31,11 +58,33 @@ const PATCH_STRATEGIES: Array<{ name: string; tier: ContextTier }> = [
   { name: "broad-recovery", tier: "big" }
 ];
 
+export interface RunLoopEvent {
+  kind: "transition" | "progress";
+  runId: string;
+  state: RuntimeState;
+  reason: string;
+  patchAttempts: number;
+  strategy: string;
+  timestamp: string;
+}
+
 export interface RunLoopResult {
   runId: string;
   artifactDir: string;
   finalState: RuntimeSnapshot["state"];
   snapshot: RuntimeSnapshot;
+  failed: boolean;
+  failureSummary?: string;
+  persistedArtifacts: string[];
+}
+
+export interface RunLoopOptions {
+  runId?: string;
+  cwd?: string;
+  resume?: boolean;
+  llmClient?: LlmClient;
+  onEvent?: (event: RunLoopEvent) => Promise<void> | void;
+  dryRun?: boolean;
 }
 
 function makeRunId(): string {
@@ -43,117 +92,12 @@ function makeRunId(): string {
   return `${timestamp}-${randomUUID().slice(0, 8)}`;
 }
 
-async function initArtifacts(cwd: string, runId?: string): Promise<RunArtifacts> {
-  const safeRunId = (runId ?? makeRunId()).replace(/[^a-zA-Z0-9_-]/g, "-");
-  const runDir = path.resolve(cwd, ".ohmyqwen", "runs", safeRunId);
-  const promptsDir = path.join(runDir, "prompts");
-  const outputsDir = path.join(runDir, "outputs");
-  const transitionsPath = path.join(runDir, "state-transitions.jsonl");
-  const verifyLogPath = path.join(runDir, "verify.log");
-
-  await fs.mkdir(promptsDir, { recursive: true });
-  await fs.mkdir(outputsDir, { recursive: true });
-  await fs.writeFile(transitionsPath, "", "utf8");
-  await fs.writeFile(verifyLogPath, "", "utf8");
-
-  return {
-    runId: safeRunId,
-    runDir,
-    transitionsPath,
-    promptsDir,
-    outputsDir,
-    verifyLogPath
-  };
-}
-
-async function appendTransition(
-  artifacts: RunArtifacts,
-  payload: Record<string, unknown>
-): Promise<void> {
-  const line = JSON.stringify({ timestamp: new Date().toISOString(), ...payload });
-  await fs.appendFile(artifacts.transitionsPath, `${line}\n`, "utf8");
-}
-
-async function writeJson(filePath: string, value: unknown): Promise<void> {
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function writePrompt(
-  artifacts: RunArtifacts,
-  fileName: string,
-  payload: unknown
-): Promise<void> {
-  await writeJson(path.join(artifacts.promptsDir, fileName), payload);
-}
-
-async function writeOutput(
-  artifacts: RunArtifacts,
-  fileName: string,
-  payload: unknown
-): Promise<void> {
-  await writeJson(path.join(artifacts.outputsDir, fileName), payload);
+function timestamp(): string {
+  return new Date().toISOString();
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function collectSymbols(files: string[], cwd: string): Promise<string[]> {
-  const symbols = new Set<string>();
-
-  for (const file of files) {
-    const absolute = path.resolve(cwd, file);
-    let stat;
-    try {
-      stat = await fs.stat(absolute);
-    } catch {
-      continue;
-    }
-
-    if (!stat.isFile()) {
-      continue;
-    }
-
-    let content = "";
-    try {
-      content = await readWorkspaceFile(file, cwd);
-    } catch {
-      continue;
-    }
-
-    const pattern = /(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|const)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-    for (const match of content.matchAll(pattern)) {
-      if (match[1]) {
-        symbols.add(match[1]);
-      }
-    }
-  }
-
-  return Array.from(symbols).slice(0, 200);
-}
-
-async function collectDiffSummary(files: string[], cwd: string): Promise<string[]> {
-  const args = ["diff", "--unified=0"];
-  if (files.length > 0) {
-    args.push("--", ...files.slice(0, 30));
-  }
-
-  const result = await executeCommand("git", args, { cwd });
-  if (result.code !== 0 && !result.stdout.trim()) {
-    return [`git diff unavailable: ${result.stderr.trim() || "unknown error"}`];
-  }
-
-  return result.stdout
-    .split("\n")
-    .filter(
-      (line) =>
-        line.startsWith("@@") ||
-        (line.startsWith("+") && !line.startsWith("+++")) ||
-        (line.startsWith("-") && !line.startsWith("---"))
-    )
-    .slice(0, 120)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function unique(items: string[]): string[] {
@@ -165,173 +109,1036 @@ function strategyIndexForTier(tier: ContextTier): number {
   return index >= 0 ? index : 0;
 }
 
-function summarizeFailures(details: RuntimeSnapshot["verifyOutput"]): string {
-  if (!details) {
-    return "verification failed";
+function inferGateProfileFromObjective(objective: string): string | undefined {
+  const normalized = objective.toLowerCase();
+  if (/\bgradle\b|gradlew/.test(normalized)) {
+    return "gradle";
   }
 
-  const failed = details.gateResults.filter((gate) => !gate.passed);
-  if (failed.length === 0) {
-    return "verification failed without failing gate details";
+  if (/\bmaven\b|\bmvn\b/.test(normalized)) {
+    return "maven";
   }
 
-  return failed
-    .map((gate) => `${gate.name}: ${(gate.details || "failed").slice(0, 400)}`)
-    .join("\n");
+  if (/spring\s*boot|springboot|\bjava\b/.test(normalized)) {
+    return "maven";
+  }
+
+  return undefined;
+}
+
+function findAttempt(manifest: RunManifest, attempt: number): AttemptCheckpoint | undefined {
+  return manifest.checkpoints.attempts.find((entry) => entry.attempt === attempt);
+}
+
+async function upsertAttempt(
+  artifacts: RunArtifacts,
+  manifest: RunManifest,
+  payload: AttemptCheckpoint
+): Promise<RunManifest> {
+  const attempts = manifest.checkpoints.attempts.filter((entry) => entry.attempt !== payload.attempt);
+  attempts.push(payload);
+  attempts.sort((a, b) => a.attempt - b.attempt);
+
+  return updateManifest(artifacts, manifest, {
+    checkpoints: {
+      ...manifest.checkpoints,
+      attempts
+    }
+  });
+}
+
+function buildPatchFailurePrompt(
+  verifyOutput: VerifyOutput | undefined,
+  fallback: string
+): { summary: string; relatedFiles: string[]; instruction: string } {
+  const failureSummary = verifyOutput?.failureSummary;
+  if (!failureSummary) {
+    return {
+      summary: fallback,
+      relatedFiles: [],
+      instruction: "Apply minimal patch only to directly related files and avoid unrelated refactors"
+    };
+  }
+
+  return {
+    summary: [failureSummary.category, ...failureSummary.coreLines].join(" | "),
+    relatedFiles: failureSummary.relatedFiles,
+    instruction: failureSummary.recommendation
+  };
+}
+
+function summarizeActionFailureLines(lines: string[]): { coreLines: string[]; relatedFiles: string[] } {
+  const coreLines = lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const relatedFiles = Array.from(
+    new Set(
+      coreLines.flatMap((line) => line.match(/[A-Za-z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md)/g) ?? [])
+    )
+  ).slice(0, 10);
+
+  return { coreLines, relatedFiles };
+}
+
+type ActionFailureKind =
+  | "allowlist"
+  | "port-in-use"
+  | "missing-script"
+  | "inline-script-syntax"
+  | "jvm-implement-command"
+  | "patch-miss"
+  | "unknown";
+
+function classifyActionFailure(target: string, details: string): ActionFailureKind {
+  const normalized = `${target}\n${details}`.toLowerCase();
+
+  if (normalized.includes("command not allowed") || normalized.includes("args not allowed by allowlist")) {
+    return "allowlist";
+  }
+  if (normalized.includes("eaddrinuse") || normalized.includes("address already in use")) {
+    return "port-in-use";
+  }
+  if (normalized.includes("missing script") || normalized.includes("no_script")) {
+    return "missing-script";
+  }
+  if (normalized.includes("unterminated string constant") || normalized.includes("syntaxerror")) {
+    return "inline-script-syntax";
+  }
+  if (
+    /(gradle|\.\/gradlew|mvn|\.\/mvnw)\b/.test(normalized) &&
+    (normalized.includes("failed (exit code=") ||
+      normalized.includes("permission denied") ||
+      normalized.includes("enoent") ||
+      normalized.includes("command not found"))
+  ) {
+    return "jvm-implement-command";
+  }
+  if (normalized.includes("patch_file could not find target text")) {
+    return "patch-miss";
+  }
+
+  return "unknown";
+}
+
+function recommendationForActionFailureKinds(kinds: ActionFailureKind[]): string {
+  const tips: string[] = [];
+
+  if (kinds.includes("allowlist")) {
+    tips.push(
+      "Use allowlisted commands only (npm/pnpm/node/git/npx/gradle/maven) and avoid raw shell/environment-prefixed forms."
+    );
+  }
+  if (kinds.includes("port-in-use")) {
+    tips.push("Avoid long-running server start commands; prefer one-shot CLI verification (node index.js).");
+  }
+  if (kinds.includes("missing-script")) {
+    tips.push("Ensure package.json scripts exist before run_command, or execute direct node command.");
+  }
+  if (kinds.includes("inline-script-syntax")) {
+    tips.push("Do not use complex inline node -e code; write a file and run it directly.");
+  }
+  if (kinds.includes("jvm-implement-command")) {
+    tips.push("For Spring/JVM tasks, avoid running gradle/maven commands in IMPLEMENT; write files first and run gates in VERIFY.");
+  }
+  if (kinds.includes("patch-miss")) {
+    tips.push("Use write_file overwrite strategy when target text is unstable instead of brittle patch_file find strings.");
+  }
+
+  if (tips.length === 0) {
+    tips.push("Keep actions minimal, workspace-relative, and deterministic.");
+  }
+
+  return tips.join(" ");
+}
+
+function buildImplementationActionFailureOutput(actionFailures: Array<{ target: string; details: string }>): VerifyOutput {
+  const lines = actionFailures.map((failure) => `${failure.target}: ${failure.details}`);
+  const details = lines.join("\n");
+  const { coreLines, relatedFiles } = summarizeActionFailureLines(lines);
+  const kinds = Array.from(
+    new Set(actionFailures.map((failure) => classifyActionFailure(failure.target, failure.details)))
+  ).sort();
+  const signatureInput = ["tooling", ...kinds, ...relatedFiles].join("|");
+  const signature = createHash("sha256").update(signatureInput || "tooling-action-failure").digest("hex").slice(0, 16);
+
+  const failureSummary: FailureSummary = {
+    category: "tooling",
+    signature,
+    coreLines,
+    relatedFiles,
+    recommendation: recommendationForActionFailureKinds(kinds)
+  };
+
+  return {
+    passed: false,
+    gateResults: [
+      {
+        name: "implement-actions",
+        passed: false,
+        command: "runtime",
+        args: [],
+        details: details || "implementation actions failed",
+        durationMs: 0,
+        category: "tooling"
+      }
+    ],
+    failureSignature: signature,
+    failureSummary
+  };
+}
+
+function firstMeaningfulLine(text: string): string {
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean) ?? text.trim()
+  );
+}
+
+function summarizeRootCause(verifyOutput: VerifyOutput | undefined): string {
+  if (!verifyOutput) {
+    return "unknown";
+  }
+
+  const firstCoreLine = verifyOutput.failureSummary?.coreLines?.find((line) => line.trim().length > 0);
+  if (firstCoreLine) {
+    return firstCoreLine.trim().slice(0, 220);
+  }
+
+  const firstFailingGate = verifyOutput.gateResults.find((gate) => !gate.passed);
+  if (!firstFailingGate) {
+    return "unknown";
+  }
+
+  const detailLine = firstMeaningfulLine(firstFailingGate.details);
+  return `${firstFailingGate.name}: ${detailLine}`.slice(0, 220);
+}
+
+async function readAnalyzeInputFromArtifacts(artifacts: RunArtifacts): Promise<AnalyzeInput | undefined> {
+  const existing = await readOutput<AnalyzeInput>(artifacts, "analyze.input.json");
+  if (!existing) {
+    return undefined;
+  }
+
+  return AnalyzeInputSchema.parse(existing);
 }
 
 export async function runLoop(
   rawAnalyzeInput: unknown,
-  options?: { runId?: string; cwd?: string }
+  options?: RunLoopOptions
 ): Promise<RunLoopResult> {
-  const analyzeInput: AnalyzeInput = AnalyzeInputSchema.parse(rawAnalyzeInput);
+  const parsed = AnalyzeInputSchema.parse(rawAnalyzeInput);
   const cwd = options?.cwd ?? process.cwd();
-  const artifacts = await initArtifacts(cwd, options?.runId);
 
+  const runId =
+    options?.runId ??
+    (options?.resume
+      ? (() => {
+          throw new Error("resume mode requires explicit runId");
+        })()
+      : makeRunId());
+
+  const artifacts = resolveRunArtifacts(cwd, runId);
+  await ensureRunArtifacts(artifacts, Boolean(options?.resume));
+
+  await acquireRunLock(artifacts.lockPath);
+
+  const llm = options?.llmClient ?? new OpenAICompatibleLlmClient();
+  const pluginManager = await PluginManager.create(cwd);
   const machine = new RuntimeStateMachine();
-  const llm = new OpenAICompatibleLlmClient();
+
+  const loadedManifest = await loadManifest(artifacts);
+  if (options?.resume && !loadedManifest) {
+    await releaseRunLock(artifacts.lockPath);
+    throw new Error(`Cannot resume: run manifest not found for runId=${artifacts.runId}`);
+  }
+
+  const resumeAnalyzeInput = loadedManifest
+    ? await readAnalyzeInputFromArtifacts(artifacts)
+    : undefined;
+  let manifest: RunManifest;
+  const analyzeInput =
+    options?.resume && loadedManifest && resumeAnalyzeInput
+      ? AnalyzeInputSchema.parse({
+          ...resumeAnalyzeInput,
+          clarificationAnswers:
+            parsed.clarificationAnswers.length > 0
+              ? parsed.clarificationAnswers
+              : resumeAnalyzeInput.clarificationAnswers
+        })
+      : parsed;
+
+  const resolvedMode = resolveModePolicy({
+    ...analyzeInput,
+    mode: analyzeInput.mode
+  });
+
+  if (!loadedManifest) {
+    manifest = await createInitialManifest({
+      artifacts,
+      analyzeInput,
+      mode: resolvedMode.mode,
+      modeReason: resolvedMode.reason
+    });
+
+    await appendTransition(artifacts, {
+      from: null,
+      to: "ANALYZE",
+      reason: "run initialized"
+    });
+  } else {
+    manifest = loadedManifest;
+  }
+
+  machine.reset(manifest.currentState);
 
   const snapshot: RuntimeSnapshot = {
     runId: artifacts.runId,
     artifactDir: artifacts.runDir,
-    state: machine.current,
+    state: manifest.currentState,
     analyzeInput,
-    patchAttempts: 0,
-    sameFailureCount: 0
+    mode: manifest.mode,
+    modeReason: manifest.modeReason,
+    waitingQuestions: manifest.waitingQuestions,
+    patchAttempts: manifest.patchAttempts,
+    sameFailureCount: manifest.sameFailureCount,
+    lastFailureSignature: manifest.lastFailureSignature
+  };
+  const controlledSingleLoop =
+    analyzeInput.constraints.includes("short-session") &&
+    analyzeInput.constraints.includes("state-machine-control");
+  const persistedArtifacts: string[] = [];
+
+  const notifyEvent = async (reason: string): Promise<void> => {
+    if (!options?.onEvent) {
+      return;
+    }
+
+    await options.onEvent({
+      kind: "transition",
+      runId: artifacts.runId,
+      state: machine.current,
+      reason,
+      patchAttempts: manifest.patchAttempts,
+      strategy: PATCH_STRATEGIES[manifest.strategyIndex]?.name ?? PATCH_STRATEGIES[0].name,
+      timestamp: timestamp()
+    });
   };
 
-  let strategyIndex = strategyIndexForTier(analyzeInput.contextTier);
-  let patchAttempts = 0;
-  let sameFailureCount = 0;
-  let lastFailureSignature = "";
-  const symbols = unique([...analyzeInput.symbols, ...(await collectSymbols(analyzeInput.files, cwd))]);
-  const diffSummary = unique([
-    ...analyzeInput.diffSummary,
-    ...(await collectDiffSummary(analyzeInput.files, cwd))
-  ]);
-  let errorLogs = unique(analyzeInput.errorLogs);
+  const emitProgress = async (
+    reason: string,
+    metadata?: { patchAttempts?: number; strategy?: string }
+  ): Promise<void> => {
+    if (!options?.onEvent) {
+      return;
+    }
 
-  await appendTransition(artifacts, {
-    from: null,
-    to: "ANALYZE",
-    reason: "run initialized"
-  });
+    await options.onEvent({
+      kind: "progress",
+      runId: artifacts.runId,
+      state: machine.current,
+      reason,
+      patchAttempts: metadata?.patchAttempts ?? manifest.patchAttempts,
+      strategy: metadata?.strategy ?? PATCH_STRATEGIES[manifest.strategyIndex]?.name ?? PATCH_STRATEGIES[0].name,
+      timestamp: timestamp()
+    });
+  };
 
-  const transition = async (next: RuntimeSnapshot["state"], reason: string): Promise<void> => {
+  const transition = async (
+    next: RuntimeSnapshot["state"],
+    reason: string,
+    metadata?: Record<string, unknown>
+  ): Promise<void> => {
     const from = machine.current;
     machine.transition(next);
+
     snapshot.state = machine.current;
 
     await appendTransition(artifacts, {
       from,
       to: next,
       reason,
-      patchAttempts,
-      strategy: PATCH_STRATEGIES[strategyIndex]?.name ?? PATCH_STRATEGIES[0].name
+      patchAttempts: manifest.patchAttempts,
+      strategy: PATCH_STRATEGIES[manifest.strategyIndex]?.name ?? PATCH_STRATEGIES[0].name,
+      idempotent: from === next,
+      ...metadata
     });
+
+    manifest = await updateManifest(artifacts, manifest, {
+      currentState: machine.current,
+      loopCount: manifest.loopCount + 1
+    });
+
+    await notifyEvent(reason);
   };
+
+  const pluginContributions: PluginContribution[] = [];
+  const pluginWarnings: string[] = [];
 
   try {
     await writeOutput(artifacts, "analyze.input.json", analyzeInput);
 
-    await transition("PLAN", "analyze complete");
-
-    const planContext = packContext({
-      objective: analyzeInput.objective,
-      constraints: analyzeInput.constraints,
-      symbols,
-      errorLogs,
-      diffSummary,
-      tier: PATCH_STRATEGIES[strategyIndex].tier,
-      tokenBudget: analyzeInput.contextTokenBudget
+    const beforeAnalyze = await pluginManager.runHook("beforeAnalyze", {
+      cwd,
+      runId: artifacts.runId,
+      input: analyzeInput,
+      stageAttempt: manifest.patchAttempts
     });
+    pluginContributions.push(...beforeAnalyze.contributions);
+    pluginWarnings.push(...beforeAnalyze.warnings);
 
-    const planCall = await llm.proposePlan({ input: analyzeInput, context: planContext });
-    const planOutput = PlanOutputSchema.parse(planCall.output);
-    snapshot.planOutput = planOutput;
+    if (
+      (machine.current === "ANALYZE" || machine.current === "WAIT_CLARIFICATION") &&
+      resolvedMode.waitingRequired &&
+      analyzeInput.clarificationAnswers.length === 0
+    ) {
+      await transition("WAIT_CLARIFICATION", "awaiting clarification answers");
 
-    await writePrompt(artifacts, "plan.prompt.json", {
-      model: planCall.trace.model,
-      endpoint: planCall.trace.endpoint,
-      mode: planCall.trace.mode,
-      systemPrompt: planCall.trace.systemPrompt,
-      userPrompt: planCall.trace.userPrompt,
-      rawResponse: planCall.trace.rawResponse
-    });
-    await writeOutput(artifacts, "plan.output.json", {
-      context: planContext,
-      output: planOutput
-    });
+      manifest = await updateManifest(artifacts, manifest, {
+        status: "waiting",
+        waitingQuestions: resolvedMode.questions
+      });
 
-    await transition("IMPLEMENT", "plan complete");
+      snapshot.waitingQuestions = resolvedMode.questions;
+      await writeOutput(artifacts, "clarification.questions.json", {
+        mode: resolvedMode.mode,
+        reason: resolvedMode.reason,
+        questions: resolvedMode.questions
+      });
+
+      await writeOutput(artifacts, "plugins.output.json", {
+        contributions: pluginContributions,
+        warnings: pluginWarnings
+      });
+
+      await writeOutput(artifacts, "final.snapshot.json", snapshot);
+      await saveManifest(artifacts, manifest);
+
+      return {
+        runId: artifacts.runId,
+        artifactDir: artifacts.runDir,
+        finalState: snapshot.state,
+        snapshot,
+        failed: false,
+        persistedArtifacts
+      };
+    }
+
+    if (machine.current === "ANALYZE" || machine.current === "WAIT_CLARIFICATION") {
+      await transition("PLAN", "analyze complete");
+    }
+
+    const planOutputFile = "plan.output.json";
+    let planOutput: PlanOutput;
+
+    if (manifest.checkpoints.planCompleted) {
+      const cachedPlan = await readOutput<{ output: PlanOutput }>(artifacts, planOutputFile);
+      if (!cachedPlan) {
+        throw new Error("Manifest indicates PLAN complete but plan.output.json is missing");
+      }
+      planOutput = PlanOutputSchema.parse(cachedPlan.output);
+      snapshot.planOutput = planOutput;
+    } else {
+      const inspection = await inspectContext({
+        cwd,
+        files: analyzeInput.files,
+        task: analyzeInput.objective,
+        tier: analyzeInput.contextTier,
+        tokenBudget: analyzeInput.contextTokenBudget,
+        stage: "PLAN",
+        targetFiles: analyzeInput.files,
+        diffSummary: analyzeInput.diffSummary,
+        errorLogs: analyzeInput.errorLogs
+      });
+
+      const beforePlan = await pluginManager.runHook("beforePlan", {
+        cwd,
+        runId: artifacts.runId,
+        input: analyzeInput,
+        stageAttempt: manifest.patchAttempts
+      });
+      pluginContributions.push(...beforePlan.contributions);
+      pluginWarnings.push(...beforePlan.warnings);
+
+      const pluginContext = unique(beforePlan.contributions.flatMap((entry) => entry.context ?? []));
+
+      const planContext = packContext({
+        objective: analyzeInput.objective,
+        constraints: [
+          ...analyzeInput.constraints,
+          `mode=${resolvedMode.mode}`,
+          `mode-guidance=${resolvedMode.policy.planningGuidance}`
+        ],
+        symbols: unique([...analyzeInput.symbols, ...inspection.packed.payload.symbols]),
+        errorLogs: analyzeInput.errorLogs,
+        diffSummary: unique([
+          ...analyzeInput.diffSummary,
+          ...inspection.packed.payload.diffSummary,
+          ...pluginContext
+        ]),
+        tier: analyzeInput.contextTier,
+        tokenBudget: analyzeInput.contextTokenBudget,
+        stage: "PLAN"
+      });
+      const planContextArtifact = path.join(
+        artifacts.outputsDir,
+        `context.packed.plan.attempt-${manifest.patchAttempts}.json`
+      );
+      await persistPackedContext({
+        outputPath: planContextArtifact,
+        runId: artifacts.runId,
+        stage: "PLAN",
+        patchAttempt: manifest.patchAttempts,
+        packed: planContext,
+        selectedSymbols: planContext.payload.symbols,
+        constraintFlags: analyzeInput.constraints
+      });
+      persistedArtifacts.push(planContextArtifact);
+
+      await emitProgress("planning response generation started");
+      const planCall = await llm.proposePlan({
+        input: analyzeInput,
+        context: planContext,
+        planningTemplate: resolvedMode.policy.planningGuidance
+      });
+      planOutput = PlanOutputSchema.parse(planCall.output);
+      snapshot.planOutput = planOutput;
+
+      await writePrompt(artifacts, "plan.prompt.json", {
+        model: planCall.trace.model,
+        endpoint: planCall.trace.endpoint,
+        mode: planCall.trace.mode,
+        systemPrompt: planCall.trace.systemPrompt,
+        userPrompt: planCall.trace.userPrompt,
+        rawResponse: planCall.trace.rawResponse,
+        modeReason: resolvedMode.reason
+      });
+
+      await writeOutput(artifacts, planOutputFile, {
+        inspection,
+        context: planContext,
+        output: planOutput
+      });
+
+      manifest = await updateManifest(artifacts, manifest, {
+        checkpoints: {
+          ...manifest.checkpoints,
+          planCompleted: true
+        },
+        mode: resolvedMode.mode,
+        modeReason: resolvedMode.reason
+      });
+    }
+
+    if (machine.current !== "IMPLEMENT") {
+      await transition("IMPLEMENT", "plan complete");
+    }
+
+    let patchAttempts = manifest.patchAttempts;
+    let sameFailureCount = manifest.sameFailureCount;
+    let lastFailureSignature = manifest.lastFailureSignature;
+    let strategyIndex = manifest.strategyIndex || strategyIndexForTier(analyzeInput.contextTier);
+    let errorLogs = unique(analyzeInput.errorLogs);
+    const maxPatchAttempts = controlledSingleLoop
+      ? patchAttempts
+      : Math.min(analyzeInput.retryPolicy.maxAttempts, resolvedMode.policy.maxPatchRetries);
 
     while (true) {
-      const strategy = PATCH_STRATEGIES[strategyIndex];
-      const implementContext = packContext({
-        objective: analyzeInput.objective,
-        constraints: analyzeInput.constraints,
-        symbols: unique([...symbols, ...planOutput.targetSymbols]),
-        errorLogs,
-        diffSummary,
-        tier: strategy.tier,
-        tokenBudget: analyzeInput.contextTokenBudget
-      });
+      snapshot.patchAttempts = patchAttempts;
+      snapshot.sameFailureCount = sameFailureCount;
+      snapshot.lastFailureSignature = lastFailureSignature;
 
-      const implementCall = await llm.proposeImplementation({
+      if (patchAttempts > maxPatchAttempts) {
+        snapshot.failReason = `FAIL_WITH_ARTIFACT: patch retries exceeded max attempts(${maxPatchAttempts})`;
+        await transition("FAIL", snapshot.failReason);
+        manifest = await updateManifest(artifacts, manifest, {
+          status: "failed"
+        });
+        break;
+      }
+
+      const strategy = PATCH_STRATEGIES[strategyIndex] ?? PATCH_STRATEGIES[0];
+      const attempt = patchAttempts;
+      const implementOutputFile = `implement.output.attempt-${attempt}.json`;
+      const actionsFile = `implement.actions.attempt-${attempt}.json`;
+      const verifyFile = `verify.output.attempt-${attempt}.json`;
+
+      let attemptCheckpoint =
+        findAttempt(manifest, attempt) ??
+        ({
+          attempt,
+          strategy: strategy.name,
+          implementOutputFile,
+          actionsFile,
+          verifyFile,
+          actionsApplied: false,
+          verifyCompleted: false,
+          rolledBack: false
+        } as AttemptCheckpoint);
+
+      manifest = await upsertAttempt(artifacts, manifest, attemptCheckpoint);
+
+      const beforeImplement = await pluginManager.runHook("beforeImplement", {
+        cwd,
+        runId: artifacts.runId,
         input: analyzeInput,
         plan: planOutput,
-        context: implementContext,
-        patchAttempt: patchAttempts,
-        strategy: strategy.name,
-        lastFailure: errorLogs[0]
+        stageAttempt: attempt
+      });
+      pluginContributions.push(...beforeImplement.contributions);
+      pluginWarnings.push(...beforeImplement.warnings);
+
+      const relatedFailureFiles = snapshot.verifyOutput?.failureSummary?.relatedFiles ?? [];
+      const implementInspection = await inspectContext({
+        cwd,
+        files: unique([...analyzeInput.files, ...relatedFailureFiles]),
+        task: `${analyzeInput.objective} ${planOutput.steps.join(" ")}`,
+        tier: strategy.tier,
+        tokenBudget: analyzeInput.contextTokenBudget,
+        stage: "IMPLEMENT",
+        targetFiles: analyzeInput.files,
+        diffSummary: analyzeInput.diffSummary,
+        errorLogs
       });
 
-      const implementOutput = ImplementOutputSchema.parse(implementCall.output);
-      snapshot.implementOutput = implementOutput;
-
-      await writePrompt(artifacts, `implement.prompt.attempt-${patchAttempts}.json`, {
-        model: implementCall.trace.model,
-        endpoint: implementCall.trace.endpoint,
-        mode: implementCall.trace.mode,
-        systemPrompt: implementCall.trace.systemPrompt,
-        userPrompt: implementCall.trace.userPrompt,
-        rawResponse: implementCall.trace.rawResponse
-      });
-      await writeOutput(artifacts, `implement.output.attempt-${patchAttempts}.json`, {
-        strategy: strategy.name,
-        context: implementContext,
-        output: implementOutput
-      });
-
-      const actionResults = await executeImplementationActions(implementOutput.actions, cwd);
-      await writeOutput(artifacts, `implement.actions.attempt-${patchAttempts}.json`, actionResults);
-
-      await transition("VERIFY", `implementation attempt ${patchAttempts}`);
-
-      const verifyOutput = VerifyOutputSchema.parse(
-        await runQualityGates({ cwd, verifyLogPath: artifacts.verifyLogPath })
+      const pluginImplementContext = unique(
+        beforeImplement.contributions.flatMap((entry) => entry.context ?? [])
       );
+
+      const implementContext = packContext({
+        objective: analyzeInput.objective,
+        constraints: [
+          ...analyzeInput.constraints,
+          `mode=${resolvedMode.mode}`,
+          `strategy=${strategy.name}`,
+          `patch-attempt=${attempt}`,
+          ...pluginImplementContext.slice(0, 10)
+        ],
+        symbols: unique([
+          ...analyzeInput.symbols,
+          ...planOutput.targetSymbols,
+          ...implementInspection.packed.payload.symbols
+        ]),
+        errorLogs,
+        diffSummary: unique([
+          ...analyzeInput.diffSummary,
+          ...implementInspection.packed.payload.diffSummary,
+          ...pluginImplementContext
+        ]),
+        tier: strategy.tier,
+        tokenBudget: analyzeInput.contextTokenBudget,
+        stage: "IMPLEMENT"
+      });
+      const implementContextArtifact = path.join(
+        artifacts.outputsDir,
+        `context.packed.implement.attempt-${attempt}.json`
+      );
+      await persistPackedContext({
+        outputPath: implementContextArtifact,
+        runId: artifacts.runId,
+        stage: "IMPLEMENT",
+        patchAttempt: attempt,
+        packed: implementContext,
+        selectedSymbols: unique([...analyzeInput.symbols, ...planOutput.targetSymbols]),
+        constraintFlags: analyzeInput.constraints
+      });
+      persistedArtifacts.push(implementContextArtifact);
+
+      let implementOutput: ImplementOutput;
+
+      const cachedImplement = await readOutput<{ output: ImplementOutput }>(
+        artifacts,
+        implementOutputFile
+      );
+      if (cachedImplement) {
+        implementOutput = ImplementOutputSchema.parse(cachedImplement.output);
+      } else {
+        const patchHint = buildPatchFailurePrompt(snapshot.verifyOutput, errorLogs[0] ?? "");
+        if (planOutput.steps.length > 0) {
+          await emitProgress(
+            `plan-step 1/${planOutput.steps.length} in-progress: ${planOutput.steps[0]}`
+          );
+        }
+        await emitProgress(
+          `implementation proposal generation started (attempt=${attempt}, strategy=${strategy.name})`
+        );
+
+        const implementCall = await llm.proposeImplementation({
+          input: analyzeInput,
+          plan: {
+            ...planOutput,
+            risks: unique([
+              ...planOutput.risks,
+              `patch-summary=${patchHint.summary}`,
+              `patch-files=${patchHint.relatedFiles.join(",") || "n/a"}`,
+              `patch-instruction=${patchHint.instruction}`
+            ])
+          },
+          context: implementContext,
+          patchAttempt: attempt,
+          strategy: strategy.name,
+          lastFailure: patchHint.summary
+        });
+
+        implementOutput = ImplementOutputSchema.parse(implementCall.output);
+        snapshot.implementOutput = implementOutput;
+
+        await writePrompt(artifacts, `implement.prompt.attempt-${attempt}.json`, {
+          model: implementCall.trace.model,
+          endpoint: implementCall.trace.endpoint,
+          mode: implementCall.trace.mode,
+          systemPrompt: implementCall.trace.systemPrompt,
+          userPrompt: implementCall.trace.userPrompt,
+          rawResponse: implementCall.trace.rawResponse,
+          patchHint
+        });
+
+        await writeOutput(artifacts, implementOutputFile, {
+          strategy: strategy.name,
+          strategyIndex,
+          index: attempt,
+          inspection: implementInspection,
+          context: implementContext,
+          output: implementOutput
+        });
+      }
+
+      const transaction = new PatchTransaction(cwd);
+
+      if (!attemptCheckpoint.actionsApplied) {
+        await emitProgress(
+          `implementation action execution started (${implementOutput.actions.length} action${
+            implementOutput.actions.length === 1 ? "" : "s"
+          })`
+        );
+        const actionResults = await executeImplementationActions(implementOutput.actions, cwd, {
+          dryRun: options?.dryRun ?? analyzeInput.dryRun,
+          transaction,
+          toolLogPath: artifacts.toolLogPath,
+          allowlistPath: path.resolve("config", "commands.allowlist.json"),
+          onActionEvent: async (event) => {
+            if (event.phase === "start") {
+              if (planOutput.steps.length > 0) {
+                const planStepIndex = Math.min(event.index, planOutput.steps.length - 1);
+                await emitProgress(
+                  `plan-step ${planStepIndex + 1}/${planOutput.steps.length} in-progress: ${
+                    planOutput.steps[planStepIndex]
+                  }`
+                );
+              }
+              await emitProgress(
+                `action ${event.index + 1}/${event.total} started: ${event.action.type}`
+              );
+              return;
+            }
+
+            if (planOutput.steps.length > 0) {
+              const planStepIndex = Math.min(event.index, planOutput.steps.length - 1);
+              await emitProgress(
+                `plan-step ${planStepIndex + 1}/${planOutput.steps.length} ${
+                  event.result?.ok ? "completed" : "failed"
+                }: ${planOutput.steps[planStepIndex]}`
+              );
+            }
+
+            await emitProgress(
+              `action ${event.index + 1}/${event.total} ${
+                event.result?.ok ? "completed" : "failed"
+              }: ${event.result?.details ?? "done"}`
+            );
+          }
+        });
+
+        const hasActionFailure = actionResults.some((result) => !result.ok);
+        await writeOutput(artifacts, actionsFile, actionResults);
+
+        if (hasActionFailure) {
+          const failedActions = actionResults
+            .filter((result) => !result.ok)
+            .map((result) => ({
+              target: result.target,
+              details: result.details
+            }));
+          const actionFailureVerify = buildImplementationActionFailureOutput(failedActions);
+          await writeOutput(artifacts, verifyFile, actionFailureVerify);
+
+          snapshot.verifyOutput = actionFailureVerify;
+          await appendFailureSummary({
+            filePath: artifacts.failureSummaryPath,
+            verifyOutput: actionFailureVerify,
+            patchAttempt: attempt
+          });
+          persistedArtifacts.push(artifacts.failureSummaryPath);
+
+          attemptCheckpoint = {
+            ...attemptCheckpoint,
+            verifyCompleted: true,
+            verifyPassed: false,
+            failureSignature: actionFailureVerify.failureSignature
+          };
+          manifest = await upsertAttempt(artifacts, manifest, attemptCheckpoint);
+
+          await emitProgress("implementation actions failed; moving to PATCH strategy");
+
+          if (machine.current !== "VERIFY") {
+            await transition("VERIFY", `implementation attempt ${attempt} action failures`);
+          }
+
+          const failureSignature = actionFailureVerify.failureSignature ?? "unknown-action-failure";
+          sameFailureCount =
+            failureSignature === lastFailureSignature ? sameFailureCount + 1 : 1;
+          lastFailureSignature = failureSignature;
+          const failureSummary = summarizeFailures(actionFailureVerify);
+          errorLogs = unique([failureSummary, ...errorLogs]).slice(0, 20);
+          if (actionFailureVerify.failureSummary?.recommendation) {
+            await emitProgress(`retry-guidance: ${actionFailureVerify.failureSummary.recommendation}`);
+          }
+
+          if (controlledSingleLoop) {
+            const rootCause = summarizeRootCause(actionFailureVerify);
+            snapshot.failReason =
+              `FAIL_WITH_ARTIFACT: implementation actions failed in controlled attempt ${attempt}; cause=${rootCause}`;
+            await transition("FAIL", snapshot.failReason, {
+              controlledSingleLoop: true,
+              failureSummary
+            });
+            manifest = await updateManifest(artifacts, manifest, {
+              status: "failed",
+              patchAttempts,
+              sameFailureCount,
+              strategyIndex,
+              lastFailureSignature
+            });
+            break;
+          }
+
+          patchAttempts += 1;
+
+          if (patchAttempts > maxPatchAttempts) {
+            const rootCause = summarizeRootCause(actionFailureVerify);
+            snapshot.failReason =
+              `FAIL_WITH_ARTIFACT: implementation actions failed after ${attempt + 1} attempt(s); cause=${rootCause}`;
+            await transition("FAIL", snapshot.failReason);
+            manifest = await updateManifest(artifacts, manifest, {
+              status: "failed",
+              patchAttempts,
+              sameFailureCount,
+              strategyIndex,
+              lastFailureSignature
+            });
+            break;
+          }
+
+          let switchedStrategy = false;
+          const nextStrategy = Math.min(strategyIndex + 1, PATCH_STRATEGIES.length - 1);
+          if (nextStrategy > strategyIndex) {
+            strategyIndex = nextStrategy;
+            sameFailureCount = 0;
+            switchedStrategy = true;
+          } else if (sameFailureCount >= analyzeInput.retryPolicy.sameFailureLimit) {
+            const rootCause = summarizeRootCause(actionFailureVerify);
+            snapshot.failReason =
+              `FAIL_WITH_ARTIFACT: repeated implementation action failure signature ${failureSignature}; cause=${rootCause}`;
+            await transition("FAIL", snapshot.failReason);
+            manifest = await updateManifest(artifacts, manifest, {
+              status: "failed",
+              patchAttempts,
+              sameFailureCount,
+              strategyIndex,
+              lastFailureSignature
+            });
+            break;
+          }
+
+          await transition(
+            "PATCH",
+            switchedStrategy
+              ? `implementation actions failed (${failureSignature}), strategy switched to ${
+                  PATCH_STRATEGIES[strategyIndex].name
+                }`
+              : `implementation actions failed (${failureSignature}), retry patch`
+          );
+
+          manifest = await updateManifest(artifacts, manifest, {
+            patchAttempts,
+            sameFailureCount,
+            strategyIndex,
+            lastFailureSignature
+          });
+
+          if (analyzeInput.retryPolicy.backoffMs > 0) {
+            await sleep(analyzeInput.retryPolicy.backoffMs);
+          }
+
+          await transition(
+            "IMPLEMENT",
+            `patch retry #${patchAttempts} (${PATCH_STRATEGIES[strategyIndex].name})`
+          );
+          continue;
+        }
+
+        attemptCheckpoint = {
+          ...attemptCheckpoint,
+          actionsApplied: true
+        };
+        manifest = await upsertAttempt(artifacts, manifest, attemptCheckpoint);
+      }
+
+      if (machine.current !== "VERIFY") {
+        await transition("VERIFY", `implementation attempt ${attempt}`);
+      }
+
+      const beforeVerify = await pluginManager.runHook("beforeVerify", {
+        cwd,
+        runId: artifacts.runId,
+        input: analyzeInput,
+        plan: planOutput,
+        implement: implementOutput,
+        stageAttempt: attempt
+      });
+      pluginContributions.push(...beforeVerify.contributions);
+      pluginWarnings.push(...beforeVerify.warnings);
+
+      const cachedVerify = await readOutput<VerifyOutput>(artifacts, verifyFile);
+      let verifyOutput: VerifyOutput;
+
+      if (cachedVerify && attemptCheckpoint.verifyCompleted) {
+        verifyOutput = VerifyOutputSchema.parse(cachedVerify);
+      } else {
+        if (planOutput.steps.length > 0) {
+          await emitProgress(
+            `plan-step ${planOutput.steps.length}/${planOutput.steps.length} in-progress: ${
+              planOutput.steps[planOutput.steps.length - 1]
+            }`
+          );
+        }
+        await emitProgress("quality gate verification started");
+        const requestedGateProfile =
+          analyzeInput.gateProfile ??
+          inferGateProfileFromObjective(analyzeInput.objective) ??
+          resolvedMode.policy.gateProfile;
+        await emitProgress(`verify profile selected: ${requestedGateProfile}`);
+        verifyOutput = VerifyOutputSchema.parse(
+          await runQualityGates({
+            cwd,
+            verifyLogPath: artifacts.verifyLogPath,
+            profileName: requestedGateProfile,
+            profiles: listVerifyProfiles(),
+            dryRun: options?.dryRun ?? analyzeInput.dryRun,
+            allowlistPath: path.resolve("config", "commands.allowlist.json"),
+            toolLogPath: artifacts.toolLogPath,
+            onGateEvent: async (event) => {
+              if (event.phase === "start") {
+                await emitProgress(
+                  `verify gate ${event.index + 1}/${event.total} started: ${event.gate.name}`
+                );
+                return;
+              }
+
+              await emitProgress(
+                `verify gate ${event.index + 1}/${event.total} ${
+                  event.passed ? "passed" : "failed"
+                }: ${event.gate.name}`
+              );
+            }
+          })
+        );
+
+        const objectiveGate = await runObjectiveContractGate({
+          objective: analyzeInput.objective,
+          cwd,
+          verifyLogPath: artifacts.verifyLogPath
+        });
+        if (objectiveGate) {
+          verifyOutput = VerifyOutputSchema.parse(
+            finalizeVerifyOutput([...verifyOutput.gateResults, objectiveGate])
+          );
+          await emitProgress(
+            `verify gate ${verifyOutput.gateResults.length}/${verifyOutput.gateResults.length} ${
+              objectiveGate.passed ? "passed" : "failed"
+            }: ${objectiveGate.name}`
+          );
+        }
+
+        await writeOutput(artifacts, verifyFile, verifyOutput);
+      }
+
       snapshot.verifyOutput = verifyOutput;
+      await appendFailureSummary({
+        filePath: artifacts.failureSummaryPath,
+        verifyOutput,
+        patchAttempt: attempt
+      });
+      persistedArtifacts.push(artifacts.failureSummaryPath);
 
-      await writeOutput(artifacts, `verify.output.attempt-${patchAttempts}.json`, verifyOutput);
+      attemptCheckpoint = {
+        ...attemptCheckpoint,
+        verifyCompleted: true,
+        verifyPassed: verifyOutput.passed,
+        failureSignature: verifyOutput.failureSignature
+      };
+      manifest = await upsertAttempt(artifacts, manifest, attemptCheckpoint);
 
-      if (verifyOutput.passed) {
+      if (!failed(verifyOutput)) {
         await transition("FINISH", "all quality gates passed");
+        manifest = await updateManifest(artifacts, manifest, {
+          status: "finished",
+          patchAttempts,
+          sameFailureCount,
+          strategyIndex,
+          lastFailureSignature
+        });
         break;
       }
 
       const failureSignature = verifyOutput.failureSignature ?? "unknown-failure";
       sameFailureCount = failureSignature === lastFailureSignature ? sameFailureCount + 1 : 1;
       lastFailureSignature = failureSignature;
-
-      snapshot.sameFailureCount = sameFailureCount;
-
       const failureSummary = summarizeFailures(verifyOutput);
       errorLogs = unique([failureSummary, ...errorLogs]).slice(0, 20);
 
-      if (patchAttempts >= analyzeInput.retryPolicy.maxAttempts) {
-        snapshot.failReason = `Verification failed after ${patchAttempts + 1} attempt(s)`;
+      if (controlledSingleLoop) {
+        const rootCause = summarizeRootCause(verifyOutput);
+        snapshot.failReason = `FAIL_WITH_ARTIFACT: verification failed after controlled attempt ${attempt}; cause=${rootCause}`;
+        await transition("FAIL", snapshot.failReason, {
+          controlledSingleLoop: true,
+          failureSummary
+        });
+        manifest = await updateManifest(artifacts, manifest, {
+          status: "failed",
+          patchAttempts,
+          sameFailureCount,
+          strategyIndex,
+          lastFailureSignature
+        });
+        break;
+      }
+
+      if ((analyzeInput.retryPolicy.rollbackOnVerifyFail || attempt === 0) && !attemptCheckpoint.rolledBack) {
+        await rollbackTransaction(transaction, { toolLogPath: artifacts.toolLogPath });
+        attemptCheckpoint = {
+          ...attemptCheckpoint,
+          rolledBack: true
+        };
+        manifest = await upsertAttempt(artifacts, manifest, attemptCheckpoint);
+      }
+
+      patchAttempts += 1;
+
+      if (patchAttempts > maxPatchAttempts) {
+        const rootCause = summarizeRootCause(verifyOutput);
+        snapshot.failReason = `FAIL_WITH_ARTIFACT: verification failed after ${attempt + 1} attempt(s); cause=${rootCause}`;
         await transition("FAIL", snapshot.failReason);
+        manifest = await updateManifest(artifacts, manifest, {
+          status: "failed",
+          patchAttempts,
+          sameFailureCount,
+          strategyIndex,
+          lastFailureSignature
+        });
         break;
       }
 
@@ -341,11 +1148,18 @@ export async function runLoop(
         if (nextStrategy > strategyIndex) {
           strategyIndex = nextStrategy;
           sameFailureCount = 0;
-          snapshot.sameFailureCount = sameFailureCount;
           switchedStrategy = true;
         } else {
-          snapshot.failReason = `Repeated failure signature ${failureSignature} with no remaining strategy`;
+          const rootCause = summarizeRootCause(verifyOutput);
+          snapshot.failReason = `FAIL_WITH_ARTIFACT: repeated failure signature ${failureSignature} with no remaining strategy; cause=${rootCause}`;
           await transition("FAIL", snapshot.failReason);
+          manifest = await updateManifest(artifacts, manifest, {
+            status: "failed",
+            patchAttempts,
+            sameFailureCount,
+            strategyIndex,
+            lastFailureSignature
+          });
           break;
         }
       }
@@ -357,8 +1171,12 @@ export async function runLoop(
           : `verify failed (${failureSignature}), retry patch`
       );
 
-      patchAttempts += 1;
-      snapshot.patchAttempts = patchAttempts;
+      manifest = await updateManifest(artifacts, manifest, {
+        patchAttempts,
+        sameFailureCount,
+        strategyIndex,
+        lastFailureSignature
+      });
 
       if (analyzeInput.retryPolicy.backoffMs > 0) {
         await sleep(analyzeInput.retryPolicy.backoffMs);
@@ -383,22 +1201,43 @@ export async function runLoop(
       }
     }
 
+    if (manifest) {
+      manifest = await updateManifest(artifacts, manifest, {
+        status: "failed"
+      });
+    }
+
     await writeOutput(artifacts, "runtime.error.json", {
       message,
       stack
     });
+  } finally {
+    await writeOutput(artifacts, "plugins.output.json", {
+      contributions: pluginContributions,
+      warnings: pluginWarnings
+    });
+
+    await releaseRunLock(artifacts.lockPath);
   }
 
   snapshot.state = machine.current;
-  snapshot.patchAttempts = patchAttempts;
-  snapshot.sameFailureCount = sameFailureCount;
+  snapshot.patchAttempts = manifest.patchAttempts;
+  snapshot.sameFailureCount = manifest.sameFailureCount;
+  snapshot.lastFailureSignature = manifest.lastFailureSignature;
 
   await writeOutput(artifacts, "final.snapshot.json", snapshot);
+  await saveManifest(artifacts, manifest);
+
+  const failedRun = snapshot.state === "FAIL";
+  const failureSummary = snapshot.verifyOutput ? summarizeFailures(snapshot.verifyOutput) : undefined;
 
   return {
     runId: artifacts.runId,
     artifactDir: artifacts.runDir,
     finalState: snapshot.state,
-    snapshot
+    snapshot,
+    failed: failedRun,
+    failureSummary,
+    persistedArtifacts: unique(persistedArtifacts)
   };
 }

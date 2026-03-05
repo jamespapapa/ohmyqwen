@@ -1,59 +1,116 @@
-# Architecture
+# Architecture (v0.1.0-alpha)
 
-`ohmyqwen` v0.1은 런타임이 제어권을 가지는 상태머신 기반 로컬 에이전틱 루프입니다.
+`ohmyqwen`은 런타임 제어형 상태머신 기반 로컬 에이전틱 코딩 루프다.
 
 ## 1) Control Plane
 
-- 구성: `src/core/state-machine.ts`, `src/loop/runner.ts`
-- 상태: `ANALYZE -> PLAN -> IMPLEMENT -> VERIFY -> (FINISH | PATCH | FAIL)`
-- 책임: 단계 강제, 실패 시 PATCH 재진입, 반복 실패 시 전략 전환/FAIL
+- 파일: `src/core/state-machine.ts`, `src/loop/runner.ts`, `src/loop/run-state.ts`
+- 상태:
+  - `ANALYZE -> WAIT_CLARIFICATION -> PLAN -> IMPLEMENT -> VERIFY -> (FINISH | PATCH | FAIL)`
+- 역할:
+  - 단계 전이 강제
+  - PATCH 재시도/전략 전환
+  - run manifest 기반 resume
+  - idempotent stage 재진입
 
-## 2) Execution Plane
+## 2) Durable Run State Plane
 
-- 구성: `src/tools/executor.ts`
-- 책임:
-  - 파일 읽기/쓰기/패치
-  - allowlist 명령 실행 (`pnpm`, `node`, `git`, `npx`)
-- 목적: 최소 권한과 예측 가능한 실행 경로 유지
+- 경로: `.ohmyqwen/runs/<runId>/`
+- 핵심 파일:
+  - `run.json` (현재 stage/loop/retry/failure signature/체크포인트)
+  - `run.lock` (동일 runId 동시 실행 방지)
+  - `state-transitions.jsonl`
+- 역할:
+  - 중단/크래시 후 이어서 실행
+  - 단계별 체크포인트(계획 완료, attempt별 action/verify 완료 여부)
 
 ## 3) Context Plane
 
-- 구성: `src/context/packer.ts`
-- 책임:
-  - `small/mid/big` 3계층 컨텍스트
-  - 호출별 토큰 예산 하드캡
-  - 전체 파일 대신 `symbol / errorLogs / diffSummary` 중심 전달
+- 파일: `src/context/packer.ts`
+- 기능:
+  - `small/mid/big` 계층 컨텍스트
+  - stage별 토큰 budget factor + hard-cap
+  - relevance scoring(작업 설명/diff/error/target 파일)
+  - 증분 인덱싱 캐시: `.ohmyqwen/cache/context-index.json`
+- CLI:
+  - `ohmyqwen context inspect --task ...`
 
 ## 4) LLM Plane
 
-- 구성: `src/llm/client.ts`
-- 책임: PLAN/IMPLEMENT 제안 생성
-- 연동: OpenAI-compatible endpoint
-- 환경변수:
-  - `OHMYQWEN_LLM_BASE_URL`
-  - `OHMYQWEN_LLM_API_KEY` (옵션)
-  - `OHMYQWEN_LLM_MODEL`
-- 미설정 시 fallback 모드로 안전 동작
+- 파일: `src/llm/client.ts`
+- 기능:
+  - PLAN/IMPLEMENT JSON 제안
+  - OpenAI-compatible endpoint 호출
+  - 미설정 시 fallback deterministic 출력
 
-## 5) Gate Plane
+## 5) Execution Plane
 
-- 구성: `src/gates/verify.ts`
-- 게이트 순서: `build -> test -> lint`
-- 출력: 구조화 결과 + `failureSignature`
-- 정책: VERIFY 통과 전 FINISH 금지
+- 파일: `src/tools/executor.ts`
+- 기능:
+  - workspace 경계 보호(path escape 차단)
+  - command allowlist (`config/commands.allowlist.json`)
+  - patch transaction + rollback
+  - dry-run
+  - 실행 로그(JSONL): `tools.log`
 
-## 6) Artifacts Plane
+## 6) Gate Plane
 
-- 경로: `.ohmyqwen/runs/<runId>/`
-- 산출물:
-  - `state-transitions.jsonl`
-  - `prompts/`
-  - `outputs/`
-  - `verify.log`
-- 목표: 성공/실패 모두 재현 가능한 실행 흔적 유지
+- 파일: `src/gates/verify.ts`
+- 기본 순서: `build -> test -> lint`
+- 기능:
+  - 런타임 파일 기반 빌드도구 자동 감지(npm/gradle/maven)
+  - profile override (`default/strict/service`)
+  - failure classifier (compile/test/lint/runtime/tooling/infra)
+  - failure signature/failure summary 생성
+  - verify 상세 로그(`verify.log`), failure-summary 아티팩트
 
-## JSON I/O & Schema
+### Objective Contract Gate (요구사항 정합성 게이트)
+
+- 파일: `src/gates/objective-contract.ts`
+- 역할:
+  - objective에서 요구한 계약(예: express 사용, `/hello` 엔드포인트, `npm run start`)을 정적/동적 검사
+  - 필요 시 서버 smoke check 수행 (`pnpm run start` + 랜덤 포트 + endpoint 응답 검증)
+  - 결과를 `objective-contract` 게이트로 `verifyOutput.gateResults`에 병합
+- 목적:
+  - build/test/lint가 통과해도 사용자 요구와 어긋난 산출물이 `FINISH`로 넘어가지 않도록 차단
+
+## 7) Mode Policy Plane
+
+- 파일: `src/modes/policies.ts`
+- 모드: `feature/refactor/medium/microservice (+ auto)`
+- 기능:
+  - auto mode 추론 + 근거 기록
+  - 모드별 max loop/retry/gate profile/planning guidance
+  - 모호 요청 시 clarifying question 생성 + 대기 상태(`WAIT_CLARIFICATION`)
+
+## 8) Plugin Plane (Optional Hooks)
+
+- 파일: `src/plugins/*`
+- 훅:
+  - `beforeAnalyze`, `beforePlan`, `beforeImplement`, `beforeVerify`
+- 기본 플러그인:
+  - `context-preload`
+  - `gitlab-logs` (읽기 전용, env 없으면 degrade)
+- 설정:
+  - `config/plugins.json`
+- 출력:
+  - `outputs/plugins.output.json`
+
+## 9) Localhost Console Plane
+
+- 서버: `src/server/app.ts`, `src/server/routes.ts`, `src/server/store.ts`
+- 웹: `web/index.html`, `web/app.js`
+- Next.js 웹 콘솔: `console-next/` (프록시 API 포함)
+- API:
+  - `POST /api/runs`
+  - `GET /api/runs/:id`
+  - `GET /api/runs/:id/events`
+  - `GET /api/runs/:id/artifacts`
+
+## 10) JSON Schema / Contracts
 
 - 스키마: `schemas/*.json`
 - 런타임 검증: `zod` (`src/core/types.ts`)
-- 목적: 모델 출력 형상 불일치 조기 차단
+- 원칙:
+  - 스키마 불일치 즉시 오류
+  - 구조화 JSON 우선

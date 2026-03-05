@@ -1,6 +1,6 @@
 {
   "name": "ohmyqwen",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "description": "Local agentic coding runtime skeleton for Qwen3 in closed network",
   "type": "module",
   "bin": {
@@ -14,7 +14,11 @@
     "bundle:offline": "bash ./scripts/bundle-offline.sh",
     "run": "node dist/cli.js run",
     "plan": "node dist/cli.js plan",
-    "verify": "node dist/cli.js verify"
+    "verify": "node dist/cli.js verify",
+    "serve": "node dist/cli.js serve",
+    "ui:dev": "pnpm --dir console-next dev",
+    "ui:build": "pnpm --dir console-next build",
+    "ui:start": "pnpm --dir console-next start"
   },
   "keywords": [
     "agent",

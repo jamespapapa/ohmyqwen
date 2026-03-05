@@ -5,15 +5,13 @@
   "additionalProperties": false,
   "required": ["passed", "gateResults"],
   "properties": {
-    "passed": {
-      "type": "boolean"
-    },
+    "passed": { "type": "boolean" },
     "gateResults": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "passed", "command", "args"],
+        "required": ["name", "passed", "command", "args", "durationMs"],
         "properties": {
           "name": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
@@ -22,21 +20,48 @@
             "type": "array",
             "items": { "type": "string" }
           },
-          "details": { "type": "string", "default": "" }
+          "details": { "type": "string", "default": "" },
+          "durationMs": { "type": "integer", "minimum": 0 },
+          "category": {
+            "type": "string",
+            "enum": ["compile", "test", "lint", "runtime", "tooling", "infra"]
+          }
         }
       }
     },
-    "failureSignature": {
-      "type": "string"
+    "failureSignature": { "type": "string" },
+    "failureSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "signature", "coreLines", "relatedFiles", "recommendation"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["compile", "test", "lint", "runtime", "tooling", "infra"]
+        },
+        "signature": { "type": "string", "minLength": 1 },
+        "coreLines": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "relatedFiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "recommendation": { "type": "string" }
+      }
     },
     "retryPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxAttempts", "backoffMs", "sameFailureLimit"],
+      "required": ["maxAttempts", "backoffMs", "sameFailureLimit", "rollbackOnVerifyFail"],
       "properties": {
         "maxAttempts": { "type": "integer", "minimum": 1 },
         "backoffMs": { "type": "integer", "minimum": 0 },
-        "sameFailureLimit": { "type": "integer", "minimum": 1 }
+        "sameFailureLimit": { "type": "integer", "minimum": 1 },
+        "rollbackOnVerifyFail": { "type": "boolean", "default": false }
       }
     }
   }

@@ -1,0 +1,14 @@
+{
+  "plugins": [
+    {
+      "name": "context-preload",
+      "enabled": true,
+      "options": {}
+    },
+    {
+      "name": "gitlab-logs",
+      "enabled": true,
+      "options": {}
+    }
+  ]
+}

@@ -1,122 +1,178 @@
-# ohmyqwen
+# ohmyqwen (v0.1.0-alpha)
 
-폐쇄망 환경에서 Qwen3를 안전하게 활용하기 위한 로컬 에이전틱 코딩 런타임(v0.1)입니다.
+폐쇄망 환경에서 Qwen3 계열 모델을 **상태머신 제어** 하에 안전하게 사용하는 로컬 에이전틱 코딩 런타임입니다.
 
 핵심 원칙:
 
-- 모델은 제안/생성만 수행
-- 제어권은 상태머신 런타임이 보유
-- 짧은 작업세션(short session)
-- JSON 스키마 기반 입출력
+- 모델은 제안만 수행, 최종 제어는 런타임이 보유
+- `ANALYZE -> PLAN -> IMPLEMENT -> VERIFY -> (FINISH | PATCH | FAIL)` 강제
 - `build -> test -> lint` 품질게이트 통과 전 `FINISH` 금지
+- 실패/중단 시에도 run 상태와 아티팩트 보존
 
-## 설치
+## 5분 시작 가이드
 
 ```bash
 pnpm install
+pnpm build
 ```
 
-## 빌드
+기본 실행:
 
 ```bash
-pnpm run build
+pnpm run run -- --input ./samples/request.e2e.json
 ```
 
-## LLM 어댑터 환경변수
+품질게이트만 실행:
 
-OpenAI-compatible 로컬 엔드포인트를 지원합니다.
+```bash
+pnpm run verify
+```
 
-- `OHMYQWEN_LLM_BASE_URL` (예: `http://127.0.0.1:8000` 또는 `http://127.0.0.1:8000/v1`)
-- `OHMYQWEN_LLM_API_KEY` (옵션, 없어도 동작)
-- `OHMYQWEN_LLM_MODEL` (예: `qwen3-coder`)
+localhost 콘솔:
 
-세 변수가 완전히 설정되지 않으면 fallback 모드로 동작합니다.
+```bash
+pnpm run serve
+# http://127.0.0.1:4311
+```
+
+Next.js 콘솔(UI):
+
+```bash
+pnpm --dir console-next install
+pnpm run ui:dev
+# http://127.0.0.1:3000
+```
+
+## 환경변수
+
+`.env.example` 참고.
+CLI는 현재 작업 디렉토리의 `.env`를 자동 로드합니다(이미 export된 값은 덮어쓰지 않음).
+
+LLM (OpenAI-compatible):
+
+- `OHMYQWEN_LLM_BASE_URL`
+- `OHMYQWEN_LLM_MODEL`
+- `OHMYQWEN_LLM_API_KEY` (옵션, Bearer)
+- `OHMYQWEN_LLM_BASIC_AUTH` (옵션, `user:password` 또는 `user/password`)
+- `OHMYQWEN_LLM_BASIC_AUTH_USER` / `OHMYQWEN_LLM_BASIC_AUTH_PASSWORD` (옵션)
+- `OHMYQWEN_LLM_ENDPOINT_KIND` (옵션: `auto` | `openai` | `opencode`)
+
+미설정 시 fallback 모드로 안전 동작.
+
+참고: `opencode serve`를 LLM 백엔드로 사용할 때는 다음처럼 설정:
+
+```env
+OHMYQWEN_LLM_BASE_URL=http://localhost:4096
+OHMYQWEN_LLM_MODEL=openai/gpt-5.2
+OHMYQWEN_LLM_ENDPOINT_KIND=opencode
+OHMYQWEN_LLM_BASIC_AUTH=opencode/mypassword
+```
+
+플러그인(GitLab 로그, 옵션):
+
+- `OHMYQWEN_GITLAB_BASE_URL`
+- `OHMYQWEN_GITLAB_PROJECT_ID`
+- `OHMYQWEN_GITLAB_TOKEN`
+
+미설정 시 자동 비활성(경고만 기록).
 
 ## CLI
 
 ```bash
-pnpm run run
-pnpm run plan
-pnpm run verify
+# 전체 루프
+pnpm run run -- --input ./samples/request.e2e.json
+
+# run 재개
+pnpm run run -- --resume <runId> --input ./samples/request.e2e.json
+
+# mode 강제 지정
+pnpm run run -- --mode feature --input ./samples/request.e2e.json
+
+# dry-run (쓰기/패치/명령 시뮬레이션)
+pnpm run run -- --dry-run --input ./samples/request.e2e.json
+
+# PLAN만
+pnpm run plan -- --input ./samples/request.e2e.json
+
+# VERIFY만 (프로파일)
+pnpm run verify -- --profile strict
+
+# 컨텍스트 선택 결과 점검
+node dist/cli.js context inspect --task "fix verify" --files "src/loop/runner.ts,src/gates/verify.ts" --tier mid --budget 1600 --stage PLAN
+
+# localhost API + 웹 콘솔
+pnpm run serve
+
+# Next.js UI
+pnpm --dir console-next install
+pnpm run ui:dev
 ```
 
-직접 실행:
+## localhost Runtime API
 
+- `POST /api/runs` (task/mode 입력으로 백그라운드 run 시작)
+- `GET /api/runs/:id`
+- `GET /api/runs/:id/events`
+- `GET /api/runs/:id/artifacts`
+
+웹 콘솔(기본): `web/index.html`, `web/app.js`  
+웹 콘솔(Next.js): `console-next/`
+
+Next.js UI 실행 순서:
+
+1) 터미널 A: 런타임 API 서버
 ```bash
-node dist/cli.js run -i ./samples/request.e2e.json
-node dist/cli.js plan -i ./samples/request.e2e.json
-node dist/cli.js verify
+pnpm run serve
 ```
-
-## v0.1 End-to-End 실행 예시
-
-fallback(환경변수 없이):
-
+2) 터미널 B: Next.js 콘솔
 ```bash
-node dist/cli.js run -i ./samples/request.e2e.json
+pnpm --dir console-next install
+pnpm run ui:dev
 ```
 
-로컬 LLM 연동:
+브라우저에서 `http://127.0.0.1:3000` 접속.
 
-```bash
-export OHMYQWEN_LLM_BASE_URL="http://127.0.0.1:8000"
-export OHMYQWEN_LLM_MODEL="qwen3-coder"
-# export OHMYQWEN_LLM_API_KEY="<optional>"
+## Run 내구성/복구
 
-node dist/cli.js run -i ./samples/request.e2e.json
-```
+각 실행은 `.ohmyqwen/runs/<runId>/`에 저장됩니다.
 
-## 상태머신 루프
-
-- `ANALYZE -> PLAN -> IMPLEMENT -> VERIFY -> (FINISH | PATCH | FAIL)`
-- VERIFY 실패 시 PATCH로 전이 후 재시도
-- 동일 실패 시그니처 반복 시 전략 전환(`small -> mid -> big`) 또는 `FAIL`
-
-## 런 아티팩트
-
-각 실행은 `.ohmyqwen/runs/<runId>/` 아래에 저장됩니다.
-
+- `run.json` (현재 stage, loop/retry 카운터, failure signature, 체크포인트)
+- `run.lock` (동시 실행 방지)
 - `state-transitions.jsonl`
 - `prompts/`
 - `outputs/`
 - `verify.log`
+- `tools.log`
 
-실패 시에도 마지막 상태와 에러 정보는 `outputs/final.snapshot.json`, `outputs/runtime.error.json`(해당 시)에 남습니다.
+중단 후 `--resume <runId>`로 이어서 실행 가능.
 
-## 품질게이트
+## 실패 시 확인 위치
 
-```bash
-pnpm run build
-pnpm run test
-pnpm run lint
-```
+- 최종 상태: `outputs/final.snapshot.json`
+- 런타임 예외: `outputs/runtime.error.json`
+- 검증 실패 요약: `outputs/failure-summary.json`
+- 검증 상세: `verify.log`
+- 실행 도구 로그: `tools.log`
 
-`verify` 모드는 위 순서로 게이트를 실행합니다.
+추가로, objective에 API/서버 요구가 있으면 `objective-contract` 게이트가 다음을 점검합니다:
 
-## 폐쇄망 반입 (빌드 완료 바이너리)
+- `scripts.start` / `scripts.dev` 요구 충족 여부
+- express 의존성 존재 여부
+- 엔드포인트/응답 텍스트 정합성
+- 필요 시 서버 smoke check(랜덤 포트에서 endpoint 응답 확인)
 
-온라인(반출 준비) 환경:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run bundle:offline
-```
-
-생성물:
-
-- `release/ohmyqwen-offline-v<version>.tar.gz`
-
-폐쇄망(반입 후):
+서버 접근 문제가 있으면 포트 충돌을 먼저 확인하세요:
 
 ```bash
-tar -xzf ohmyqwen-offline-v<version>.tar.gz
-cd ohmyqwen-offline
-npx --no-install ohmyqwen run -i ./samples/request.e2e.json
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+PORT=3100 npm run start
 ```
 
-다른 모드:
+## 추가 문서
 
-```bash
-npx --no-install ohmyqwen plan -i ./samples/request.e2e.json
-npx --no-install ohmyqwen verify
-```
+- `docs/ARCHITECTURE.md`
+- `docs/MODES.md`
+- `docs/PLUGINS.md`
+- `docs/OPERATIONS.md`
+- `docs/REQUIREMENT-COMPLIANCE.md`
+- `examples/sample-task.md`
