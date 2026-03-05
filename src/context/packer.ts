@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ContextTier, ContextTierSchema } from "../core/types.js";
+import {
+  ResolvedRetrievalConfig,
+  RetrievalDiagnostics,
+  RetrievalDocument,
+  resolveRetrievalConfig,
+  runRetrievalChain
+} from "../retrieval/index.js";
+import { unique as uniqueStrings } from "../retrieval/utils.js";
 
 export interface PackContextInput {
   objective: string;
@@ -12,6 +20,7 @@ export interface PackContextInput {
   tier: ContextTier;
   tokenBudget?: number;
   stage?: "PLAN" | "IMPLEMENT" | "VERIFY";
+  stageTokenCaps?: Partial<Record<"PLAN" | "IMPLEMENT" | "VERIFY", number>>;
 }
 
 export interface PackedContext {
@@ -55,10 +64,26 @@ interface ContextIndexEntry {
   updatedAt: string;
 }
 
+interface ContextIndexMetadata {
+  chunkVersion: string;
+  retrievalVersion: string;
+  providerFingerprint: string;
+  embeddingModel: string;
+}
+
 interface ContextIndexFile {
-  version: 1;
+  version: 2;
   updatedAt: string;
   entries: Record<string, ContextIndexEntry>;
+  metadata: ContextIndexMetadata;
+}
+
+export interface ContextLifecycleDiagnostics {
+  stale: boolean;
+  reasons: string[];
+  reindexed: boolean;
+  expected: ContextIndexMetadata;
+  current: ContextIndexMetadata | null;
 }
 
 export interface ContextFragment {
@@ -78,6 +103,17 @@ export interface ContextInspection {
   reusedFiles: string[];
   fragments: ContextFragment[];
   packed: PackedContext;
+  retrieval: RetrievalDiagnostics;
+  lifecycle: ContextLifecycleDiagnostics;
+}
+
+export interface ContextIndexDiagnosis {
+  cachePath: string;
+  stale: boolean;
+  reasons: string[];
+  expected: ContextIndexMetadata;
+  current: ContextIndexMetadata | null;
+  reindexCommand: string;
 }
 
 const DEFAULT_BUDGET: Record<ContextTier, number> = {
@@ -205,7 +241,8 @@ export function packContext(input: PackContextInput): PackedContext {
   const tier = ContextTierSchema.parse(input.tier);
   const stage = input.stage ?? "IMPLEMENT";
   const requestedBudget = input.tokenBudget ?? DEFAULT_BUDGET[tier];
-  const hardCapTokens = clampBudget(withStageBudget(requestedBudget, stage));
+  const stageCap = input.stageTokenCaps?.[stage];
+  const hardCapTokens = clampBudget(stageCap ?? withStageBudget(requestedBudget, stage));
 
   let usedTokens = 0;
   let truncated = false;
@@ -379,19 +416,90 @@ function computeHash(content: string): string {
   return createHash("sha1").update(content).digest("hex");
 }
 
-async function loadIndex(cachePath: string): Promise<ContextIndexFile> {
+function buildProviderFingerprint(config: ResolvedRetrievalConfig): string {
+  const payload = JSON.stringify({
+    providerPriority: config.providerPriority,
+    topK: config.topK,
+    timeoutMs: config.timeoutMs,
+    stageTokenCaps: config.stageTokenCaps
+  });
+  return createHash("sha1").update(payload).digest("hex").slice(0, 16);
+}
+
+function buildLifecycleMetadata(config: ResolvedRetrievalConfig): ContextIndexMetadata {
+  return {
+    chunkVersion: config.lifecycle.chunkVersion,
+    retrievalVersion: config.lifecycle.retrievalVersion,
+    providerFingerprint: buildProviderFingerprint(config),
+    embeddingModel: config.embedding.enabled ? config.embedding.model : "disabled"
+  };
+}
+
+function createEmptyIndex(metadata: ContextIndexMetadata): ContextIndexFile {
+  return {
+    version: 2,
+    updatedAt: new Date(0).toISOString(),
+    entries: {},
+    metadata
+  };
+}
+
+function sameMetadata(a: ContextIndexMetadata, b: ContextIndexMetadata): boolean {
+  return (
+    a.chunkVersion === b.chunkVersion &&
+    a.retrievalVersion === b.retrievalVersion &&
+    a.providerFingerprint === b.providerFingerprint &&
+    a.embeddingModel === b.embeddingModel
+  );
+}
+
+async function loadIndex(
+  cachePath: string,
+  expectedMetadata: ContextIndexMetadata
+): Promise<{ index: ContextIndexFile; staleReasons: string[]; currentMetadata: ContextIndexMetadata | null }> {
   try {
     const raw = await fs.readFile(cachePath, "utf8");
-    const parsed = JSON.parse(raw) as ContextIndexFile;
-    if (parsed.version !== 1 || typeof parsed.entries !== "object") {
-      throw new Error("invalid cache schema");
+    const parsed = JSON.parse(raw) as
+      | ContextIndexFile
+      | { version?: number; entries?: Record<string, ContextIndexEntry> };
+
+    if (parsed && typeof parsed === "object" && parsed.version === 2 && "entries" in parsed) {
+      const typed = parsed as ContextIndexFile;
+      const metadata = typed.metadata;
+      const staleReasons: string[] = [];
+
+      if (!metadata || !sameMetadata(metadata, expectedMetadata)) {
+        staleReasons.push("context-index-metadata-mismatch");
+      }
+
+      return {
+        index: {
+          ...typed,
+          metadata: metadata ?? expectedMetadata
+        },
+        staleReasons,
+        currentMetadata: metadata ?? null
+      };
     }
-    return parsed;
+
+    if (parsed && typeof parsed === "object" && parsed.version === 1 && "entries" in parsed) {
+      return {
+        index: createEmptyIndex(expectedMetadata),
+        staleReasons: ["context-index-schema-v1-detected"],
+        currentMetadata: null
+      };
+    }
+
+    return {
+      index: createEmptyIndex(expectedMetadata),
+      staleReasons: ["context-index-invalid-schema"],
+      currentMetadata: null
+    };
   } catch {
     return {
-      version: 1,
-      updatedAt: new Date(0).toISOString(),
-      entries: {}
+      index: createEmptyIndex(expectedMetadata),
+      staleReasons: [],
+      currentMetadata: null
     };
   }
 }
@@ -411,45 +519,8 @@ function safeRelative(filePath: string, cwd: string): string {
   throw new Error(`file path escapes workspace: ${filePath}`);
 }
 
-function scoreFragment(input: {
-  entry: ContextIndexEntry;
-  task: string;
-  targetFiles: string[];
-  diffSummary: string[];
-  errorLogs: string[];
-  changed: boolean;
-}): number {
-  let score = 1;
-  const taskLower = input.task.toLowerCase();
-  const pathLower = input.entry.path.toLowerCase();
-
-  if (input.targetFiles.some((file) => file.toLowerCase() === pathLower)) {
-    score += 12;
-  }
-
-  if (input.changed) {
-    score += 6;
-  }
-
-  if (input.diffSummary.some((line) => line.toLowerCase().includes(pathLower))) {
-    score += 5;
-  }
-
-  if (input.errorLogs.some((line) => line.toLowerCase().includes(pathLower))) {
-    score += 4;
-  }
-
-  for (const symbol of input.entry.symbols) {
-    if (taskLower.includes(symbol.toLowerCase())) {
-      score += 3;
-    }
-  }
-
-  return score;
-}
-
 function unique(items: string[]): string[] {
-  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+  return uniqueStrings(items);
 }
 
 export async function inspectContext(options: {
@@ -462,14 +533,34 @@ export async function inspectContext(options: {
   targetFiles?: string[];
   diffSummary?: string[];
   errorLogs?: string[];
+  verifyFeedback?: string[];
+  patchAttempt?: number;
+  retrievalConfig?: ResolvedRetrievalConfig;
   cachePath?: string;
 }): Promise<ContextInspection> {
   const cwd = options.cwd ?? process.cwd();
+  const retrievalConfig = options.retrievalConfig ?? (await resolveRetrievalConfig(cwd));
+  const stage = options.stage ?? "IMPLEMENT";
   const cachePath =
     options.cachePath ?? path.resolve(cwd, ".ohmyqwen", "cache", "context-index.json");
   const files = unique(options.files);
+  const expectedMetadata = buildLifecycleMetadata(retrievalConfig);
 
-  const index = await loadIndex(cachePath);
+  const loaded = await loadIndex(cachePath, expectedMetadata);
+  const index = loaded.index;
+  const lifecycle: ContextLifecycleDiagnostics = {
+    stale: loaded.staleReasons.length > 0,
+    reasons: [...loaded.staleReasons],
+    reindexed: false,
+    expected: expectedMetadata,
+    current: loaded.currentMetadata
+  };
+
+  if (lifecycle.stale && retrievalConfig.lifecycle.autoReindexOnStale) {
+    index.entries = {};
+    lifecycle.reindexed = true;
+  }
+
   const changedFiles: string[] = [];
   const reusedFiles: string[] = [];
 
@@ -519,45 +610,78 @@ export async function inspectContext(options: {
   }
 
   index.updatedAt = new Date().toISOString();
+  index.metadata = expectedMetadata;
   await saveIndex(cachePath, index);
 
-  const fragments: ContextFragment[] = Object.values(index.entries)
+  const documents: RetrievalDocument[] = Object.values(index.entries)
     .filter((entry) => files.includes(entry.path))
-    .map((entry) => {
-      const changed = changedFiles.includes(entry.path);
-      const score = scoreFragment({
-        entry,
-        task: options.task,
-        targetFiles: options.targetFiles ?? [],
-        diffSummary: options.diffSummary ?? [],
-        errorLogs: options.errorLogs ?? [],
-        changed
-      });
+    .map((entry) => ({
+      path: entry.path,
+      hash: entry.hash,
+      symbols: entry.symbols,
+      dependencies: entry.dependencies,
+      fileSummary: entry.fileSummary,
+      moduleSummary: entry.moduleSummary,
+      architectureSummary: entry.architectureSummary,
+      changed: changedFiles.includes(entry.path)
+    }));
+
+  const retrieval = await runRetrievalChain({
+    cwd,
+    query: {
+      stage,
+      task: options.task,
+      targetFiles: unique(options.targetFiles ?? []),
+      diffSummary: unique(options.diffSummary ?? []),
+      errorLogs: unique(options.errorLogs ?? []),
+      verifyFeedback: unique(options.verifyFeedback ?? []),
+      patchAttempt: Math.max(0, options.patchAttempt ?? 0)
+    },
+    documents,
+    config: retrievalConfig
+  });
+
+  const docByPath = new Map(documents.map((document) => [document.path, document]));
+
+  const fragments: ContextFragment[] = retrieval.hits
+    .map((hit) => {
+      const entry = docByPath.get(hit.path);
+      if (!entry) {
+        return undefined;
+      }
 
       return {
         path: entry.path,
-        score,
+        score: hit.score,
         small: `${entry.path}: ${entry.fileSummary}`,
-        mid: entry.moduleSummary,
-        big: entry.architectureSummary,
+        mid: `${entry.moduleSummary} | retrieval=${hit.reasons.join(", ")}`,
+        big: `${entry.architectureSummary} | retrieval=${hit.reasons.join(", ")}`,
         symbols: entry.symbols,
         dependencies: entry.dependencies,
-        changed
+        changed: entry.changed
       };
     })
+    .filter((entry): entry is ContextFragment => Boolean(entry))
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)));
 
   const tier = ContextTierSchema.parse(options.tier);
 
-  const selectedText = fragments.map((fragment) => {
+  const signalErrors = unique([...(options.errorLogs ?? []), ...(options.verifyFeedback ?? [])]);
+
+  const targetEvidence = fragments.slice(0, tier === "small" ? 8 : tier === "mid" ? 16 : 24).map((fragment) => {
     if (tier === "small") {
-      return fragment.small;
+      return `TARGET:${fragment.small}`;
     }
     if (tier === "mid") {
-      return fragment.mid;
+      return `TARGET:${fragment.mid}`;
     }
-    return fragment.big;
+    return `TARGET:${fragment.big}`;
   });
+
+  const errorEvidence = signalErrors.slice(0, tier === "small" ? 6 : tier === "mid" ? 12 : 20).map((line) => `ERROR:${line}`);
+  const recentChangeEvidence = changedFiles.map((file) => `RECENT:${file}`);
+  const summaryEvidence = fragments.map((fragment) => `SUMMARY:${fragment.path} score=${fragment.score.toFixed(2)}`);
+  const selectedText = unique([...targetEvidence, ...errorEvidence, ...recentChangeEvidence, ...summaryEvidence]);
 
   const selectedSymbols = unique(fragments.flatMap((fragment) => fragment.symbols)).slice(
     0,
@@ -568,11 +692,12 @@ export async function inspectContext(options: {
     objective: options.task,
     constraints: [],
     symbols: selectedSymbols,
-    errorLogs: unique(options.errorLogs ?? []),
+    errorLogs: signalErrors,
     diffSummary: selectedText,
     tier,
     tokenBudget: options.tokenBudget,
-    stage: options.stage
+    stage,
+    stageTokenCaps: retrievalConfig.stageTokenCaps
   });
 
   return {
@@ -580,6 +705,37 @@ export async function inspectContext(options: {
     changedFiles,
     reusedFiles,
     fragments,
-    packed
+    packed,
+    retrieval: retrieval.diagnostics,
+    lifecycle
   };
+}
+
+export async function diagnoseContextIndex(options?: {
+  cwd?: string;
+  cachePath?: string;
+  retrievalConfig?: ResolvedRetrievalConfig;
+}): Promise<ContextIndexDiagnosis> {
+  const cwd = options?.cwd ?? process.cwd();
+  const cachePath =
+    options?.cachePath ?? path.resolve(cwd, ".ohmyqwen", "cache", "context-index.json");
+  const retrievalConfig = options?.retrievalConfig ?? (await resolveRetrievalConfig(cwd));
+  const expected = buildLifecycleMetadata(retrievalConfig);
+  const loaded = await loadIndex(cachePath, expected);
+
+  return {
+    cachePath,
+    stale: loaded.staleReasons.length > 0,
+    reasons: loaded.staleReasons,
+    expected,
+    current: loaded.currentMetadata,
+    reindexCommand: "ohmyqwen context doctor --reindex"
+  };
+}
+
+export async function reindexContextCache(options?: { cwd?: string; cachePath?: string }): Promise<void> {
+  const cwd = options?.cwd ?? process.cwd();
+  const cachePath =
+    options?.cachePath ?? path.resolve(cwd, ".ohmyqwen", "cache", "context-index.json");
+  await fs.rm(cachePath, { force: true });
 }

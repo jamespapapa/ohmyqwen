@@ -26,14 +26,20 @@
 
 ## 3) Context Plane
 
-- 파일: `src/context/packer.ts`
+- 파일: `src/context/packer.ts`, `src/retrieval/*`
 - 기능:
   - `small/mid/big` 계층 컨텍스트
   - stage별 토큰 budget factor + hard-cap
-  - relevance scoring(작업 설명/diff/error/target 파일)
+  - Retrieval provider 체인(`qmd/lexical/semantic/hybrid`)
+  - QMD primary + lexical fallback (장애/타임아웃/파싱 오류 시 자동 강등)
+  - 입력 신호 기반 검색(task + diff + verify failure feedback)
+  - hybrid merge + dedupe + rerank
   - 증분 인덱싱 캐시: `.ohmyqwen/cache/context-index.json`
+  - semantic 임베딩 캐시: `.ohmyqwen/cache/embedding-cache.json`
+  - stale index 감지(metadata fingerprint) + auto reindex
 - CLI:
   - `ohmyqwen context inspect --task ...`
+  - `ohmyqwen context doctor [--reindex]`
 
 ## 4) LLM Plane
 

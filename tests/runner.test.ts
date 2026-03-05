@@ -10,6 +10,7 @@ const tempDirs: string[] = [];
 afterEach(async () => {
   delete process.env.OHMYQWEN_AVAILABLE_LIBRARIES_URL;
   delete process.env.OHMYQWEN_LIBRARY_INDEX_URL;
+  delete process.env.OHMYQWEN_QMD_FORCE_FAIL;
   vi.unstubAllGlobals();
 
   while (tempDirs.length > 0) {
@@ -92,6 +93,22 @@ describe("runLoop durable state", () => {
     expect(packed.constraintFlags).toContain("state-machine-control");
     expect(packed.payload.symbols.length).toBeGreaterThan(0);
     expect(packed.hash).toHaveLength(16);
+
+    const retrievalRaw = await readFile(
+      path.join(
+        workspace,
+        ".ohmyqwen",
+        "runs",
+        "controlled-pass",
+        "outputs",
+        "retrieval.implement.attempt-0.json"
+      ),
+      "utf8"
+    );
+    const retrieval = JSON.parse(retrievalRaw) as {
+      retrieval: { selectedProvider: string; fallbackUsed: boolean };
+    };
+    expect(retrieval.retrieval.selectedProvider.length).toBeGreaterThan(0);
   });
 
   it("applies analyze tuning when availableLibraries are provided", async () => {
@@ -123,6 +140,57 @@ describe("runLoop durable state", () => {
     const tuning = JSON.parse(tuningRaw) as { constraints: string[]; availableLibraries: string[] };
     expect(tuning.availableLibraries).toEqual(["express", "zod"]);
     expect(tuning.constraints).toContain("dependency-allowlist-only");
+  });
+
+  it("records retrieval fallback evidence when qmd provider fails", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-run-retrieval-fallback-"));
+    tempDirs.push(workspace);
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/demo.ts"), "export const demo = 1;", "utf8");
+
+    process.env.OHMYQWEN_QMD_FORCE_FAIL = "1";
+
+    const result = await runLoop(
+      {
+        ...baseInput(),
+        constraints: ["short-session", "state-machine-control"],
+        dryRun: true
+      },
+      {
+        cwd: workspace,
+        runId: "retrieval-fallback-pass",
+        dryRun: true
+      }
+    );
+
+    expect(result.finalState).toBe("FINISH");
+
+    const retrievalRaw = await readFile(
+      path.join(
+        workspace,
+        ".ohmyqwen",
+        "runs",
+        "retrieval-fallback-pass",
+        "outputs",
+        "retrieval.implement.attempt-0.json"
+      ),
+      "utf8"
+    );
+    const retrieval = JSON.parse(retrievalRaw) as {
+      retrieval: {
+        fallbackUsed: boolean;
+        providerResults: Array<{ provider: string; status: string }>;
+      };
+    };
+
+    expect(retrieval.retrieval.fallbackUsed).toBe(true);
+    expect(
+      retrieval.retrieval.providerResults.some(
+        (resultEntry) => resultEntry.provider === "qmd" && resultEntry.status === "failed"
+      )
+    ).toBe(true);
+
+    delete process.env.OHMYQWEN_QMD_FORCE_FAIL;
   });
 
   it("loads availableLibraries from workspace file when input list is absent", async () => {

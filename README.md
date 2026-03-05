@@ -58,6 +58,22 @@ LLM (OpenAI-compatible):
 - `OHMYQWEN_LLM_ENDPOINT_KIND` (옵션: `auto` | `openai` | `opencode`)
 - `OHMYQWEN_AVAILABLE_LIBRARIES_URL` (옵션: available library 파일이 없을 때 fallback fetch URL)
 
+Retrieval / Local Embedding (옵션):
+
+- `OHMYQWEN_RETRIEVAL_PROVIDERS` (예: `qmd,hybrid,lexical,semantic`)
+- `OHMYQWEN_RETRIEVAL_STAGE_CAP_PLAN`
+- `OHMYQWEN_RETRIEVAL_STAGE_CAP_IMPLEMENT`
+- `OHMYQWEN_RETRIEVAL_STAGE_CAP_VERIFY`
+- `OHMYQWEN_CONTEXT_CHUNK_VERSION`
+- `OHMYQWEN_RETRIEVAL_VERSION`
+- `OHMYQWEN_REINDEX_ON_STALE`
+- `OHMYQWEN_EMBEDDING_ENABLED`
+- `OHMYQWEN_EMBEDDING_ENDPOINT`
+- `OHMYQWEN_EMBEDDING_HEALTH_PATH`
+- `OHMYQWEN_EMBEDDING_EMBED_PATH`
+- `OHMYQWEN_EMBEDDING_MODEL`
+- `OHMYQWEN_EMBEDDING_TIMEOUT_MS`
+
 미설정 시 fallback 모드로 안전 동작.
 
 참고: `opencode serve`를 LLM 백엔드로 사용할 때는 다음처럼 설정:
@@ -101,6 +117,13 @@ pnpm run verify -- --profile strict
 # 컨텍스트 선택 결과 점검
 node dist/cli.js context inspect --task "fix verify" --files "src/loop/runner.ts,src/gates/verify.ts" --tier mid --budget 1600 --stage PLAN
 
+# 인덱스/리트리버 진단 + 재인덱싱
+node dist/cli.js context doctor
+node dist/cli.js context doctor --reindex
+
+# retrieval 평가 하네스
+pnpm eval:retrieval
+
 # localhost API + 웹 콘솔
 pnpm run serve
 
@@ -121,6 +144,7 @@ pnpm run ui:dev
 - `availableLibraries: string[]` (직접 전달)
 - `availableLibrariesFile: string` (워크스페이스 기준 파일 경로)
 - `availableLibrariesUrl: string` (파일 미존재 시 fallback fetch URL)
+- `retrieval: object` (provider 우선순위, stage token cap, 로컬 임베딩 endpoint/모델, lifecycle 정책 override)
 
 파일 자동 탐색 순서(입력 미지정 시):
 
@@ -169,6 +193,8 @@ pnpm run ui:dev
 - 검증 실패 요약: `outputs/failure-summary.json`
 - 검증 상세: `verify.log`
 - 실행 도구 로그: `tools.log`
+- retrieval 실행 로그: `outputs/retrieval.plan.attempt-*.json`, `outputs/retrieval.implement.attempt-*.json`
+- verify 재주입 신호: `outputs/verify.feedback.attempt-*.json`
 
 추가로, objective에 API/서버 요구가 있으면 `objective-contract` 게이트가 다음을 점검합니다:
 
@@ -191,4 +217,5 @@ PORT=3100 npm run start
 - `docs/PLUGINS.md`
 - `docs/OPERATIONS.md`
 - `docs/REQUIREMENT-COMPLIANCE.md`
+- `docs/RETRIEVAL.md`
 - `examples/sample-task.md`

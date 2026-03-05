@@ -63,6 +63,7 @@ export interface StartRunPayload {
   contextTier?: AnalyzeInput["contextTier"];
   contextTokenBudget?: number;
   retryPolicy?: AnalyzeInput["retryPolicy"];
+  retrieval?: AnalyzeInput["retrieval"];
   dryRun?: boolean;
   workspaceDir?: string;
 }
@@ -273,6 +274,7 @@ function toAnalyzeInput(payload: StartRunPayload, runId: string): AnalyzeInput {
         sameFailureLimit: 2,
         rollbackOnVerifyFail: false
       },
+    retrieval: payload.input?.retrieval ?? payload.retrieval,
     mode: payload.input?.mode ?? payload.mode ?? "auto",
     clarificationAnswers: payload.input?.clarificationAnswers ?? [],
     gateProfile: payload.input?.gateProfile,

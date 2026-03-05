@@ -57,3 +57,11 @@
 - `pnpm run build` 통과
 - `pnpm --dir console-next build` 통과
 
+## Phase-2: Retrieval/QMD 통합 (요약)
+
+- retrieval provider 인터페이스/팩토리/체인 도입 (`src/retrieval/*`)
+- QMD primary + lexical fallback + hybrid merge 도입
+- local embedding endpoint preflight + semantic degrade 정책 추가
+- verify 실패 feedback 재주입 아티팩트(`verify.feedback.attempt-*.json`) 추가
+- stale index metadata 감지 + `context doctor --reindex` 경로 추가
+- 평가 하네스(`pnpm eval:retrieval`) 및 운영 문서(`docs/RETRIEVAL.md`) 추가

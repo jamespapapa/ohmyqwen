@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Command } from "commander";
 import {
+  contextDoctorMode,
   inspectContextMode,
   parseMode,
   planMode,
@@ -135,6 +136,14 @@ context
       });
     }
   );
+
+context
+  .command("doctor")
+  .description("Diagnose context index lifecycle and optionally reindex")
+  .option("--reindex", "Delete stale context index cache and recreate on next run", false)
+  .action(async (opts: { reindex?: boolean }) => {
+    await contextDoctorMode({ reindex: opts.reindex });
+  });
 
 program
   .command("serve")

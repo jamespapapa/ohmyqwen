@@ -30,6 +30,61 @@ export const RetryPolicySchema = z.object({
 
 export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
 
+const RetrievalProviderNameSchema = z.enum(["qmd", "lexical", "semantic", "hybrid"]);
+
+export const RetrievalConfigOverrideSchema = z.object({
+  providerPriority: z.array(RetrievalProviderNameSchema).min(1).max(4).optional(),
+  topK: z
+    .object({
+      qmd: z.number().int().min(1).max(200).optional(),
+      lexical: z.number().int().min(1).max(200).optional(),
+      semantic: z.number().int().min(1).max(200).optional(),
+      hybrid: z.number().int().min(1).max(200).optional(),
+      final: z.number().int().min(1).max(200).optional()
+    })
+    .optional(),
+  timeoutMs: z
+    .object({
+      qmd: z.number().int().min(100).max(20000).optional(),
+      semantic: z.number().int().min(100).max(20000).optional(),
+      provider: z.number().int().min(100).max(20000).optional()
+    })
+    .optional(),
+  stageTokenCaps: z
+    .object({
+      PLAN: z.number().int().min(200).max(12000).optional(),
+      IMPLEMENT: z.number().int().min(200).max(12000).optional(),
+      VERIFY: z.number().int().min(200).max(12000).optional()
+    })
+    .optional(),
+  embedding: z
+    .object({
+      enabled: z.boolean().optional(),
+      endpoint: z.string().url().optional(),
+      healthPath: z.string().min(1).optional(),
+      embedPath: z.string().min(1).optional(),
+      model: z.string().min(1).optional(),
+      timeoutMs: z.number().int().min(100).max(20000).optional(),
+      maxBatchSize: z.number().int().min(1).max(512).optional(),
+      cachePath: z.string().min(1).optional()
+    })
+    .optional(),
+  lifecycle: z
+    .object({
+      chunkVersion: z.string().min(1).optional(),
+      retrievalVersion: z.string().min(1).optional(),
+      autoReindexOnStale: z.boolean().optional()
+    })
+    .optional(),
+  qmd: z
+    .object({
+      forceFailure: z.boolean().optional()
+    })
+    .optional()
+});
+
+export type RetrievalConfigOverride = z.infer<typeof RetrievalConfigOverrideSchema>;
+
 export const AnalyzeInputSchema = z.object({
   taskId: z.string().min(1),
   objective: z.string().min(1),
@@ -52,6 +107,7 @@ export const AnalyzeInputSchema = z.object({
   mode: RunModeSchema.default("auto"),
   clarificationAnswers: z.array(z.string()).default([]),
   gateProfile: z.string().min(1).optional(),
+  retrieval: RetrievalConfigOverrideSchema.optional(),
   dryRun: z.boolean().default(false)
 });
 

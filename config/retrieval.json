@@ -1,0 +1,34 @@
+{
+  "providerPriority": ["qmd", "hybrid", "lexical", "semantic"],
+  "topK": {
+    "qmd": 24,
+    "lexical": 32,
+    "semantic": 24,
+    "hybrid": 32,
+    "final": 40
+  },
+  "timeoutMs": {
+    "qmd": 1200,
+    "semantic": 2500,
+    "provider": 3000
+  },
+  "stageTokenCaps": {
+    "PLAN": 1200,
+    "IMPLEMENT": 1800,
+    "VERIFY": 1000
+  },
+  "embedding": {
+    "enabled": false,
+    "healthPath": "/health",
+    "embedPath": "/embed",
+    "model": "local-embedding",
+    "timeoutMs": 2000,
+    "maxBatchSize": 64,
+    "cachePath": ".ohmyqwen/cache/embedding-cache.json"
+  },
+  "lifecycle": {
+    "chunkVersion": "v1",
+    "retrievalVersion": "v2-qmd-hybrid",
+    "autoReindexOnStale": true
+  }
+}

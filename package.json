@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "bundle:offline": "bash ./scripts/bundle-offline.sh",
+    "eval:retrieval": "node ./scripts/eval-retrieval.mjs --tasks ./samples/retrieval-eval.tasks.json",
     "run": "node dist/cli.js run",
     "plan": "node dist/cli.js plan",
     "verify": "node dist/cli.js verify",

@@ -110,6 +110,30 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
           sameFailureLimit?: number;
           rollbackOnVerifyFail?: boolean;
         };
+        retrieval?: {
+          providerPriority?: Array<"qmd" | "lexical" | "semantic" | "hybrid">;
+          topK?: Partial<Record<"qmd" | "lexical" | "semantic" | "hybrid" | "final", number>>;
+          timeoutMs?: Partial<Record<"qmd" | "semantic" | "provider", number>>;
+          stageTokenCaps?: Partial<Record<"PLAN" | "IMPLEMENT" | "VERIFY", number>>;
+          embedding?: {
+            enabled?: boolean;
+            endpoint?: string;
+            healthPath?: string;
+            embedPath?: string;
+            model?: string;
+            timeoutMs?: number;
+            maxBatchSize?: number;
+            cachePath?: string;
+          };
+          lifecycle?: {
+            chunkVersion?: string;
+            retrievalVersion?: string;
+            autoReindexOnStale?: boolean;
+          };
+          qmd?: {
+            forceFailure?: boolean;
+          };
+        };
         dryRun?: boolean;
         workspaceDir?: string;
       };
@@ -138,6 +162,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         contextTier: payload.contextTier,
         contextTokenBudget: payload.contextTokenBudget,
         retryPolicy: payload.retryPolicy as never,
+        retrieval: payload.retrieval as never,
         dryRun: payload.dryRun,
         workspaceDir: payload.workspaceDir
       });

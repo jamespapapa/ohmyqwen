@@ -17,6 +17,8 @@
 - `outputs/final.snapshot.json`
 - `verify.log`
 - `outputs/failure-summary.json` (실패 시)
+- `outputs/retrieval.*.json` (provider 선택/강등 근거)
+- `outputs/verify.feedback.attempt-*.json` (실패 신호 재주입 근거)
 
 ## 2. 보안 가드
 
@@ -47,6 +49,7 @@
 
 - failure signature 반복 시 patch 전략 승격(small -> mid -> big)
 - 전략 소진 시 `FAIL_WITH_ARTIFACT`로 종료
+- verify 실패 요약은 다음 PATCH 검색 입력으로 자동 재주입됨
 
 ### 미존재 run
 
@@ -59,6 +62,24 @@
 
 - env 확인: `OHMYQWEN_LLM_BASE_URL`, `OHMYQWEN_LLM_MODEL`
 - 미설정이면 fallback 모드로 동작 (정상)
+
+### Retrieval/Embedding 장애
+
+- QMD 실패(타임아웃/파싱/강제 실패) 시 lexical로 자동 강등
+- local embedding preflight 실패 시 semantic 비활성 + lexical-only 진행
+- 확인 위치:
+  - `outputs/retrieval.plan.attempt-*.json`
+  - `outputs/retrieval.implement.attempt-*.json`
+  - `retrieval.fallbackUsed=true` / provider별 status
+
+### 인덱스 스테일 진단
+
+- 진단:
+  - `ohmyqwen context doctor`
+- 재인덱싱:
+  - `ohmyqwen context doctor --reindex`
+- stale 기준:
+  - chunkVersion / retrievalVersion / providerFingerprint / embeddingModel 변경
 
 ### verify 실패 원인 찾기
 

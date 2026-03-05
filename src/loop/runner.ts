@@ -19,6 +19,7 @@ import {
 } from "../core/types.js";
 import { RuntimeStateMachine } from "../core/state-machine.js";
 import { inspectContext, packContext, persistPackedContext } from "../context/packer.js";
+import { resolveRetrievalConfig } from "../retrieval/index.js";
 import {
   appendFailureSummary,
   failed,
@@ -587,6 +588,38 @@ function summarizeRootCause(verifyOutput: VerifyOutput | undefined): string {
   return `${firstFailingGate.name}: ${detailLine}`.slice(0, 220);
 }
 
+function buildVerifyFeedbackSignals(verifyOutput: VerifyOutput | undefined): string[] {
+  if (!verifyOutput) {
+    return [];
+  }
+
+  const signals: string[] = [];
+  if (verifyOutput.failureSignature) {
+    signals.push(`failure-signature=${verifyOutput.failureSignature}`);
+  }
+  if (verifyOutput.failureSummary?.category) {
+    signals.push(`failure-category=${verifyOutput.failureSummary.category}`);
+  }
+  if (verifyOutput.failureSummary?.recommendation) {
+    signals.push(`failure-recommendation=${verifyOutput.failureSummary.recommendation}`);
+  }
+  for (const line of verifyOutput.failureSummary?.coreLines ?? []) {
+    signals.push(`failure-core=${line}`);
+  }
+  for (const file of verifyOutput.failureSummary?.relatedFiles ?? []) {
+    signals.push(`failure-file=${file}`);
+  }
+  for (const gate of verifyOutput.gateResults.filter((entry) => !entry.passed)) {
+    signals.push(`failed-gate=${gate.name}`);
+    const first = firstMeaningfulLine(gate.details);
+    if (first) {
+      signals.push(`failed-gate-detail=${first}`);
+    }
+  }
+
+  return unique(signals).slice(0, 30);
+}
+
 async function readAnalyzeInputFromArtifacts(artifacts: RunArtifacts): Promise<AnalyzeInput | undefined> {
   const existing = await readOutput<AnalyzeInput>(artifacts, "analyze.input.json");
   if (!existing) {
@@ -652,6 +685,7 @@ export async function runLoop(
     ...analyzeInput,
     mode: analyzeInput.mode
   });
+  const retrievalConfig = await resolveRetrievalConfig(cwd, analyzeInput.retrieval);
 
   if (!loadedManifest) {
     manifest = await createInitialManifest({
@@ -762,6 +796,7 @@ export async function runLoop(
       availableLibraries: analyzeInput.availableLibraries ?? [],
       constraints: analyzeInput.constraints
     });
+    await writeOutput(artifacts, "retrieval.config.json", retrievalConfig);
     if (tuning.notes.length > 0) {
       await emitProgress(`analyze tuning applied: ${tuning.notes.join(" | ")}`);
     }
@@ -836,7 +871,21 @@ export async function runLoop(
         stage: "PLAN",
         targetFiles: analyzeInput.files,
         diffSummary: analyzeInput.diffSummary,
-        errorLogs: analyzeInput.errorLogs
+        errorLogs: analyzeInput.errorLogs,
+        verifyFeedback: analyzeInput.errorLogs,
+        patchAttempt: manifest.patchAttempts,
+        retrievalConfig
+      });
+      await writeOutput(artifacts, `retrieval.plan.attempt-${manifest.patchAttempts}.json`, {
+        attempt: manifest.patchAttempts,
+        stage: "PLAN",
+        retrieval: inspection.retrieval,
+        lifecycle: inspection.lifecycle,
+        topFragments: inspection.fragments.slice(0, 20).map((fragment) => ({
+          path: fragment.path,
+          score: fragment.score,
+          changed: fragment.changed
+        }))
       });
 
       const beforePlan = await pluginManager.runHook("beforePlan", {
@@ -866,7 +915,8 @@ export async function runLoop(
         ]),
         tier: analyzeInput.contextTier,
         tokenBudget: analyzeInput.contextTokenBudget,
-        stage: "PLAN"
+        stage: "PLAN",
+        stageTokenCaps: retrievalConfig.stageTokenCaps
       });
       const planContextArtifact = path.join(
         artifacts.outputsDir,
@@ -927,6 +977,9 @@ export async function runLoop(
     let lastFailureSignature = manifest.lastFailureSignature;
     let strategyIndex = manifest.strategyIndex || strategyIndexForTier(analyzeInput.contextTier);
     let errorLogs = unique(analyzeInput.errorLogs);
+    let verifyFeedbackSignals = unique(
+      buildVerifyFeedbackSignals(snapshot.verifyOutput).concat(analyzeInput.errorLogs)
+    );
     const maxPatchAttempts = controlledSingleLoop
       ? patchAttempts
       : Math.min(analyzeInput.retryPolicy.maxAttempts, resolvedMode.policy.maxPatchRetries);
@@ -986,7 +1039,23 @@ export async function runLoop(
         stage: "IMPLEMENT",
         targetFiles: analyzeInput.files,
         diffSummary: analyzeInput.diffSummary,
-        errorLogs
+        errorLogs,
+        verifyFeedback: verifyFeedbackSignals,
+        patchAttempt: attempt,
+        retrievalConfig
+      });
+      await writeOutput(artifacts, `retrieval.implement.attempt-${attempt}.json`, {
+        attempt,
+        stage: "IMPLEMENT",
+        strategy: strategy.name,
+        retrieval: implementInspection.retrieval,
+        lifecycle: implementInspection.lifecycle,
+        topFragments: implementInspection.fragments.slice(0, 24).map((fragment) => ({
+          path: fragment.path,
+          score: fragment.score,
+          changed: fragment.changed
+        })),
+        verifyFeedbackSignals
       });
 
       const pluginImplementContext = unique(
@@ -1007,7 +1076,7 @@ export async function runLoop(
           ...planOutput.targetSymbols,
           ...implementInspection.packed.payload.symbols
         ]),
-        errorLogs,
+        errorLogs: unique([...errorLogs, ...verifyFeedbackSignals]),
         diffSummary: unique([
           ...analyzeInput.diffSummary,
           ...implementInspection.packed.payload.diffSummary,
@@ -1015,7 +1084,8 @@ export async function runLoop(
         ]),
         tier: strategy.tier,
         tokenBudget: analyzeInput.contextTokenBudget,
-        stage: "IMPLEMENT"
+        stage: "IMPLEMENT",
+        stageTokenCaps: retrievalConfig.stageTokenCaps
       });
       const implementContextArtifact = path.join(
         artifacts.outputsDir,
@@ -1178,6 +1248,21 @@ export async function runLoop(
           lastFailureSignature = failureSignature;
           const failureSummary = summarizeFailures(actionFailureVerify);
           errorLogs = unique([failureSummary, ...errorLogs]).slice(0, 20);
+          verifyFeedbackSignals = unique([
+            ...buildVerifyFeedbackSignals(actionFailureVerify),
+            ...errorLogs
+          ]).slice(0, 30);
+          await writeOutput(artifacts, `verify.feedback.attempt-${attempt}.json`, {
+            attempt,
+            failureSignature,
+            failureSummary,
+            verifyFeedbackSignals,
+            sameFailureCount,
+            strategy: strategy.name,
+            nextStrategy:
+              PATCH_STRATEGIES[Math.min(strategyIndex + 1, PATCH_STRATEGIES.length - 1)]?.name ??
+              strategy.name
+          });
           if (actionFailureVerify.failureSummary?.recommendation) {
             await emitProgress(`retry-guidance: ${actionFailureVerify.failureSummary.recommendation}`);
           }
@@ -1385,6 +1470,21 @@ export async function runLoop(
       lastFailureSignature = failureSignature;
       const failureSummary = summarizeFailures(verifyOutput);
       errorLogs = unique([failureSummary, ...errorLogs]).slice(0, 20);
+      verifyFeedbackSignals = unique([...buildVerifyFeedbackSignals(verifyOutput), ...errorLogs]).slice(
+        0,
+        30
+      );
+      await writeOutput(artifacts, `verify.feedback.attempt-${attempt}.json`, {
+        attempt,
+        failureSignature,
+        failureSummary,
+        verifyFeedbackSignals,
+        sameFailureCount,
+        strategy: strategy.name,
+        nextStrategy:
+          PATCH_STRATEGIES[Math.min(strategyIndex + 1, PATCH_STRATEGIES.length - 1)]?.name ??
+          strategy.name
+      });
 
       if (controlledSingleLoop) {
         const rootCause = summarizeRootCause(verifyOutput);

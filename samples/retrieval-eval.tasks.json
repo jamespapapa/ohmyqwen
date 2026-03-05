@@ -1,0 +1,26 @@
+{
+  "tasks": [
+    {
+      "id": "runner-verify-fix",
+      "workspaceDir": ".",
+      "task": "verify 실패를 줄이기 위해 runLoop의 PATCH 재시도 로직을 개선하라",
+      "files": ["src/loop/runner.ts", "src/gates/verify.ts"],
+      "expectedRelevantFiles": ["src/loop/runner.ts"],
+      "symbols": ["runLoop", "summarizeFailures"],
+      "tier": "small",
+      "tokenBudget": 1200,
+      "stage": "IMPLEMENT"
+    },
+    {
+      "id": "context-budget-tuning",
+      "workspaceDir": ".",
+      "task": "context packer의 stage별 token cap 정책을 조정하고 stale index를 진단하라",
+      "files": ["src/context/packer.ts", "src/modes/index.ts", "src/cli.ts"],
+      "expectedRelevantFiles": ["src/context/packer.ts"],
+      "symbols": ["packContext", "inspectContext"],
+      "tier": "small",
+      "tokenBudget": 1200,
+      "stage": "PLAN"
+    }
+  ]
+}

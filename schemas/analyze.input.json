@@ -78,6 +78,77 @@
       "default": []
     },
     "gateProfile": { "type": "string", "minLength": 1 },
+    "retrieval": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "providerPriority": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["qmd", "lexical", "semantic", "hybrid"] },
+          "minItems": 1,
+          "maxItems": 4
+        },
+        "topK": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "qmd": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "lexical": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "semantic": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "hybrid": { "type": "integer", "minimum": 1, "maximum": 200 },
+            "final": { "type": "integer", "minimum": 1, "maximum": 200 }
+          }
+        },
+        "timeoutMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "qmd": { "type": "integer", "minimum": 100, "maximum": 20000 },
+            "semantic": { "type": "integer", "minimum": 100, "maximum": 20000 },
+            "provider": { "type": "integer", "minimum": 100, "maximum": 20000 }
+          }
+        },
+        "stageTokenCaps": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "PLAN": { "type": "integer", "minimum": 200, "maximum": 12000 },
+            "IMPLEMENT": { "type": "integer", "minimum": 200, "maximum": 12000 },
+            "VERIFY": { "type": "integer", "minimum": 200, "maximum": 12000 }
+          }
+        },
+        "embedding": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "endpoint": { "type": "string", "format": "uri" },
+            "healthPath": { "type": "string", "minLength": 1 },
+            "embedPath": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 20000 },
+            "maxBatchSize": { "type": "integer", "minimum": 1, "maximum": 512 },
+            "cachePath": { "type": "string", "minLength": 1 }
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "chunkVersion": { "type": "string", "minLength": 1 },
+            "retrievalVersion": { "type": "string", "minLength": 1 },
+            "autoReindexOnStale": { "type": "boolean" }
+          }
+        },
+        "qmd": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "forceFailure": { "type": "boolean" }
+          }
+        }
+      }
+    },
     "dryRun": { "type": "boolean", "default": false }
   }
 }

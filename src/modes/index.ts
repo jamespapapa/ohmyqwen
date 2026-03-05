@@ -8,12 +8,18 @@ import {
   RunModeSchema,
   VerifyOutputSchema
 } from "../core/types.js";
-import { inspectContext, packContext } from "../context/packer.js";
+import {
+  diagnoseContextIndex,
+  inspectContext,
+  packContext,
+  reindexContextCache
+} from "../context/packer.js";
 import { runQualityGates } from "../gates/verify.js";
 import { OpenAICompatibleLlmClient } from "../llm/client.js";
 import { runLoop } from "../loop/runner.js";
 import { resolveModePolicy } from "./policies.js";
 import { listVerifyProfiles } from "../gates/verify.js";
+import { resolveRetrievalConfig } from "../retrieval/index.js";
 
 interface RunModeOptions {
   runId?: string;
@@ -42,6 +48,7 @@ export async function planMode(payload: AnalyzeInput): Promise<void> {
   const parsed = AnalyzeInputSchema.parse(payload);
   const client = new OpenAICompatibleLlmClient();
   const mode = resolveModePolicy(parsed);
+  const retrievalConfig = await resolveRetrievalConfig(process.cwd());
 
   const inspection = await inspectContext({
     cwd: process.cwd(),
@@ -52,7 +59,10 @@ export async function planMode(payload: AnalyzeInput): Promise<void> {
     stage: "PLAN",
     targetFiles: parsed.files,
     diffSummary: parsed.diffSummary,
-    errorLogs: parsed.errorLogs
+    errorLogs: parsed.errorLogs,
+    verifyFeedback: parsed.errorLogs,
+    patchAttempt: 0,
+    retrievalConfig
   });
 
   const context = packContext({
@@ -65,7 +75,8 @@ export async function planMode(payload: AnalyzeInput): Promise<void> {
     ),
     tier: parsed.contextTier,
     tokenBudget: parsed.contextTokenBudget,
-    stage: "PLAN"
+    stage: "PLAN",
+    stageTokenCaps: retrievalConfig.stageTokenCaps
   });
 
   const planCall = await client.proposePlan({
@@ -86,7 +97,8 @@ export async function planMode(payload: AnalyzeInput): Promise<void> {
         },
         mode,
         inspection,
-        context
+        context,
+        retrievalConfig
       },
       null,
       2
@@ -130,6 +142,7 @@ export async function inspectContextMode(options: {
   tokenBudget: number;
   stage?: "PLAN" | "IMPLEMENT" | "VERIFY";
 }): Promise<void> {
+  const retrievalConfig = await resolveRetrievalConfig(process.cwd());
   const inspection = await inspectContext({
     cwd: process.cwd(),
     files: options.files,
@@ -137,10 +150,42 @@ export async function inspectContextMode(options: {
     tier: options.tier,
     tokenBudget: options.tokenBudget,
     stage: options.stage,
-    targetFiles: options.files
+    targetFiles: options.files,
+    retrievalConfig,
+    patchAttempt: 0
   });
 
   process.stdout.write(`${JSON.stringify(inspection, null, 2)}\n`);
+}
+
+export async function contextDoctorMode(options?: { reindex?: boolean }): Promise<void> {
+  const retrievalConfig = await resolveRetrievalConfig(process.cwd());
+  const diagnosis = await diagnoseContextIndex({
+    cwd: process.cwd(),
+    retrievalConfig
+  });
+
+  if (options?.reindex) {
+    await reindexContextCache({ cwd: process.cwd() });
+  }
+
+  const refreshed = options?.reindex
+    ? await diagnoseContextIndex({
+        cwd: process.cwd(),
+        retrievalConfig
+      })
+    : diagnosis;
+
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        diagnosis: refreshed,
+        reindexed: Boolean(options?.reindex)
+      },
+      null,
+      2
+    )}\n`
+  );
 }
 
 export async function readAnalyzeInput(filePath?: string): Promise<AnalyzeInput> {
