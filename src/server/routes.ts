@@ -113,6 +113,12 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
           projectNameIncludes?: string[];
           requiredPaths?: string[];
         };
+        eai?: {
+          enabled?: boolean;
+          asOfDate?: string;
+          servicePathIncludes?: string[];
+          manualOverridesFile?: string;
+        };
       };
 
       const preset = await upsertServerProjectPreset({
@@ -125,6 +131,14 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
               workspaceIncludes: payload.rules.workspaceIncludes ?? [],
               projectNameIncludes: payload.rules.projectNameIncludes ?? [],
               requiredPaths: payload.rules.requiredPaths ?? []
+            }
+          : undefined,
+        eai: payload.eai
+          ? {
+              enabled: payload.eai.enabled ?? false,
+              asOfDate: payload.eai.asOfDate,
+              servicePathIncludes: payload.eai.servicePathIncludes ?? ["resources/eai/"],
+              manualOverridesFile: payload.eai.manualOverridesFile
             }
           : undefined
       });

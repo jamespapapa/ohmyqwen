@@ -490,6 +490,10 @@ export default function HomePage() {
   const [presetWorkspaceRules, setPresetWorkspaceRules] = useState("");
   const [presetProjectNameRules, setPresetProjectNameRules] = useState("");
   const [presetRequiredPaths, setPresetRequiredPaths] = useState("");
+  const [presetEaiEnabled, setPresetEaiEnabled] = useState(false);
+  const [presetEaiAsOfDate, setPresetEaiAsOfDate] = useState("");
+  const [presetEaiServiceIncludes, setPresetEaiServiceIncludes] = useState("");
+  const [presetEaiOverridesFile, setPresetEaiOverridesFile] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLimit, setSearchLimit] = useState(20);
   const [searchResult, setSearchResult] = useState(null);
@@ -627,6 +631,10 @@ export default function HomePage() {
         setPresetWorkspaceRules("");
         setPresetProjectNameRules("");
         setPresetRequiredPaths("");
+        setPresetEaiEnabled(false);
+        setPresetEaiAsOfDate("");
+        setPresetEaiServiceIncludes("");
+        setPresetEaiOverridesFile("");
       }
       return;
     }
@@ -637,6 +645,10 @@ export default function HomePage() {
     setPresetWorkspaceRules((selectedPreset.rules?.workspaceIncludes || []).join("\n"));
     setPresetProjectNameRules((selectedPreset.rules?.projectNameIncludes || []).join("\n"));
     setPresetRequiredPaths((selectedPreset.rules?.requiredPaths || []).join("\n"));
+    setPresetEaiEnabled(Boolean(selectedPreset.eai?.enabled));
+    setPresetEaiAsOfDate(selectedPreset.eai?.asOfDate || "");
+    setPresetEaiServiceIncludes((selectedPreset.eai?.servicePathIncludes || []).join("\n"));
+    setPresetEaiOverridesFile(selectedPreset.eai?.manualOverridesFile || "");
   }, [selectedPreset, selectedPresetId]);
 
   useEffect(() => {
@@ -743,6 +755,12 @@ export default function HomePage() {
           workspaceIncludes: parseLines(presetWorkspaceRules),
           projectNameIncludes: parseLines(presetProjectNameRules),
           requiredPaths: parseLines(presetRequiredPaths)
+        },
+        eai: {
+          enabled: presetEaiEnabled,
+          asOfDate: presetEaiAsOfDate.trim() || undefined,
+          servicePathIncludes: parseLines(presetEaiServiceIncludes),
+          manualOverridesFile: presetEaiOverridesFile.trim() || undefined
         }
       };
       const response = await getJson("/api/presets", {
@@ -1191,6 +1209,35 @@ export default function HomePage() {
                 placeholder={"예: src/main/java\nresources/eai/"}
                 style={{ minHeight: 70 }}
               />
+              <div className="label" style={{ marginTop: 8 }}>EAI Dictionary Enabled</div>
+              <label style={{ display: "block" }}>
+                <input
+                  type="checkbox"
+                  checked={presetEaiEnabled}
+                  onChange={(e) => setPresetEaiEnabled(e.target.checked)}
+                  style={{ width: 16, marginRight: 6 }}
+                />
+                enable EAI catalog for this preset
+              </label>
+              <div className="label" style={{ marginTop: 8 }}>EAI 기준일자(asOfDate)</div>
+              <input
+                value={presetEaiAsOfDate}
+                onChange={(e) => setPresetEaiAsOfDate(e.target.value)}
+                placeholder="예: 2026-03-06"
+              />
+              <div className="label" style={{ marginTop: 8 }}>EAI servicePathIncludes</div>
+              <textarea
+                value={presetEaiServiceIncludes}
+                onChange={(e) => setPresetEaiServiceIncludes(e.target.value)}
+                placeholder={"예: resources/eai/\nresources/integration/eai/"}
+                style={{ minHeight: 70 }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>EAI manualOverridesFile</div>
+              <input
+                value={presetEaiOverridesFile}
+                onChange={(e) => setPresetEaiOverridesFile(e.target.value)}
+                placeholder=".ohmyqwen/eai-overrides.json"
+              />
               <div className="action-row" style={{ marginTop: 8 }}>
                 <button type="button" className="secondary" onClick={onSavePreset} disabled={presetLoading}>
                   {presetLoading ? "저장 중..." : "프리셋 저장"}
@@ -1407,6 +1454,14 @@ export default function HomePage() {
                   <div className="report-row">
                     <span>EAI 사전</span>
                     <span>{analysisResult.eaiCatalog?.interfaceCount ?? 0} entries</span>
+                  </div>
+                  <div className="report-row">
+                    <span>EAI 기준일</span>
+                    <span>{analysisResult.eaiCatalog?.asOfDate || "-"}</span>
+                  </div>
+                  <div className="report-row">
+                    <span>EAI override</span>
+                    <span>{analysisResult.eaiCatalog?.manualOverridesApplied ?? 0}</span>
                   </div>
                 </div>
 

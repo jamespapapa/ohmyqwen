@@ -116,7 +116,10 @@ export interface ProjectAnalysisResult {
     summary: string;
   };
   eaiCatalog?: {
+    asOfDate: string;
     interfaceCount: number;
+    manualOverridesApplied: number;
+    source: "preset-enabled" | "disabled";
     topInterfaces: Array<{
       interfaceId: string;
       interfaceName: string;
@@ -1060,14 +1063,152 @@ function inferEaiPurpose(content: string): string {
   return candidates[0] ?? "purpose-not-found";
 }
 
+const EaiOverrideItemSchema = z.object({
+  op: z.enum(["upsert", "delete"]),
+  interfaceId: z.string().min(1),
+  interfaceName: z.string().optional(),
+  purpose: z.string().optional(),
+  sourcePath: z.string().optional(),
+  usagePaths: z.array(z.string()).optional()
+});
+
+const EaiOverrideFileSchema = z.object({
+  asOfDate: z.string().optional(),
+  entries: z.array(EaiOverrideItemSchema).default([])
+});
+
+async function loadEaiOverrides(options: {
+  workspaceDir: string;
+  manualOverridesFile?: string;
+}): Promise<{ asOfDate?: string; entries: Array<z.infer<typeof EaiOverrideItemSchema>>; sourcePath?: string }> {
+  const rawPath = options.manualOverridesFile?.trim();
+  if (!rawPath) {
+    return { entries: [] };
+  }
+
+  const resolvedPath = path.isAbsolute(rawPath)
+    ? path.resolve(rawPath)
+    : path.resolve(options.workspaceDir, rawPath);
+  try {
+    const raw = await fs.readFile(resolvedPath, "utf8");
+    const parsed = EaiOverrideFileSchema.parse(JSON.parse(raw));
+    return {
+      asOfDate: parsed.asOfDate?.trim() || undefined,
+      entries: parsed.entries,
+      sourcePath: resolvedPath
+    };
+  } catch {
+    return {
+      entries: [],
+      sourcePath: resolvedPath
+    };
+  }
+}
+
+function applyEaiOverrides(options: {
+  baseEntries: EaiDictionaryEntry[];
+  overrides: Array<z.infer<typeof EaiOverrideItemSchema>>;
+}): { entries: EaiDictionaryEntry[]; appliedCount: number } {
+  const map = new Map<string, EaiDictionaryEntry>();
+  for (const entry of options.baseEntries) {
+    map.set(entry.interfaceId, entry);
+  }
+
+  let appliedCount = 0;
+  for (const override of options.overrides) {
+    if (override.op === "delete") {
+      if (map.delete(override.interfaceId)) {
+        appliedCount += 1;
+      }
+      continue;
+    }
+
+    const existing = map.get(override.interfaceId);
+    map.set(override.interfaceId, {
+      interfaceId: override.interfaceId,
+      interfaceName: override.interfaceName?.trim() || existing?.interfaceName || override.interfaceId,
+      purpose: override.purpose?.trim() || existing?.purpose || "manual-override",
+      sourcePath: override.sourcePath?.trim() || existing?.sourcePath || "(manual)",
+      usagePaths: override.usagePaths?.length
+        ? unique(override.usagePaths.map((item) => toForwardSlash(item)))
+        : existing?.usagePaths ?? []
+    });
+    appliedCount += 1;
+  }
+
+  const entries = Array.from(map.values()).sort((a, b) =>
+    a.interfaceId === b.interfaceId
+      ? a.sourcePath.localeCompare(b.sourcePath)
+      : a.interfaceId.localeCompare(b.interfaceId)
+  );
+
+  return { entries, appliedCount };
+}
+
+function buildEaiMaintenanceGuideMarkdown(input: {
+  project: ServerProject;
+  generatedAt: string;
+  asOfDate: string;
+  manualOverridesFile?: string;
+}): string {
+  const lines: string[] = [];
+  lines.push("# EAI Dictionary Maintenance Guide");
+  lines.push("");
+  lines.push(`- projectId: ${input.project.id}`);
+  lines.push(`- generatedAt: ${input.generatedAt}`);
+  lines.push(`- asOfDate: ${input.asOfDate}`);
+  lines.push(`- manualOverridesFile: ${input.manualOverridesFile ?? "(not configured)"}`);
+  lines.push("");
+  lines.push("## Change Policy");
+  lines.push("- EAI 목록은 가변 정보이므로 기준일자(asOfDate)를 항상 확인한다.");
+  lines.push("- 신규/수정/삭제는 manual overrides 파일을 통해 우선 반영한다.");
+  lines.push("- 코드 기준 자동 스캔 결과와 override 결과를 함께 검토한다.");
+  lines.push("");
+  lines.push("## Override File Example (JSON)");
+  lines.push("```json");
+  lines.push("{");
+  lines.push('  \"asOfDate\": \"2026-03-06\",');
+  lines.push('  \"entries\": [');
+  lines.push("    {");
+  lines.push('      \"op\": \"upsert\",');
+  lines.push('      \"interfaceId\": \"F10480011\",');
+  lines.push('      \"interfaceName\": \"퇴직보험금 청구대상자 조회\",');
+  lines.push('      \"purpose\": \"퇴직보험금 청구 대상자 조회\",');
+  lines.push('      \"sourcePath\": \"resources/eai/env/dev/io/sli/ea2/F10480011_service.xml\",');
+  lines.push('      \"usagePaths\": [\"dcp-insurance/src/main/java/.../Service.java\"]');
+  lines.push("    },");
+  lines.push("    {");
+  lines.push('      \"op\": \"delete\",');
+  lines.push('      \"interfaceId\": \"F00000000\"');
+  lines.push("    }");
+  lines.push("  ]");
+  lines.push("}");
+  lines.push("```");
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
 async function buildEaiDictionary(options: {
   workspaceDir: string;
   files: string[];
+  servicePathIncludes?: string[];
   maxEntries?: number;
 }): Promise<EaiDictionaryEntry[]> {
+  const includes = (options.servicePathIncludes ?? ["resources/eai/"]).map((entry) =>
+    toForwardSlash(entry).toLowerCase()
+  );
   const eaiServiceFiles = options.files
     .map((file) => toForwardSlash(file))
-    .filter((file) => /(^|\/)resources\/eai\/.+_service\.xml$/i.test(file))
+    .filter((file) => {
+      const lower = file.toLowerCase();
+      if (!/(^|\/).+_service\.xml$/i.test(file)) {
+        return false;
+      }
+      if (includes.length === 0) {
+        return true;
+      }
+      return includes.some((entry) => lower.includes(entry));
+    })
     .slice(0, options.maxEntries ?? 800);
 
   if (eaiServiceFiles.length === 0) {
@@ -1145,6 +1286,7 @@ async function buildEaiDictionary(options: {
 function buildEaiDictionaryMarkdown(input: {
   project: ServerProject;
   generatedAt: string;
+  asOfDate: string;
   entries: EaiDictionaryEntry[];
 }): string {
   const lines: string[] = [];
@@ -1153,6 +1295,7 @@ function buildEaiDictionaryMarkdown(input: {
   lines.push(`- projectId: ${input.project.id}`);
   lines.push(`- projectName: ${input.project.name}`);
   lines.push(`- generatedAt: ${input.generatedAt}`);
+  lines.push(`- asOfDate: ${input.asOfDate}`);
   lines.push(`- interfaceCount: ${input.entries.length}`);
   lines.push("");
 
@@ -1396,15 +1539,37 @@ export async function analyzeServerProject(options: {
       presetMemoryFiles = [presetDocs.latestPath, presetDocs.snapshotPath];
     }
 
-    const eaiEntries = await buildEaiDictionary({
-      workspaceDir: project.workspaceDir,
-      files
-    });
+    const eaiEnabled = Boolean(projectPreset?.eai?.enabled);
+    const eaiPresetAsOfDate = projectPreset?.eai?.asOfDate?.trim();
+    let eaiEntries: EaiDictionaryEntry[] = [];
     let eaiMemoryFiles: string[] = [];
-    if (eaiEntries.length > 0) {
+    let eaiAsOfDate = eaiPresetAsOfDate || generatedAt.slice(0, 10);
+    let eaiManualOverridesApplied = 0;
+
+    if (eaiEnabled) {
+      const autoEaiEntries = await buildEaiDictionary({
+        workspaceDir: project.workspaceDir,
+        files,
+        servicePathIncludes: projectPreset?.eai?.servicePathIncludes
+      });
+      const overridePayload = await loadEaiOverrides({
+        workspaceDir: project.workspaceDir,
+        manualOverridesFile: projectPreset?.eai?.manualOverridesFile
+      });
+      const overridden = applyEaiOverrides({
+        baseEntries: autoEaiEntries,
+        overrides: overridePayload.entries
+      });
+      eaiEntries = overridden.entries;
+      eaiManualOverridesApplied = overridden.appliedCount;
+      if (overridePayload.asOfDate) {
+        eaiAsOfDate = overridePayload.asOfDate;
+      }
+
       const eaiMarkdown = buildEaiDictionaryMarkdown({
         project: warmup.project,
         generatedAt,
+        asOfDate: eaiAsOfDate,
         entries: eaiEntries
       });
       const eaiDocs = await writeMemoryDocs({
@@ -1419,11 +1584,24 @@ export async function analyzeServerProject(options: {
         fileName: "latest.json",
         payload: {
           generatedAt,
+          asOfDate: eaiAsOfDate,
           interfaceCount: eaiEntries.length,
+          manualOverridesApplied: eaiManualOverridesApplied,
+          overridesSource: projectPreset?.eai?.manualOverridesFile ?? null,
           entries: eaiEntries
         }
       });
-      eaiMemoryFiles = [eaiDocs.latestPath, eaiDocs.snapshotPath, eaiJsonPath];
+      const maintenanceMarkdown = buildEaiMaintenanceGuideMarkdown({
+        project: warmup.project,
+        generatedAt,
+        asOfDate: eaiAsOfDate,
+        manualOverridesFile: projectPreset?.eai?.manualOverridesFile
+      });
+      const maintenancePath = path.resolve(memoryRoot, EAI_MEMORY_DIR, "maintenance-guide.md");
+      await fs.mkdir(path.dirname(maintenancePath), { recursive: true });
+      await fs.writeFile(maintenancePath, maintenanceMarkdown, "utf8");
+
+      eaiMemoryFiles = [eaiDocs.latestPath, eaiDocs.snapshotPath, eaiJsonPath, maintenancePath];
     }
 
     const seedSearch = await searchServerProject({
@@ -1467,7 +1645,10 @@ export async function analyzeServerProject(options: {
         topDirectories: topDirs.slice(0, 15)
       },
       eaiDictionary: {
+        enabled: eaiEnabled,
+        asOfDate: eaiAsOfDate,
         interfaceCount: eaiEntries.length,
+        manualOverridesApplied: eaiManualOverridesApplied,
         topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
           interfaceId: entry.interfaceId,
           interfaceName: entry.interfaceName,
@@ -1596,15 +1777,26 @@ export async function analyzeServerProject(options: {
             summary: projectPreset.summary
           }
         : undefined,
-      eaiCatalog: {
-        interfaceCount: eaiEntries.length,
-        topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
-          interfaceId: entry.interfaceId,
-          interfaceName: entry.interfaceName,
-          purpose: entry.purpose,
-          usagePaths: entry.usagePaths.slice(0, 5)
-        }))
-      },
+      eaiCatalog: eaiEnabled
+        ? {
+            asOfDate: eaiAsOfDate,
+            interfaceCount: eaiEntries.length,
+            manualOverridesApplied: eaiManualOverridesApplied,
+            source: "preset-enabled",
+            topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
+              interfaceId: entry.interfaceId,
+              interfaceName: entry.interfaceName,
+              purpose: entry.purpose,
+              usagePaths: entry.usagePaths.slice(0, 5)
+            }))
+          }
+        : {
+            asOfDate: eaiAsOfDate,
+            interfaceCount: 0,
+            manualOverridesApplied: 0,
+            source: "disabled",
+            topInterfaces: []
+          },
       ...normalizedOutput,
       diagnostics: {
         warmup,

@@ -21,6 +21,12 @@
           "resources/eai/"
         ]
       },
+      "eai": {
+        "enabled": true,
+        "asOfDate": "2026-03-06",
+        "servicePathIncludes": ["resources/eai/"],
+        "manualOverridesFile": ".ohmyqwen/eai-overrides.json"
+      },
       "createdAt": "2026-03-06T00:00:00.000Z",
       "updatedAt": "2026-03-06T00:00:00.000Z",
       "builtIn": true

@@ -16,12 +16,27 @@ const ProjectPresetRuleSchema = z
     requiredPaths: []
   });
 
+const ProjectPresetEaiSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    asOfDate: z.string().min(1).optional(),
+    servicePathIncludes: z.array(z.string().min(1)).default(["resources/eai/"]),
+    manualOverridesFile: z.string().min(1).optional()
+  })
+  .default({
+    enabled: false,
+    asOfDate: undefined,
+    servicePathIncludes: ["resources/eai/"],
+    manualOverridesFile: undefined
+  });
+
 const ProjectPresetSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   summary: z.string().min(1),
   keyFacts: z.array(z.string().min(1)).min(1),
   rules: ProjectPresetRuleSchema.optional(),
+  eai: ProjectPresetEaiSchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   builtIn: z.boolean().default(false)
@@ -38,7 +53,8 @@ const UpsertProjectPresetInputSchema = z.object({
   name: z.string().min(1),
   summary: z.string().min(1),
   keyFacts: z.array(z.string().min(1)).min(1),
-  rules: ProjectPresetRuleSchema.optional()
+  rules: ProjectPresetRuleSchema.optional(),
+  eai: ProjectPresetEaiSchema.optional()
 });
 
 export type ProjectPreset = z.infer<typeof ProjectPresetSchema>;
@@ -84,6 +100,14 @@ function normalizePreset(preset: ProjectPreset): ProjectPreset {
           workspaceIncludes: normalizeTextList(preset.rules.workspaceIncludes ?? []),
           projectNameIncludes: normalizeTextList(preset.rules.projectNameIncludes ?? []),
           requiredPaths: normalizeTextList(preset.rules.requiredPaths ?? [])
+        }
+      : undefined,
+    eai: preset.eai
+      ? {
+          enabled: Boolean(preset.eai.enabled),
+          asOfDate: preset.eai.asOfDate?.trim() || undefined,
+          servicePathIncludes: normalizeTextList(preset.eai.servicePathIncludes ?? ["resources/eai/"]),
+          manualOverridesFile: preset.eai.manualOverridesFile?.trim() || undefined
         }
       : undefined
   };
@@ -203,6 +227,7 @@ export async function upsertProjectPreset(input: UpsertProjectPresetInput): Prom
         summary: parsed.summary,
         keyFacts: parsed.keyFacts,
         rules: parsed.rules,
+        eai: parsed.eai,
         updatedAt: now,
         builtIn: false
       })
@@ -219,6 +244,7 @@ export async function upsertProjectPreset(input: UpsertProjectPresetInput): Prom
       summary: parsed.summary,
       keyFacts: parsed.keyFacts,
       rules: parsed.rules,
+      eai: parsed.eai,
       createdAt: now,
       updatedAt: now,
       builtIn: false
