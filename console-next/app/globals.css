@@ -131,13 +131,19 @@ textarea {
 .action-row {
   margin-top: 10px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
 .search-row {
   display: grid;
   grid-template-columns: 1fr 90px 100px;
+  gap: 8px;
+}
+
+.ask-row {
+  display: grid;
+  grid-template-columns: 1fr 120px;
   gap: 8px;
 }
 
@@ -510,6 +516,10 @@ button:disabled {
   }
 
   .search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ask-row {
     grid-template-columns: 1fr;
   }
 

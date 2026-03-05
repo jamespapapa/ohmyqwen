@@ -3,6 +3,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { AnalyzeInputSchema, RunModeSchema } from "../core/types.js";
 import {
+  analyzeServerProject,
+  askServerProject,
   getServerProject,
   listServerProjects,
   readServerProjectFile,
@@ -43,7 +45,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file"
+  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -307,6 +309,50 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         limit: payload.limit,
         queryMode: payload.queryMode,
         maxFiles: payload.maxFiles
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectAnalyzeId = matchProjectPath(pathname, "analyze");
+  if (projectAnalyzeId && method === "POST") {
+    try {
+      const payload = (await readJsonBody(req)) as {
+        maxFiles?: number;
+      };
+      const result = await analyzeServerProject({
+        projectId: projectAnalyzeId,
+        maxFiles: payload.maxFiles
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectAskId = matchProjectPath(pathname, "ask");
+  if (projectAskId && method === "POST") {
+    try {
+      const payload = (await readJsonBody(req)) as {
+        question?: string;
+        maxAttempts?: number;
+        limit?: number;
+      };
+      const result = await askServerProject({
+        projectId: projectAskId,
+        question: payload.question ?? "",
+        maxAttempts: payload.maxAttempts,
+        limit: payload.limit
       });
       json(res, 200, result);
       return true;

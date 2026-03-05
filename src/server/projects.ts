@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 import { inspectContext } from "../context/packer.js";
 import { RetrievalConfigOverrideSchema, RunModeSchema } from "../core/types.js";
+import { OpenAICompatibleLlmClient } from "../llm/client.js";
 import { resolveRetrievalConfig } from "../retrieval/config.js";
 import {
   buildQmdQueryFromSignals,
@@ -94,6 +95,52 @@ export interface ProjectFileDetailResult {
   truncated: boolean;
 }
 
+export interface ProjectAnalysisResult {
+  project: ServerProject;
+  analyzedAt: string;
+  memoryHome: string;
+  memoryFiles: string[];
+  summary: string;
+  architecture: string[];
+  keyModules: Array<{
+    name: string;
+    path: string;
+    role: string;
+    confidence: number;
+  }>;
+  risks: string[];
+  confidence: number;
+  evidence: string[];
+  diagnostics: {
+    warmup: ProjectWarmupResult;
+    lowConfidenceSignals: string[];
+    usedFallback: boolean;
+  };
+}
+
+export interface ProjectAskResponse {
+  project: ServerProject;
+  question: string;
+  answer: string;
+  confidence: number;
+  qualityGatePassed: boolean;
+  attempts: number;
+  evidence: string[];
+  caveats: string[];
+  retrieval: {
+    provider: "qmd" | "lexical";
+    fallbackUsed: boolean;
+    hitCount: number;
+    topConfidence: number;
+  };
+  diagnostics: {
+    lowConfidenceMode: boolean;
+    qualityGateFailures: string[];
+    usedFallback: boolean;
+    memoryFiles: string[];
+  };
+}
+
 interface ServerProjectStore {
   version: 1;
   updatedAt: string;
@@ -143,6 +190,9 @@ const SEARCHABLE_EXTENSIONS = new Set([
 
 const MAX_FILE_SIZE_BYTES = 512 * 1024;
 const MAX_DETAIL_FILE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_ASK_MAX_ATTEMPTS = 3;
+const ANALYSIS_MEMORY_DIR = "project-analysis";
+const QUERY_MEMORY_DIR = "query-reports";
 
 let cachedStore: ServerProjectStore | null = null;
 
@@ -231,6 +281,33 @@ function toProject(value: ServerProject): ServerProject {
     ...value,
     retrieval: value.retrieval ? { ...value.retrieval } : undefined
   };
+}
+
+function resolveProjectHome(workspaceDir: string): string {
+  const envProjectHome = process.env.OHMYQWEN_PROJECT_HOME?.trim();
+  if (!envProjectHome) {
+    return workspaceDir;
+  }
+
+  return path.isAbsolute(envProjectHome)
+    ? path.resolve(envProjectHome)
+    : path.resolve(workspaceDir, envProjectHome);
+}
+
+function resolveMemoryHome(workspaceDir: string): string {
+  const projectHome = resolveProjectHome(workspaceDir);
+  const envMemoryHome = process.env.OHMYQWEN_MEMORY_HOME?.trim();
+  if (!envMemoryHome) {
+    return path.resolve(projectHome, "memory");
+  }
+
+  return path.isAbsolute(envMemoryHome)
+    ? path.resolve(envMemoryHome)
+    : path.resolve(projectHome, envMemoryHome);
+}
+
+function toForwardSlash(value: string): string {
+  return value.replace(/\\/g, "/");
 }
 
 function toSearchTokens(query: string): string[] {
@@ -336,6 +413,45 @@ function makeSnippet(content: string, token: string): string | undefined {
   }
 
   return lines[index]?.trim().slice(0, 180);
+}
+
+function normalizeHitConfidence(hit: ProjectSearchHit): number {
+  const divisor = hit.source === "qmd" ? 10 : 20;
+  const normalized = hit.score / divisor;
+  return Math.max(0, Math.min(1, Number.isFinite(normalized) ? normalized : 0));
+}
+
+function summarizeLowConfidenceSignals(hits: ProjectSearchHit[]): string[] {
+  if (hits.length === 0) {
+    return ["검색 결과가 비어있어 누락 가능성이 높습니다."];
+  }
+
+  const topConfidence = normalizeHitConfidence(hits[0]);
+  const avgConfidence =
+    hits.reduce((sum, hit) => sum + normalizeHitConfidence(hit), 0) / Math.max(1, hits.length);
+  const warnings: string[] = [];
+
+  if (topConfidence < 0.35) {
+    warnings.push("상위 결과 confidence가 낮아 핵심 근거 누락 가능성이 있습니다.");
+  }
+  if (avgConfidence < 0.25) {
+    warnings.push("전체 평균 confidence가 낮아 검색 미스가 있을 수 있습니다.");
+  }
+  if (hits.length < 3) {
+    warnings.push("검색 결과 수가 적어 판단 근거가 제한적입니다.");
+  }
+
+  return warnings;
+}
+
+async function fileExistsUnderWorkspace(workspaceDir: string, relativePath: string): Promise<boolean> {
+  try {
+    const resolved = resolveProjectFilePath(workspaceDir, relativePath);
+    const stat = await fs.stat(resolved.absolutePath);
+    return stat.isFile();
+  } catch {
+    return false;
+  }
 }
 
 async function lexicalSearch(options: {
@@ -537,8 +653,17 @@ export async function readServerProjectFile(options: {
 
   const resolved = resolveProjectFilePath(project.workspaceDir, options.filePath);
   const maxBytes = Math.max(16 * 1024, Math.min(options.maxBytes ?? MAX_DETAIL_FILE_BYTES, 8 * 1024 * 1024));
-
-  const stat = await fs.stat(resolved.absolutePath);
+  let stat;
+  try {
+    stat = await fs.stat(resolved.absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `파일을 찾을 수 없습니다(이동/삭제 가능성). 재색인 후 다시 시도하세요: ${resolved.relativePath}`
+      );
+    }
+    throw error;
+  }
   if (!stat.isFile()) {
     throw new Error(`not a file: ${resolved.relativePath}`);
   }
@@ -568,6 +693,192 @@ export async function readServerProjectFile(options: {
   } finally {
     await handle.close();
   }
+}
+
+const ProjectAnalysisOutputSchema = z.object({
+  summary: z.string().min(1),
+  architecture: z.array(z.string()).min(1),
+  keyModules: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        path: z.string().min(1),
+        role: z.string().min(1),
+        confidence: z.number().min(0).max(1).default(0.5)
+      })
+    )
+    .default([]),
+  risks: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(z.string()).default([])
+});
+
+const ProjectAskOutputSchema = z.object({
+  answer: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(z.string()).default([]),
+  caveats: z.array(z.string()).default([])
+});
+
+function buildFileExtensionStats(files: string[]): Array<{ ext: string; count: number }> {
+  const map = new Map<string, number>();
+  for (const file of files) {
+    const ext = path.extname(file).toLowerCase() || "(no-ext)";
+    map.set(ext, (map.get(ext) ?? 0) + 1);
+  }
+
+  return Array.from(map.entries())
+    .map(([ext, count]) => ({ ext, count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.ext.localeCompare(b.ext)))
+    .slice(0, 12);
+}
+
+function buildTopDirectoryStats(files: string[]): Array<{ dir: string; count: number }> {
+  const map = new Map<string, number>();
+  for (const file of files) {
+    const normalized = toForwardSlash(file);
+    const rootDir = normalized.includes("/") ? normalized.split("/")[0] : "(root)";
+    map.set(rootDir, (map.get(rootDir) ?? 0) + 1);
+  }
+
+  return Array.from(map.entries())
+    .map(([dir, count]) => ({ dir, count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.dir.localeCompare(b.dir)))
+    .slice(0, 20);
+}
+
+function buildDeterministicProjectSummary(options: {
+  project: ServerProject;
+  files: string[];
+  warmup: ProjectWarmupResult;
+}): {
+  summary: string;
+  architecture: string[];
+  keyModules: Array<{ name: string; path: string; role: string; confidence: number }>;
+  risks: string[];
+  confidence: number;
+  evidence: string[];
+} {
+  const extStats = buildFileExtensionStats(options.files);
+  const topDirs = buildTopDirectoryStats(options.files);
+  const keyModules = options.files.slice(0, 12).map((file) => ({
+    name: path.basename(file),
+    path: toForwardSlash(file),
+    role: "candidate-module",
+    confidence: 0.35
+  }));
+
+  return {
+    summary: `${options.project.name} 프로젝트는 총 ${options.files.length}개 파일이 감지되었고, 주요 디렉터리는 ${topDirs
+      .slice(0, 3)
+      .map((entry) => `${entry.dir}(${entry.count})`)
+      .join(", ")} 입니다.`,
+    architecture: topDirs.slice(0, 8).map((entry) => `${entry.dir}: ${entry.count} files`),
+    keyModules,
+    risks: summarizeLowConfidenceSignals([]),
+    confidence: 0.42,
+    evidence: [
+      `fileCount=${options.files.length}`,
+      `provider=${options.warmup.selectedProvider}`,
+      `fallbackUsed=${options.warmup.fallbackUsed}`,
+      `topExt=${extStats
+        .slice(0, 5)
+        .map((entry) => `${entry.ext}:${entry.count}`)
+        .join(",")}`
+    ]
+  };
+}
+
+function formatTs(value: Date): string {
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return `${value.getFullYear()}${pad(value.getMonth() + 1)}${pad(value.getDate())}-${pad(
+    value.getHours()
+  )}${pad(value.getMinutes())}${pad(value.getSeconds())}`;
+}
+
+function buildAnalysisMarkdown(input: {
+  project: ServerProject;
+  analyzedAt: string;
+  summary: string;
+  architecture: string[];
+  keyModules: Array<{ name: string; path: string; role: string; confidence: number }>;
+  risks: string[];
+  confidence: number;
+  evidence: string[];
+  lowConfidenceSignals: string[];
+}): string {
+  const lines: string[] = [];
+  lines.push(`# Project Analysis Memory`);
+  lines.push("");
+  lines.push(`- projectId: ${input.project.id}`);
+  lines.push(`- projectName: ${input.project.name}`);
+  lines.push(`- workspaceDir: ${input.project.workspaceDir}`);
+  lines.push(`- analyzedAt: ${input.analyzedAt}`);
+  lines.push(`- confidence: ${input.confidence.toFixed(2)}`);
+  lines.push("");
+  lines.push("## Summary");
+  lines.push(input.summary);
+  lines.push("");
+  lines.push("## Architecture");
+  for (const item of input.architecture) {
+    lines.push(`- ${item}`);
+  }
+  lines.push("");
+  lines.push("## Key Modules");
+  for (const module of input.keyModules) {
+    lines.push(
+      `- ${module.path} | role=${module.role} | confidence=${module.confidence.toFixed(2)} | name=${module.name}`
+    );
+  }
+  lines.push("");
+  lines.push("## Evidence");
+  for (const item of input.evidence) {
+    lines.push(`- ${item}`);
+  }
+  lines.push("");
+  lines.push("## Risks");
+  for (const risk of input.risks) {
+    lines.push(`- ${risk}`);
+  }
+  lines.push("");
+  lines.push("## Low Confidence Signals");
+  for (const signal of input.lowConfidenceSignals) {
+    lines.push(`- ${signal}`);
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+async function writeMemoryDocs(options: {
+  memoryRoot: string;
+  groupDir: string;
+  latestFileName: string;
+  content: string;
+}): Promise<{ latestPath: string; snapshotPath: string; relativePaths: string[] }> {
+  const groupRoot = path.resolve(options.memoryRoot, options.groupDir);
+  await fs.mkdir(groupRoot, { recursive: true });
+
+  const now = new Date();
+  const snapshotName = `${formatTs(now)}.md`;
+  const latestPath = path.resolve(groupRoot, options.latestFileName);
+  const snapshotPath = path.resolve(groupRoot, snapshotName);
+
+  await fs.writeFile(snapshotPath, options.content, "utf8");
+  await fs.writeFile(latestPath, options.content, "utf8");
+
+  return {
+    latestPath,
+    snapshotPath,
+    relativePaths: [
+      toForwardSlash(path.relative(options.memoryRoot, latestPath)),
+      toForwardSlash(path.relative(options.memoryRoot, snapshotPath))
+    ]
+  };
+}
+
+async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): Promise<string[]> {
+  const files = await collectProjectFiles(memoryRoot, maxFiles);
+  return files.filter((file) => path.extname(file).toLowerCase() === ".md");
 }
 
 export async function warmupServerProjectIndex(options: {
@@ -628,6 +939,385 @@ export async function warmupServerProjectIndex(options: {
     selectedProvider: inspection.retrieval.selectedProvider,
     fallbackUsed: inspection.retrieval.fallbackUsed,
     providerResults
+  };
+}
+
+function isInsideParent(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export async function analyzeServerProject(options: {
+  projectId: string;
+  maxFiles?: number;
+}): Promise<ProjectAnalysisResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+
+  const warmup = await warmupServerProjectIndex({
+    projectId: options.projectId,
+    maxFiles: options.maxFiles
+  });
+  const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+  const memoryRoot = resolveMemoryHome(project.workspaceDir);
+  await fs.mkdir(memoryRoot, { recursive: true });
+
+  const extStats = buildFileExtensionStats(files);
+  const topDirs = buildTopDirectoryStats(files);
+  const seedSearch = await searchServerProject({
+    projectId: options.projectId,
+    query: "architecture module service controller repository flow entrypoint",
+    limit: 14
+  });
+  const hitConfidence = seedSearch.hits.map((hit) => normalizeHitConfidence(hit));
+  const topConfidence = hitConfidence[0] ?? 0;
+  const avgConfidence =
+    hitConfidence.reduce((sum, value) => sum + value, 0) / Math.max(1, hitConfidence.length);
+  const lowConfidenceSignals = summarizeLowConfidenceSignals(seedSearch.hits);
+  const lowConfidenceMode = topConfidence < 0.4 || avgConfidence < 0.3 || seedSearch.hits.length < 3;
+
+  const deterministic = buildDeterministicProjectSummary({
+    project: warmup.project,
+    files,
+    warmup
+  });
+
+  const llm = new OpenAICompatibleLlmClient();
+  const analysisPromptPayload = {
+    project: {
+      id: warmup.project.id,
+      name: warmup.project.name,
+      description: warmup.project.description,
+      workspaceDir: warmup.project.workspaceDir
+    },
+    indexed: {
+      fileCount: files.length,
+      warmupProvider: warmup.selectedProvider,
+      warmupFallbackUsed: warmup.fallbackUsed,
+      topExtensions: extStats.slice(0, 12),
+      topDirectories: topDirs.slice(0, 15)
+    },
+    retrievalEvidence: seedSearch.hits.slice(0, 14).map((hit) => ({
+      path: hit.path,
+      score: hit.score,
+      confidence: normalizeHitConfidence(hit),
+      reasons: hit.reasons ?? [],
+      snippet: hit.snippet ?? ""
+    })),
+    confidencePolicy: {
+      topConfidence,
+      averageConfidence: avgConfidence,
+      lowConfidenceMode,
+      lowConfidenceSignals
+    }
+  };
+
+  const generation = await llm.generateStructured({
+    systemPrompt: [
+      "You are an architecture analyst for a local coding runtime.",
+      "Return ONLY one JSON object.",
+      "If confidence is low, explicitly include missing-coverage risks and lower confidence.",
+      "Do not fabricate files or dependencies."
+    ].join("\n"),
+    userPrompt: JSON.stringify(
+      {
+        task: "Analyze project structure and architecture for memory indexing.",
+        outputSchema: {
+          summary: "string",
+          architecture: ["string"],
+          keyModules: [{ name: "string", path: "string", role: "string", confidence: "0..1" }],
+          risks: ["string"],
+          confidence: "0..1",
+          evidence: ["string"]
+        },
+        input: analysisPromptPayload
+      },
+      null,
+      2
+    ),
+    fallback: deterministic,
+    parse: (value) => ProjectAnalysisOutputSchema.parse(value)
+  });
+
+  const analyzedAt = nowIso();
+  const output = generation.output;
+  const normalizedOutput = {
+    summary: output.summary,
+    architecture: output.architecture.slice(0, 24),
+    keyModules: output.keyModules
+      .map((module) => ({
+        ...module,
+        path: toForwardSlash(module.path),
+        confidence: Math.max(0, Math.min(1, module.confidence))
+      }))
+      .slice(0, 32),
+    risks: unique([...output.risks, ...lowConfidenceSignals]).slice(0, 30),
+    confidence: Math.max(
+      0,
+      Math.min(
+        1,
+        output.confidence * (lowConfidenceMode ? 0.85 : 1)
+      )
+    ),
+    evidence: unique([
+      ...output.evidence,
+      `seedProvider=${seedSearch.provider}`,
+      `seedTopConfidence=${topConfidence.toFixed(2)}`,
+      `seedAverageConfidence=${avgConfidence.toFixed(2)}`
+    ]).slice(0, 30)
+  };
+
+  const markdown = buildAnalysisMarkdown({
+    project: warmup.project,
+    analyzedAt,
+    ...normalizedOutput,
+    lowConfidenceSignals
+  });
+  const analysisFiles = await writeMemoryDocs({
+    memoryRoot,
+    groupDir: ANALYSIS_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: markdown
+  });
+
+  if (isInsideParent(project.workspaceDir, memoryRoot)) {
+    const relativeMemoryFiles = analysisFiles.relativePaths.map((item) =>
+      toForwardSlash(path.join(path.relative(project.workspaceDir, memoryRoot), item))
+    );
+    await inspectContext({
+      cwd: project.workspaceDir,
+      files: unique([...files.slice(0, 5_000), ...relativeMemoryFiles]),
+      task: `reindex with memory docs: ${project.name}`,
+      tier: "small",
+      tokenBudget: 700,
+      stage: "PLAN"
+    });
+  }
+
+  return {
+    project: warmup.project,
+    analyzedAt,
+    memoryHome: memoryRoot,
+    memoryFiles: [analysisFiles.latestPath, analysisFiles.snapshotPath],
+    ...normalizedOutput,
+    diagnostics: {
+      warmup,
+      lowConfidenceSignals,
+      usedFallback: generation.usedFallback
+    }
+  };
+}
+
+function qualityGateForAsk(output: z.infer<typeof ProjectAskOutputSchema>): {
+  passed: boolean;
+  failures: string[];
+} {
+  const failures: string[] = [];
+  if (output.answer.trim().length < 40) {
+    failures.push("answer-too-short");
+  }
+  if (output.evidence.length === 0) {
+    failures.push("missing-evidence");
+  }
+  if (output.confidence < 0.2) {
+    failures.push("confidence-too-low");
+  }
+  return {
+    passed: failures.length === 0,
+    failures
+  };
+}
+
+export async function askServerProject(options: {
+  projectId: string;
+  question: string;
+  maxAttempts?: number;
+  limit?: number;
+}): Promise<ProjectAskResponse> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+
+  const question = options.question.trim();
+  if (!question) {
+    throw new Error("question is required");
+  }
+
+  const analysis = await analyzeServerProject({
+    projectId: options.projectId
+  });
+  const search = await searchServerProject({
+    projectId: options.projectId,
+    query: question,
+    limit: options.limit ?? 12
+  });
+
+  const lowConfidenceMode =
+    search.hits.length === 0 || normalizeHitConfidence(search.hits[0]) < 0.4;
+  const memoryRoot = resolveMemoryHome(project.workspaceDir);
+  const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
+  const memoryPreview: Array<{ path: string; content: string }> = [];
+  for (const relativePath of memoryMarkdownFiles.slice(0, 10)) {
+    const absolutePath = path.resolve(memoryRoot, relativePath);
+    const content = await readTextFileSafe(absolutePath);
+    if (!content) {
+      continue;
+    }
+    memoryPreview.push({
+      path: relativePath,
+      content: content.slice(0, 1800)
+    });
+  }
+
+  const llm = new OpenAICompatibleLlmClient();
+  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? DEFAULT_ASK_MAX_ATTEMPTS, 5));
+  const qualityFailures: string[] = [];
+
+  let bestOutput: z.infer<typeof ProjectAskOutputSchema> = {
+    answer:
+      "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
+    confidence: 0.2,
+    evidence: [],
+    caveats: ["low-evidence"]
+  };
+  let attempts = 0;
+  let usedFallback = false;
+  let passed = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    const priorFailures = qualityFailures.slice(-5);
+    const generation = await llm.generateStructured({
+      systemPrompt: [
+        "You are a strict project Q&A engine for software architecture and implementation logic.",
+        "Return ONLY JSON object.",
+        "Prioritize high confidence evidence; if low confidence then explicitly state uncertainty.",
+        "Do not hallucinate missing files."
+      ].join("\n"),
+      userPrompt: JSON.stringify(
+        {
+          task: "Answer user question using project analysis memory + retrieval evidence.",
+          outputSchema: {
+            answer: "string",
+            confidence: "0..1",
+            evidence: ["string"],
+            caveats: ["string"]
+          },
+          question,
+          qualityGateContext: {
+            attempt,
+            priorFailures,
+            lowConfidenceMode
+          },
+          projectAnalysis: {
+            summary: analysis.summary,
+            architecture: analysis.architecture,
+            keyModules: analysis.keyModules,
+            confidence: analysis.confidence,
+            risks: analysis.risks
+          },
+          retrieval: {
+            provider: search.provider,
+            fallbackUsed: search.fallbackUsed,
+            topHits: search.hits.slice(0, 12).map((hit) => ({
+              path: hit.path,
+              score: hit.score,
+              confidence: normalizeHitConfidence(hit),
+              reasons: hit.reasons ?? [],
+              snippet: hit.snippet ?? ""
+            }))
+          },
+          memory: memoryPreview,
+          instruction:
+            lowConfidenceMode
+              ? "검색 confidence가 낮으므로, 누락 가능성을 명확히 경고하고 추정/확정 범위를 구분하세요."
+              : "근거 중심으로 간결하고 정확하게 답변하세요."
+        },
+        null,
+        2
+      ),
+      fallback: bestOutput,
+      parse: (value) => ProjectAskOutputSchema.parse(value)
+    });
+
+    usedFallback ||= generation.usedFallback;
+    bestOutput = generation.output;
+
+    const gate = qualityGateForAsk(bestOutput);
+    if (gate.passed) {
+      passed = true;
+      break;
+    }
+
+    qualityFailures.push(...gate.failures);
+  }
+
+  const reportLines: string[] = [
+    `# Query Report`,
+    ``,
+    `- projectId: ${project.id}`,
+    `- projectName: ${project.name}`,
+    `- askedAt: ${nowIso()}`,
+    `- question: ${question}`,
+    `- confidence: ${bestOutput.confidence.toFixed(2)}`,
+    `- qualityGatePassed: ${passed}`,
+    `- attempts: ${attempts}`,
+    ``,
+    `## Answer`,
+    bestOutput.answer,
+    ``,
+    `## Evidence`
+  ];
+  for (const line of bestOutput.evidence) {
+    reportLines.push(`- ${line}`);
+  }
+  reportLines.push("", "## Caveats");
+  for (const line of bestOutput.caveats) {
+    reportLines.push(`- ${line}`);
+  }
+  reportLines.push("", "## Retrieval");
+  reportLines.push(`- provider=${search.provider}`);
+  reportLines.push(`- fallback=${search.fallbackUsed}`);
+  reportLines.push(`- hitCount=${search.hits.length}`);
+  reportLines.push(`- topConfidence=${(search.hits[0] ? normalizeHitConfidence(search.hits[0]) : 0).toFixed(2)}`);
+  reportLines.push("");
+
+  const queryReportFiles = await writeMemoryDocs({
+    memoryRoot,
+    groupDir: QUERY_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: `${reportLines.join("\n")}\n`
+  });
+
+  return {
+    project,
+    question,
+    answer: bestOutput.answer,
+    confidence: bestOutput.confidence,
+    qualityGatePassed: passed,
+    attempts,
+    evidence: bestOutput.evidence,
+    caveats: bestOutput.caveats,
+    retrieval: {
+      provider: search.provider,
+      fallbackUsed: search.fallbackUsed,
+      hitCount: search.hits.length,
+      topConfidence: search.hits[0] ? normalizeHitConfidence(search.hits[0]) : 0
+    },
+    diagnostics: {
+      lowConfidenceMode,
+      qualityGateFailures: unique(qualityFailures),
+      usedFallback,
+      memoryFiles: [
+        analysis.memoryFiles[0],
+        analysis.memoryFiles[1],
+        queryReportFiles.latestPath,
+        queryReportFiles.snapshotPath
+      ]
+    }
   };
 }
 
@@ -698,13 +1388,16 @@ export async function searchServerProject(options: {
       });
 
       if (qmdResult.status === "ok") {
-        return {
-          project,
-          query,
-          provider: "qmd",
-          fallbackUsed: false,
-          modeUsed: qmdResult.mode,
-          hits: qmdResult.hits.map((hit) => ({
+        const existingQmdHits: ProjectSearchHit[] = [];
+        const missingQmdPaths: string[] = [];
+        for (const hit of qmdResult.hits) {
+          const exists = await fileExistsUnderWorkspace(project.workspaceDir, hit.path);
+          if (!exists) {
+            missingQmdPaths.push(hit.path);
+            continue;
+          }
+
+          existingQmdHits.push({
             path: hit.path,
             score: hit.score,
             source: "qmd",
@@ -716,10 +1409,50 @@ export async function searchServerProject(options: {
             ]),
             title: hit.title,
             snippet: hit.snippet
-          })),
+          });
+        }
+
+        if (existingQmdHits.length === 0) {
+          const lexicalHits = await lexicalSearch({
+            workspaceDir: project.workspaceDir,
+            files,
+            query,
+            limit
+          });
+          return {
+            project,
+            query,
+            provider: "lexical",
+            fallbackUsed: true,
+            hits: lexicalHits,
+            diagnostics: {
+              qmdStatus: "empty",
+              qmdErrors: [
+                `qmd hits were stale and missing on disk: ${missingQmdPaths.slice(0, 5).join(", ")}`
+              ],
+              qmdIndexMethod: indexed.method,
+              qmdQueryMode: retrievalConfig.qmd.queryMode,
+              qmdCommand: retrievalConfig.qmd.command,
+              fileCount: files.length
+            }
+          };
+        }
+
+        return {
+          project,
+          query,
+          provider: "qmd",
+          fallbackUsed: false,
+          modeUsed: qmdResult.mode,
+          hits: existingQmdHits,
           diagnostics: {
             qmdStatus: qmdResult.status,
-            qmdErrors: qmdResult.errors,
+            qmdErrors: unique([
+              ...qmdResult.errors,
+              missingQmdPaths.length > 0
+                ? `stale-path-filtered=${missingQmdPaths.slice(0, 5).join(",")}`
+                : ""
+            ]),
             qmdIndexMethod: indexed.method,
             qmdQueryMode: retrievalConfig.qmd.queryMode,
             qmdCommand: retrievalConfig.qmd.command,

@@ -21,6 +21,13 @@ export interface LlmCallResult<T> {
   trace: LlmCallTrace;
 }
 
+export interface StructuredGenerationResult<T> {
+  output: T;
+  trace: LlmCallTrace;
+  usedFallback: boolean;
+  error?: string;
+}
+
 export interface ProposePlanParams {
   input: AnalyzeInput;
   context: PackedContext;
@@ -2180,5 +2187,58 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         rawResponse: `${trace.rawResponse}\n\n[ohmyqwen-fallback-implement] ${preview}`
       }
     };
+  }
+
+  public async generateStructured<T>(options: {
+    systemPrompt: string;
+    userPrompt: string;
+    fallback: T;
+    parse?: (value: unknown) => T;
+  }): Promise<StructuredGenerationResult<T>> {
+    const trace = await this.callChat(options.systemPrompt, options.userPrompt);
+    if (trace.mode === "fallback") {
+      return {
+        output: options.fallback,
+        trace,
+        usedFallback: true,
+        error: "llm-fallback-mode"
+      };
+    }
+
+    try {
+      const parsed = extractJsonObject(trace.rawResponse);
+      return {
+        output: options.parse ? options.parse(parsed) : (parsed as T),
+        trace,
+        usedFallback: false
+      };
+    } catch (error) {
+      const retriedTrace = await this.retryForValidJson({
+        phase: "PLAN",
+        systemPrompt: options.systemPrompt,
+        userPrompt: options.userPrompt,
+        invalidRaw: trace.rawResponse
+      });
+
+      if (retriedTrace) {
+        try {
+          const parsed = extractJsonObject(retriedTrace.rawResponse);
+          return {
+            output: options.parse ? options.parse(parsed) : (parsed as T),
+            trace: retriedTrace,
+            usedFallback: false
+          };
+        } catch {
+          // continue to fallback below
+        }
+      }
+
+      return {
+        output: options.fallback,
+        trace,
+        usedFallback: true,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 }

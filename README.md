@@ -74,6 +74,8 @@ Retrieval / Local Embedding (옵션):
 - `OHMYQWEN_QMD_MASK`
 - `OHMYQWEN_QMD_SYNC_INTERVAL_MS`
 - `OHMYQWEN_QMD_CONFIG_DIR` / `OHMYQWEN_QMD_CACHE_HOME` / `OHMYQWEN_QMD_INDEX_PATH`
+- `OHMYQWEN_PROJECT_HOME` (옵션: memory 루트 기준이 되는 프로젝트 홈)
+- `OHMYQWEN_MEMORY_HOME` (옵션: 기본 `memory`, 프로젝트 홈 기준 상대경로 또는 절대경로)
 - `OHMYQWEN_EMBEDDING_ENABLED`
 - `OHMYQWEN_EMBEDDING_ENDPOINT`
 - `OHMYQWEN_EMBEDDING_HEALTH_PATH`
@@ -87,6 +89,12 @@ Retrieval / Local Embedding (옵션):
 - workspace collection/index 자동 생성/증분 update
 - `qmd query`(실패 시 `qmd search`) 호출
 - 결과를 runtime 공통 RetrievalHit으로 정규화
+
+Web UI 프로젝트 모드에서는:
+- 프로젝트 인덱싱 + LLM 구조 분석(`/api/projects/:id/analyze`)
+- memory markdown 저장(`memory/project-analysis/*.md`, `memory/query-reports/*.md`)
+- 검색 결과 파일 상세 조회(`/api/projects/:id/file`)
+- 프로젝트 질의응답 + confidence 반환(`/api/projects/:id/ask`)
 
 참고: `opencode serve`를 LLM 백엔드로 사용할 때는 다음처럼 설정:
 

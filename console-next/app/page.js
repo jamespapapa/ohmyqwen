@@ -488,6 +488,11 @@ export default function HomePage() {
   const [selectedFileDetail, setSelectedFileDetail] = useState(null);
   const [selectedFileLoading, setSelectedFileLoading] = useState(false);
   const [selectedFileError, setSelectedFileError] = useState("");
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const [askResult, setAskResult] = useState(null);
   const [indexing, setIndexing] = useState(false);
 
   const [projectName, setProjectName] = useState("");
@@ -579,6 +584,9 @@ export default function HomePage() {
     setSelectedSearchHit(null);
     setSelectedFileDetail(null);
     setSelectedFileError("");
+    setAnalysisResult(null);
+    setAskResult(null);
+    setAskQuestion("");
   }, [selectedProject]);
 
   useEffect(() => {
@@ -744,6 +752,34 @@ export default function HomePage() {
     }
   }
 
+  async function onAnalyzeProject() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+
+    setAnalysisLoading(true);
+    setProjectError("");
+    setProjectMessage("");
+
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/analyze`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setAnalysisResult(response);
+      setProjectMessage(
+        `분석 완료: confidence=${Number(response.confidence || 0).toFixed(2)}, memory=${response.memoryFiles?.length || 0} files`
+      );
+      await loadProjects(true);
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+      setAnalysisResult(null);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }
+
   async function onSearchProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -799,6 +835,36 @@ export default function HomePage() {
       setSelectedFileError(e instanceof Error ? e.message : String(e));
     } finally {
       setSelectedFileLoading(false);
+    }
+  }
+
+  async function onAskProject() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+
+    if (!askQuestion.trim()) {
+      setProjectError("질문을 입력해주세요.");
+      return;
+    }
+
+    setAskLoading(true);
+    setProjectError("");
+    setAskResult(null);
+
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/ask`, {
+        method: "POST",
+        body: JSON.stringify({
+          question: askQuestion.trim()
+        })
+      });
+      setAskResult(response);
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAskLoading(false);
     }
   }
 
@@ -1009,6 +1075,9 @@ export default function HomePage() {
               <button type="button" className="secondary" onClick={onWarmupIndex} disabled={!selectedProjectId || indexing}>
                 {indexing ? "색인 중..." : "QMD 색인"}
               </button>
+              <button type="button" className="secondary" onClick={onAnalyzeProject} disabled={!selectedProjectId || analysisLoading}>
+                {analysisLoading ? "분석 중..." : "LLM 구조 분석"}
+              </button>
             </div>
 
             <div className="label" style={{ marginTop: 10 }}>프로젝트 검색</div>
@@ -1084,6 +1153,82 @@ export default function HomePage() {
                       </>
                     ) : null}
                   </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {analysisResult ? (
+              <div className="search-result-box" style={{ marginTop: 10 }}>
+                <div className="label">프로젝트 구조/아키텍처 분석</div>
+                <div className="hint">
+                  confidence={Number(analysisResult.confidence || 0).toFixed(2)} · analyzedAt={analysisResult.analyzedAt}
+                </div>
+                <div className="report-box" style={{ marginTop: 8 }}>
+                  <div className="report-row">
+                    <span>요약</span>
+                    <span>{shortText(analysisResult.summary || "-", 160)}</span>
+                  </div>
+                  <div className="report-row">
+                    <span>메모리 경로</span>
+                    <span title={analysisResult.memoryHome}>{shortText(analysisResult.memoryHome || "-", 70)}</span>
+                  </div>
+                </div>
+
+                <div className="label" style={{ marginTop: 8 }}>핵심 모듈</div>
+                <ul className="artifacts" style={{ maxHeight: 160 }}>
+                  {(analysisResult.keyModules || []).length === 0 ? (
+                    <li>
+                      <span>핵심 모듈 없음</span>
+                      <span>-</span>
+                    </li>
+                  ) : (
+                    analysisResult.keyModules.slice(0, 12).map((module, index) => (
+                      <li key={`${module.path}-${index}`}>
+                        <span title={`${module.path} | ${module.role}`}>
+                          {shortText(module.path, 55)} · {shortText(module.role, 24)}
+                        </span>
+                        <span>{Number(module.confidence || 0).toFixed(2)}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="label" style={{ marginTop: 10 }}>프로젝트 Q&A</div>
+            <div className="ask-row">
+              <input
+                value={askQuestion}
+                onChange={(e) => setAskQuestion(e.target.value)}
+                placeholder='예: 보험금 청구 로직이 어떻게 이루어지는지 확인해줘'
+              />
+              <button type="button" onClick={onAskProject} disabled={!selectedProjectId || askLoading}>
+                {askLoading ? "응답 생성 중..." : "질문 실행"}
+              </button>
+            </div>
+
+            {askResult ? (
+              <div className="search-result-box">
+                <div className="hint">
+                  answerConfidence={Number(askResult.confidence || 0).toFixed(2)} · qualityGate=
+                  {askResult.qualityGatePassed ? "passed" : "failed"} · attempts={askResult.attempts}
+                </div>
+                <pre className="file-scroll-view" style={{ maxHeight: 240 }}>{askResult.answer}</pre>
+                <div className="label" style={{ marginTop: 8 }}>근거</div>
+                <ul className="reason-list">
+                  {(askResult.evidence || []).map((line, index) => (
+                    <li key={`ask-evidence-${index}`}>{line}</li>
+                  ))}
+                </ul>
+                {(askResult.caveats || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>주의사항</div>
+                    <ul className="reason-list">
+                      {(askResult.caveats || []).map((line, index) => (
+                        <li key={`ask-caveat-${index}`}>{line}</li>
+                      ))}
+                    </ul>
+                  </>
                 ) : null}
               </div>
             ) : null}
