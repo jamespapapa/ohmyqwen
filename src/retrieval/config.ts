@@ -51,6 +51,16 @@ const RetrievalConfigFileSchema = z.object({
     .optional(),
   qmd: z
     .object({
+      enabled: z.boolean().optional(),
+      command: z.string().min(1).optional(),
+      collectionName: z.string().min(1).optional(),
+      indexName: z.string().min(1).optional(),
+      mask: z.string().min(1).optional(),
+      queryMode: z.enum(["query_then_search", "search_only", "query_only"]).optional(),
+      configDir: z.string().min(1).optional(),
+      cacheHome: z.string().min(1).optional(),
+      indexPath: z.string().min(1).optional(),
+      syncIntervalMs: z.number().int().min(1000).max(3600_000).optional(),
       forceFailure: z.boolean().optional()
     })
     .optional()
@@ -68,7 +78,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
     final: 40
   },
   timeoutMs: {
-    qmd: 1200,
+    qmd: 5000,
     semantic: 2500,
     provider: 3000
   },
@@ -85,10 +95,20 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   lifecycle: {
     chunkVersion: "v1",
-    retrievalVersion: "v1",
+    retrievalVersion: "v3-qmd-cli",
     autoReindexOnStale: true
   },
   qmd: {
+    enabled: true,
+    command: "qmd",
+    collectionName: "workspace",
+    indexName: undefined,
+    mask: "**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh}",
+    queryMode: "query_then_search",
+    configDir: undefined,
+    cacheHome: undefined,
+    indexPath: undefined,
+    syncIntervalMs: 60_000,
     forceFailure: false
   }
 };
@@ -188,6 +208,29 @@ function normalizeEndpoint(value: string | undefined): string | undefined {
   return trimmed.replace(/\/+$/, "");
 }
 
+function normalizeOptionalPath(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function parseQmdQueryMode(
+  value: string | undefined
+): "query_then_search" | "search_only" | "query_only" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "query_then_search" || normalized === "search_only" || normalized === "query_only") {
+    return normalized;
+  }
+
+  return undefined;
+}
+
 function mergeConfig(base: ResolvedRetrievalConfig, patch: RetrievalConfigFile): ResolvedRetrievalConfig {
   return {
     providerPriority: uniqueProviders(patch.providerPriority ?? base.providerPriority),
@@ -279,6 +322,17 @@ export async function resolveRetrievalConfig(
 
   config.qmd = {
     ...config.qmd,
+    enabled: asBool(process.env.OHMYQWEN_QMD_ENABLED) ?? config.qmd.enabled,
+    command: process.env.OHMYQWEN_QMD_COMMAND?.trim() || config.qmd.command,
+    collectionName: process.env.OHMYQWEN_QMD_COLLECTION?.trim() || config.qmd.collectionName,
+    indexName: process.env.OHMYQWEN_QMD_INDEX_NAME?.trim() || config.qmd.indexName,
+    mask: process.env.OHMYQWEN_QMD_MASK?.trim() || config.qmd.mask,
+    queryMode: parseQmdQueryMode(process.env.OHMYQWEN_QMD_QUERY_MODE) ?? config.qmd.queryMode,
+    configDir: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CONFIG_DIR) ?? config.qmd.configDir,
+    cacheHome: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CACHE_HOME) ?? config.qmd.cacheHome,
+    indexPath: normalizeOptionalPath(process.env.OHMYQWEN_QMD_INDEX_PATH) ?? config.qmd.indexPath,
+    syncIntervalMs:
+      asInt(process.env.OHMYQWEN_QMD_SYNC_INTERVAL_MS) ?? config.qmd.syncIntervalMs,
     forceFailure: asBool(process.env.OHMYQWEN_QMD_FORCE_FAIL) ?? config.qmd.forceFailure
   };
 

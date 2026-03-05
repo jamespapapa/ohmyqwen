@@ -67,6 +67,13 @@ Retrieval / Local Embedding (옵션):
 - `OHMYQWEN_CONTEXT_CHUNK_VERSION`
 - `OHMYQWEN_RETRIEVAL_VERSION`
 - `OHMYQWEN_REINDEX_ON_STALE`
+- `OHMYQWEN_QMD_ENABLED`
+- `OHMYQWEN_QMD_COMMAND` (기본: `qmd`)
+- `OHMYQWEN_QMD_QUERY_MODE` (`query_then_search` | `search_only` | `query_only`)
+- `OHMYQWEN_QMD_COLLECTION`
+- `OHMYQWEN_QMD_MASK`
+- `OHMYQWEN_QMD_SYNC_INTERVAL_MS`
+- `OHMYQWEN_QMD_CONFIG_DIR` / `OHMYQWEN_QMD_CACHE_HOME` / `OHMYQWEN_QMD_INDEX_PATH`
 - `OHMYQWEN_EMBEDDING_ENABLED`
 - `OHMYQWEN_EMBEDDING_ENDPOINT`
 - `OHMYQWEN_EMBEDDING_HEALTH_PATH`
@@ -75,6 +82,11 @@ Retrieval / Local Embedding (옵션):
 - `OHMYQWEN_EMBEDDING_TIMEOUT_MS`
 
 미설정 시 fallback 모드로 안전 동작.
+
+`qmd` CLI가 설치되어 있으면 QMD provider가 실제로 다음을 수행합니다.
+- workspace collection/index 자동 생성/증분 update
+- `qmd query`(실패 시 `qmd search`) 호출
+- 결과를 runtime 공통 RetrievalHit으로 정규화
 
 참고: `opencode serve`를 LLM 백엔드로 사용할 때는 다음처럼 설정:
 

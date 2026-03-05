@@ -144,6 +144,19 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "enabled": { "type": "boolean" },
+            "command": { "type": "string", "minLength": 1 },
+            "collectionName": { "type": "string", "minLength": 1 },
+            "indexName": { "type": "string", "minLength": 1 },
+            "mask": { "type": "string", "minLength": 1 },
+            "queryMode": {
+              "type": "string",
+              "enum": ["query_then_search", "search_only", "query_only"]
+            },
+            "configDir": { "type": "string", "minLength": 1 },
+            "cacheHome": { "type": "string", "minLength": 1 },
+            "indexPath": { "type": "string", "minLength": 1 },
+            "syncIntervalMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 },
             "forceFailure": { "type": "boolean" }
           }
         }

@@ -61,6 +61,7 @@
 
 - retrieval provider 인터페이스/팩토리/체인 도입 (`src/retrieval/*`)
 - QMD primary + lexical fallback + hybrid merge 도입
+- 로컬 `qmd` CLI 호출(index/update/query/search 파싱) 연동
 - local embedding endpoint preflight + semantic degrade 정책 추가
 - verify 실패 feedback 재주입 아티팩트(`verify.feedback.attempt-*.json`) 추가
 - stale index metadata 감지 + `context doctor --reindex` 경로 추가

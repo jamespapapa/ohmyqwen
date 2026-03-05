@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -59,7 +59,7 @@ describe("retrieval chain", () => {
     await writeFile(path.join(workspace, "b.ts"), "export const b = 2;", "utf8");
 
     const config = makeConfig();
-    config.providerPriority = ["qmd", "semantic", "lexical", "hybrid"];
+    config.providerPriority = ["semantic", "lexical", "hybrid"];
     config.embedding.enabled = true;
     config.embedding.endpoint = "http://127.0.0.1:65534";
     config.embedding.timeoutMs = 300;
@@ -77,6 +77,80 @@ describe("retrieval chain", () => {
     const semantic = inspection.retrieval.providerResults.find((result) => result.provider === "semantic");
     expect(semantic).toBeTruthy();
     expect(["degraded", "failed", "skipped"]).toContain(semantic?.status);
+  });
+
+  it("uses qmd CLI adapter and falls back from query to search output", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-cli-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "seed.ts"), "export const seed = 1;", "utf8");
+    await writeFile(path.join(workspace, "extra.ts"), "export const extraSignal = 2;", "utf8");
+
+    const logPath = path.join(workspace, "qmd-args.log");
+    const fakeQmdPath = path.join(workspace, "qmd");
+    await writeFile(
+      fakeQmdPath,
+      `#!/bin/sh
+echo "$@" >> "${logPath}"
+if [ "$3" = "collection" ]; then
+  exit 0
+fi
+if [ "$3" = "update" ]; then
+  exit 0
+fi
+if [ "$3" = "query" ]; then
+  echo "query unavailable" 1>&2
+  exit 1
+fi
+if [ "$3" = "search" ]; then
+  cat <<'JSON'
+[
+  {
+    "docid": "#abc123",
+    "score": 8.4,
+    "file": "qmd://workspace/extra.ts",
+    "title": "extra",
+    "snippet": "export const extraSignal = 2;"
+  }
+]
+JSON
+  exit 0
+fi
+echo "unsupported command" 1>&2
+exit 1
+`,
+      "utf8"
+    );
+    await chmod(fakeQmdPath, 0o755);
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.command = fakeQmdPath;
+    config.qmd.queryMode = "query_then_search";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["seed.ts"],
+      task: "find extraSignal implementation",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    expect(inspection.fragments[0]?.path).toBe("extra.ts");
+    expect(
+      inspection.retrieval.providerResults.some(
+        (result) => result.provider === "qmd" && result.status === "ok"
+      )
+    ).toBe(true);
+
+    const logRaw = await readFile(logPath, "utf8");
+    expect(logRaw).toContain("collection add");
+    expect(logRaw).toContain(" query ");
+    expect(logRaw).toContain(" search ");
   });
 
   it("injects verify feedback signal into ranking", async () => {

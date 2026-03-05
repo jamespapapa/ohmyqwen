@@ -78,6 +78,16 @@ export const RetrievalConfigOverrideSchema = z.object({
     .optional(),
   qmd: z
     .object({
+      enabled: z.boolean().optional(),
+      command: z.string().min(1).optional(),
+      collectionName: z.string().min(1).optional(),
+      indexName: z.string().min(1).optional(),
+      mask: z.string().min(1).optional(),
+      queryMode: z.enum(["query_then_search", "search_only", "query_only"]).optional(),
+      configDir: z.string().min(1).optional(),
+      cacheHome: z.string().min(1).optional(),
+      indexPath: z.string().min(1).optional(),
+      syncIntervalMs: z.number().int().min(1000).max(3600000).optional(),
       forceFailure: z.boolean().optional()
     })
     .optional()

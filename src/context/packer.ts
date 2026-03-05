@@ -519,6 +519,37 @@ function safeRelative(filePath: string, cwd: string): string {
   throw new Error(`file path escapes workspace: ${filePath}`);
 }
 
+async function buildContextIndexEntry(
+  cwd: string,
+  relativePath: string
+): Promise<ContextIndexEntry | undefined> {
+  const absolute = path.resolve(cwd, relativePath);
+  let content = "";
+  try {
+    const stat = await fs.stat(absolute);
+    if (!stat.isFile()) {
+      return undefined;
+    }
+    content = await fs.readFile(absolute, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const symbols = extractSymbols(content);
+  const dependencies = extractDependencies(content);
+
+  return {
+    path: relativePath,
+    hash: computeHash(content),
+    symbols,
+    dependencies,
+    fileSummary: summarizeFile(content),
+    moduleSummary: buildModuleSummary(relativePath, symbols, dependencies),
+    architectureSummary: buildArchitectureSummary(relativePath, dependencies),
+    updatedAt: new Date().toISOString()
+  };
+}
+
 function unique(items: string[]): string[] {
   return uniqueStrings(items);
 }
@@ -572,19 +603,12 @@ export async function inspectContext(options: {
       continue;
     }
 
-    const absolute = path.resolve(cwd, relative);
-    let content = "";
-    try {
-      const stat = await fs.stat(absolute);
-      if (!stat.isFile()) {
-        continue;
-      }
-      content = await fs.readFile(absolute, "utf8");
-    } catch {
+    const nextEntry = await buildContextIndexEntry(cwd, relative);
+    if (!nextEntry) {
       continue;
     }
 
-    const hash = computeHash(content);
+    const hash = nextEntry.hash;
     const existing = index.entries[relative];
 
     if (existing && existing.hash === hash) {
@@ -592,19 +616,7 @@ export async function inspectContext(options: {
       continue;
     }
 
-    const symbols = extractSymbols(content);
-    const dependencies = extractDependencies(content);
-
-    index.entries[relative] = {
-      path: relative,
-      hash,
-      symbols,
-      dependencies,
-      fileSummary: summarizeFile(content),
-      moduleSummary: buildModuleSummary(relative, symbols, dependencies),
-      architectureSummary: buildArchitectureSummary(relative, dependencies),
-      updatedAt: new Date().toISOString()
-    };
+    index.entries[relative] = nextEntry;
 
     changedFiles.push(relative);
   }
@@ -613,9 +625,7 @@ export async function inspectContext(options: {
   index.metadata = expectedMetadata;
   await saveIndex(cachePath, index);
 
-  const documents: RetrievalDocument[] = Object.values(index.entries)
-    .filter((entry) => files.includes(entry.path))
-    .map((entry) => ({
+  const documents: RetrievalDocument[] = Object.values(index.entries).map((entry) => ({
       path: entry.path,
       hash: entry.hash,
       symbols: entry.symbols,
@@ -642,6 +652,42 @@ export async function inspectContext(options: {
   });
 
   const docByPath = new Map(documents.map((document) => [document.path, document]));
+  let indexAugmentedByRetrieval = false;
+  for (const hit of retrieval.hits) {
+    if (docByPath.has(hit.path)) {
+      continue;
+    }
+
+    let safePath: string;
+    try {
+      safePath = safeRelative(hit.path, cwd);
+    } catch {
+      continue;
+    }
+
+    const extraEntry = await buildContextIndexEntry(cwd, safePath);
+    if (!extraEntry) {
+      continue;
+    }
+
+    index.entries[safePath] = extraEntry;
+    docByPath.set(safePath, {
+      path: extraEntry.path,
+      hash: extraEntry.hash,
+      symbols: extraEntry.symbols,
+      dependencies: extraEntry.dependencies,
+      fileSummary: extraEntry.fileSummary,
+      moduleSummary: extraEntry.moduleSummary,
+      architectureSummary: extraEntry.architectureSummary,
+      changed: false
+    });
+    indexAugmentedByRetrieval = true;
+  }
+
+  if (indexAugmentedByRetrieval) {
+    index.updatedAt = new Date().toISOString();
+    await saveIndex(cachePath, index);
+  }
 
   const fragments: ContextFragment[] = retrieval.hits
     .map((hit) => {

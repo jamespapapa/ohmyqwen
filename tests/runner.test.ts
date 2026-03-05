@@ -40,6 +40,11 @@ function baseInput(): AnalyzeInput {
     },
     mode: "feature",
     clarificationAnswers: [],
+    retrieval: {
+      qmd: {
+        enabled: false
+      }
+    },
     dryRun: true
   };
 }
@@ -148,12 +153,16 @@ describe("runLoop durable state", () => {
     await mkdir(path.join(workspace, "src"), { recursive: true });
     await writeFile(path.join(workspace, "src/demo.ts"), "export const demo = 1;", "utf8");
 
-    process.env.OHMYQWEN_QMD_FORCE_FAIL = "1";
-
     const result = await runLoop(
       {
         ...baseInput(),
         constraints: ["short-session", "state-machine-control"],
+        retrieval: {
+          qmd: {
+            enabled: true,
+            forceFailure: true
+          }
+        },
         dryRun: true
       },
       {
@@ -189,8 +198,6 @@ describe("runLoop durable state", () => {
         (resultEntry) => resultEntry.provider === "qmd" && resultEntry.status === "failed"
       )
     ).toBe(true);
-
-    delete process.env.OHMYQWEN_QMD_FORCE_FAIL;
   });
 
   it("loads availableLibraries from workspace file when input list is absent", async () => {

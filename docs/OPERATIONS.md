@@ -66,6 +66,7 @@
 ### Retrieval/Embedding 장애
 
 - QMD 실패(타임아웃/파싱/강제 실패) 시 lexical로 자동 강등
+- QMD provider는 실제 `qmd` CLI를 호출한다. 설치/경로 문제 시 `OHMYQWEN_QMD_COMMAND` 확인
 - local embedding preflight 실패 시 semantic 비활성 + lexical-only 진행
 - 확인 위치:
   - `outputs/retrieval.plan.attempt-*.json`

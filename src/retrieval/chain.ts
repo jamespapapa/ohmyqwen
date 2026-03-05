@@ -12,7 +12,7 @@ import { sortHits, withTimeout } from "./utils.js";
 
 function providerTimeout(config: ResolvedRetrievalConfig, provider: RetrievalProviderName): number {
   if (provider === "qmd") {
-    return config.timeoutMs.qmd;
+    return Math.max(config.timeoutMs.qmd * 2, config.timeoutMs.provider);
   }
 
   if (provider === "semantic") {

@@ -104,6 +104,16 @@ export interface ResolvedRetrievalConfig {
   embedding: EmbeddingServiceConfig;
   lifecycle: RetrievalLifecycleConfig;
   qmd: {
+    enabled: boolean;
+    command: string;
+    collectionName: string;
+    indexName?: string;
+    mask: string;
+    queryMode: "query_then_search" | "search_only" | "query_only";
+    configDir?: string;
+    cacheHome?: string;
+    indexPath?: string;
+    syncIntervalMs: number;
     forceFailure: boolean;
   };
 }

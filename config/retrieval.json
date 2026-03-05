@@ -8,7 +8,7 @@
     "final": 40
   },
   "timeoutMs": {
-    "qmd": 1200,
+    "qmd": 5000,
     "semantic": 2500,
     "provider": 3000
   },
@@ -28,7 +28,15 @@
   },
   "lifecycle": {
     "chunkVersion": "v1",
-    "retrievalVersion": "v2-qmd-hybrid",
+    "retrievalVersion": "v3-qmd-cli",
     "autoReindexOnStale": true
+  },
+  "qmd": {
+    "enabled": true,
+    "command": "qmd",
+    "collectionName": "workspace",
+    "mask": "**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh}",
+    "queryMode": "query_then_search",
+    "syncIntervalMs": 60000
   }
 }

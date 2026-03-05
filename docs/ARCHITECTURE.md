@@ -31,6 +31,7 @@
   - `small/mid/big` 계층 컨텍스트
   - stage별 토큰 budget factor + hard-cap
   - Retrieval provider 체인(`qmd/lexical/semantic/hybrid`)
+  - QMD provider는 로컬 `qmd` CLI 호출 기반(index/update/query)
   - QMD primary + lexical fallback (장애/타임아웃/파싱 오류 시 자동 강등)
   - 입력 신호 기반 검색(task + diff + verify failure feedback)
   - hybrid merge + dedupe + rerank
