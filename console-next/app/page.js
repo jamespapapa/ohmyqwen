@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 const CORE_STAGES = ["ANALYZE", "PLAN", "IMPLEMENT", "VERIFY", "PATCH", "FINISH"];
+const QUERY_MODES = ["query_then_search", "search_only", "query_only"];
 
 function statusClass(status) {
   if (status === "finished") return "ok";
@@ -474,7 +475,21 @@ async function getJson(url, init) {
 
 export default function HomePage() {
   const [task, setTask] = useState("Node.js로 Hello World 프로젝트를 생성하고 실행 스크립트를 추가해줘.");
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [projectMessage, setProjectMessage] = useState("");
+  const [projectError, setProjectError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchLimit, setSearchLimit] = useState(20);
+  const [searchResult, setSearchResult] = useState(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [indexing, setIndexing] = useState(false);
+
+  const [projectName, setProjectName] = useState("");
   const [workspaceDir, setWorkspaceDir] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [projectQueryMode, setProjectQueryMode] = useState("query_then_search");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerData, setPickerData] = useState(null);
   const [pickerLoading, setPickerLoading] = useState(false);
@@ -489,6 +504,11 @@ export default function HomePage() {
   const [events, setEvents] = useState([]);
   const [artifacts, setArtifacts] = useState([]);
   const [error, setError] = useState("");
+
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) || null,
+    [projects, selectedProjectId]
+  );
 
   const done = useMemo(() => {
     const status = run?.status;
@@ -507,6 +527,51 @@ export default function HomePage() {
   );
   const actionProgress = useMemo(() => buildActionProgress(events), [events]);
   const verifyProgress = useMemo(() => buildVerifyProgress(events), [events]);
+
+  async function loadProjects(keepMessage = false) {
+    setProjectLoading(true);
+    setProjectError("");
+    if (!keepMessage) {
+      setProjectMessage("");
+    }
+
+    try {
+      const response = await getJson("/api/projects");
+      const items = response.projects || [];
+      setProjects(items);
+
+      if (items.length === 0) {
+        setSelectedProjectId("");
+        return;
+      }
+
+      if (!selectedProjectId || !items.some((project) => project.id === selectedProjectId)) {
+        setSelectedProjectId(items[0].id);
+      }
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProjectLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      return;
+    }
+
+    setProjectName(selectedProject.name || "");
+    setWorkspaceDir(selectedProject.workspaceDir || "");
+    setProjectDescription(selectedProject.description || "");
+    setProjectQueryMode(selectedProject.retrieval?.qmd?.queryMode || "query_then_search");
+    setMode(selectedProject.defaultMode || "feature");
+    setDryRun(Boolean(selectedProject.defaultDryRun));
+  }, [selectedProject]);
 
   useEffect(() => {
     if (done || !runId) return;
@@ -574,7 +639,141 @@ export default function HomePage() {
     await loadPicker(workspaceDir || pickerData?.path || "");
   }
 
+  async function onSaveProject() {
+    if (!projectName.trim()) {
+      setProjectError("프로젝트 이름을 입력해주세요.");
+      return;
+    }
+
+    if (!workspaceDir.trim()) {
+      setProjectError("워크스페이스 경로를 입력해주세요.");
+      return;
+    }
+
+    setProjectLoading(true);
+    setProjectError("");
+    setProjectMessage("");
+
+    try {
+      const payload = {
+        id: selectedProjectId || undefined,
+        name: projectName.trim(),
+        workspaceDir: workspaceDir.trim(),
+        description: projectDescription.trim(),
+        defaultMode: mode,
+        defaultDryRun: dryRun,
+        retrieval: {
+          qmd: {
+            queryMode: projectQueryMode
+          }
+        }
+      };
+
+      const response = await getJson("/api/projects", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+
+      const savedProjectId = response?.project?.id;
+      await loadProjects(true);
+      if (savedProjectId) {
+        setSelectedProjectId(savedProjectId);
+      }
+      setProjectMessage("프로젝트 설정이 저장되었습니다.");
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProjectLoading(false);
+    }
+  }
+
+  async function onDeleteProject() {
+    if (!selectedProjectId) {
+      return;
+    }
+
+    setProjectLoading(true);
+    setProjectError("");
+    setProjectMessage("");
+
+    try {
+      await getJson(`/api/projects/${selectedProjectId}`, {
+        method: "DELETE"
+      });
+      setSearchResult(null);
+      setProjectMessage("프로젝트를 삭제했습니다.");
+      await loadProjects(true);
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProjectLoading(false);
+    }
+  }
+
+  async function onWarmupIndex() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+
+    setIndexing(true);
+    setProjectError("");
+    setProjectMessage("");
+
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/index`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setProjectMessage(
+        `인덱싱 완료: files=${response.fileCount}, changed=${response.changedFiles}, provider=${response.selectedProvider}`
+      );
+      await loadProjects(true);
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIndexing(false);
+    }
+  }
+
+  async function onSearchProject() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+
+    if (!searchQuery.trim()) {
+      setProjectError("검색어를 입력해주세요.");
+      return;
+    }
+
+    setSearchLoading(true);
+    setProjectError("");
+
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/search`, {
+        method: "POST",
+        body: JSON.stringify({
+          query: searchQuery.trim(),
+          limit: Number(searchLimit) || 20,
+          queryMode: projectQueryMode
+        })
+      });
+      setSearchResult(response);
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+      setSearchResult(null);
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
   async function onStartRun() {
+    if (!selectedProjectId) {
+      setError("프로젝트를 먼저 선택 또는 생성해주세요.");
+      return;
+    }
+
     if (!task.trim()) {
       setError("Task를 입력해주세요.");
       return;
@@ -587,13 +786,17 @@ export default function HomePage() {
     setRun(null);
 
     try {
-      const created = await getJson("/api/runs", {
+      const created = await getJson(`/api/projects/${selectedProjectId}/runs`, {
         method: "POST",
         body: JSON.stringify({
           task,
           mode,
           dryRun,
-          workspaceDir: workspaceDir.trim() || undefined
+          retrieval: {
+            qmd: {
+              queryMode: projectQueryMode
+            }
+          }
         })
       });
 
@@ -604,7 +807,7 @@ export default function HomePage() {
         createdAt: created.createdAt || new Date().toISOString(),
         updatedAt: created.createdAt || new Date().toISOString(),
         mode,
-        workspaceDir: workspaceDir.trim() || "(server cwd)",
+        workspaceDir: selectedProject?.workspaceDir || workspaceDir.trim() || "(server cwd)",
         currentState: "ANALYZE",
         currentSummary: "run queued"
       });
@@ -625,24 +828,67 @@ export default function HomePage() {
 
         <section className="grid">
           <div className="card">
-            <h3>Run 생성</h3>
-            <div className="label">Task</div>
-            <textarea value={task} onChange={(e) => setTask(e.target.value)} />
+            <h3>프로젝트 관리 / Run 생성</h3>
+            <div className="label">프로젝트 선택</div>
+            <div className="workspace-row">
+              <select
+                value={selectedProjectId}
+                onChange={(e) => setSelectedProjectId(e.target.value)}
+                disabled={projectLoading}
+              >
+                <option value="">(프로젝트 선택)</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name} · {project.workspaceDir}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="secondary" onClick={() => loadProjects(true)} disabled={projectLoading}>
+                새로고침
+              </button>
+            </div>
 
-            <div className="label" style={{ marginTop: 10 }}>Project Folder (Workspace)</div>
+            <div className="label" style={{ marginTop: 10 }}>프로젝트 이름</div>
+            <input
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              placeholder="예: ohmyqwen-core"
+            />
+
+            <div className="label" style={{ marginTop: 10 }}>Workspace 경로</div>
             <div className="workspace-row">
               <input
                 value={workspaceDir}
                 onChange={(e) => setWorkspaceDir(e.target.value)}
-                placeholder="/Users/jules/Desktop/work/hello-world (비우면 server cwd)"
+                placeholder="/Users/jules/Desktop/work/ohmyqwen"
               />
               <button type="button" className="secondary" onClick={onOpenPicker}>
                 폴더 선택
               </button>
             </div>
+
+            <div className="label" style={{ marginTop: 10 }}>설명(선택)</div>
+            <input
+              value={projectDescription}
+              onChange={(e) => setProjectDescription(e.target.value)}
+              placeholder="프로젝트 메모"
+            />
+
+            <div className="label" style={{ marginTop: 10 }}>QMD Query Mode</div>
+            <select value={projectQueryMode} onChange={(e) => setProjectQueryMode(e.target.value)}>
+              {QUERY_MODES.map((queryMode) => (
+                <option key={queryMode} value={queryMode}>
+                  {queryMode}
+                </option>
+              ))}
+            </select>
+
             <div className="hint">
-              권장: 전용 폴더를 지정하세요. 비워두면 현재 런타임 프로젝트 폴더에서 검증(build/test/lint)이 실행됩니다.
+              권장: 정확도 우선은 <code>query_then_search</code> 입니다.
             </div>
+
+            <div className="label">Task</div>
+            <textarea value={task} onChange={(e) => setTask(e.target.value)} />
 
             {pickerOpen ? (
               <div className="picker-box">
@@ -719,6 +965,61 @@ export default function HomePage() {
               </div>
             ) : null}
 
+            <div className="action-row">
+              <button type="button" className="secondary" onClick={onSaveProject} disabled={projectLoading}>
+                {selectedProjectId ? "프로젝트 저장" : "프로젝트 생성"}
+              </button>
+              <button type="button" className="secondary" onClick={onDeleteProject} disabled={!selectedProjectId || projectLoading}>
+                프로젝트 삭제
+              </button>
+              <button type="button" className="secondary" onClick={onWarmupIndex} disabled={!selectedProjectId || indexing}>
+                {indexing ? "색인 중..." : "QMD 색인"}
+              </button>
+            </div>
+
+            <div className="label" style={{ marginTop: 10 }}>프로젝트 검색</div>
+            <div className="search-row">
+              <input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="예: state machine transition logic"
+              />
+              <input
+                value={searchLimit}
+                onChange={(e) => setSearchLimit(e.target.value)}
+                type="number"
+                min="1"
+                max="200"
+              />
+              <button type="button" onClick={onSearchProject} disabled={searchLoading || !selectedProjectId}>
+                {searchLoading ? "검색 중..." : "검색"}
+              </button>
+            </div>
+
+            {searchResult ? (
+              <div className="search-result-box">
+                <div className="hint">
+                  provider={searchResult.provider}, fallback={searchResult.fallbackUsed ? "yes" : "no"}
+                  {searchResult.modeUsed ? `, mode=${searchResult.modeUsed}` : ""}
+                </div>
+                <ul className="artifacts" style={{ marginTop: 6, maxHeight: 180 }}>
+                  {(searchResult.hits || []).length === 0 ? (
+                    <li>
+                      <span>검색 결과 없음</span>
+                      <span>-</span>
+                    </li>
+                  ) : (
+                    searchResult.hits.map((hit, index) => (
+                      <li key={`${hit.path}-${index}`}>
+                        <span>{shortText(hit.path, 60)}</span>
+                        <span>{hit.score?.toFixed ? hit.score.toFixed(2) : hit.score}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            ) : null}
+
             <div className="row" style={{ marginTop: 10 }}>
               <div>
                 <div className="label">Mode</div>
@@ -743,12 +1044,14 @@ export default function HomePage() {
                 </label>
               </div>
               <div>
-                <button onClick={onStartRun} disabled={isStarting}>
+                <button onClick={onStartRun} disabled={isStarting || !selectedProjectId}>
                   {isStarting ? "Starting..." : "Start Run"}
                 </button>
               </div>
             </div>
 
+            {projectMessage ? <div className="hint">{projectMessage}</div> : null}
+            {projectError ? <div className="error">{projectError}</div> : null}
             {error ? <div className="error">{error}</div> : null}
           </div>
 
