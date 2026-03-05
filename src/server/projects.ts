@@ -147,6 +147,15 @@ interface ServerProjectStore {
   projects: ServerProject[];
 }
 
+interface ProjectDebugEvent {
+  timestamp: string;
+  projectId: string;
+  stage: "analyze" | "ask" | "search" | "index" | "file";
+  status: "start" | "success" | "failure" | "info";
+  message: string;
+  metadata?: Record<string, unknown>;
+}
+
 const SKIP_DIRS = new Set([
   ".git",
   ".hg",
@@ -202,6 +211,17 @@ function nowIso(): string {
 
 function storePath(): string {
   return path.resolve(process.cwd(), ".ohmyqwen", "server", "projects.json");
+}
+
+function debugLogPath(): string {
+  return path.resolve(process.cwd(), ".ohmyqwen", "server", "project-debug-events.jsonl");
+}
+
+async function appendProjectDebugEvent(event: ProjectDebugEvent): Promise<void> {
+  const line = `${JSON.stringify(event)}\n`;
+  const filePath = debugLogPath();
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.appendFile(filePath, line, "utf8");
 }
 
 async function loadStore(): Promise<ServerProjectStore> {
@@ -535,6 +555,45 @@ export async function getServerProject(id: string): Promise<ServerProject | unde
   return found ? toProject(found) : undefined;
 }
 
+export async function listProjectDebugEvents(options: {
+  projectId: string;
+  limit?: number;
+}): Promise<ProjectDebugEvent[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 100, 1000));
+  try {
+    const raw = await fs.readFile(debugLogPath(), "utf8");
+    const lines = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const events: ProjectDebugEvent[] = [];
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index];
+      if (!line) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(line) as ProjectDebugEvent;
+        if (parsed.projectId !== options.projectId) {
+          continue;
+        }
+        events.push(parsed);
+        if (events.length >= limit) {
+          break;
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+
+    return events.reverse();
+  } catch {
+    return [];
+  }
+}
+
 export async function upsertServerProject(input: UpsertServerProjectInput): Promise<ServerProject> {
   const parsed = UpsertServerProjectInputSchema.parse(input);
   const resolvedWorkspace = await ensureWorkspaceDir(parsed.workspaceDir);
@@ -651,6 +710,17 @@ export async function readServerProjectFile(options: {
     throw new Error(`project not found: ${options.projectId}`);
   }
 
+  await appendProjectDebugEvent({
+    timestamp: nowIso(),
+    projectId: options.projectId,
+    stage: "file",
+    status: "start",
+    message: "file detail read requested",
+    metadata: {
+      path: options.filePath
+    }
+  });
+
   const resolved = resolveProjectFilePath(project.workspaceDir, options.filePath);
   const maxBytes = Math.max(16 * 1024, Math.min(options.maxBytes ?? MAX_DETAIL_FILE_BYTES, 8 * 1024 * 1024));
   let stat;
@@ -658,10 +728,30 @@ export async function readServerProjectFile(options: {
     stat = await fs.stat(resolved.absolutePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "file",
+        status: "failure",
+        message: "file detail path missing (stale index candidate)",
+        metadata: {
+          path: resolved.relativePath
+        }
+      });
       throw new Error(
         `파일을 찾을 수 없습니다(이동/삭제 가능성). 재색인 후 다시 시도하세요: ${resolved.relativePath}`
       );
     }
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "file",
+      status: "failure",
+      message: error instanceof Error ? error.message : String(error),
+      metadata: {
+        path: resolved.relativePath
+      }
+    });
     throw error;
   }
   if (!stat.isFile()) {
@@ -670,6 +760,18 @@ export async function readServerProjectFile(options: {
 
   if (stat.size <= maxBytes) {
     const content = await fs.readFile(resolved.absolutePath, "utf8");
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "file",
+      status: "success",
+      message: "file detail read completed",
+      metadata: {
+        path: resolved.relativePath,
+        sizeBytes: stat.size,
+        truncated: false
+      }
+    });
     return {
       project,
       path: resolved.relativePath,
@@ -683,6 +785,18 @@ export async function readServerProjectFile(options: {
   try {
     const buffer = Buffer.alloc(maxBytes);
     const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "file",
+      status: "info",
+      message: "file detail truncated due maxBytes",
+      metadata: {
+        path: resolved.relativePath,
+        sizeBytes: stat.size,
+        maxBytes
+      }
+    });
     return {
       project,
       path: resolved.relativePath,
@@ -885,61 +999,105 @@ export async function warmupServerProjectIndex(options: {
   projectId: string;
   maxFiles?: number;
 }): Promise<ProjectWarmupResult> {
-  const project = await getServerProject(options.projectId);
-  if (!project) {
-    throw new Error(`project not found: ${options.projectId}`);
-  }
+  await appendProjectDebugEvent({
+    timestamp: nowIso(),
+    projectId: options.projectId,
+    stage: "index",
+    status: "start",
+    message: "warmup indexing started",
+    metadata: {
+      maxFiles: options.maxFiles
+    }
+  });
 
-  const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
-  if (files.length === 0) {
+  try {
+    const project = await getServerProject(options.projectId);
+    if (!project) {
+      throw new Error(`project not found: ${options.projectId}`);
+    }
+
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    if (files.length === 0) {
+      const updatedProject = await patchProject(project.id, {
+        lastIndexedAt: nowIso(),
+        lastIndexSummary: "indexed files=0"
+      });
+
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "index",
+        status: "success",
+        message: "warmup indexing finished with zero files"
+      });
+
+      return {
+        project: updatedProject,
+        fileCount: 0,
+        changedFiles: 0,
+        reusedFiles: 0,
+        selectedProvider: "lexical",
+        fallbackUsed: false,
+        providerResults: []
+      };
+    }
+
+    const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, project.retrieval);
+    const inspection = await inspectContext({
+      cwd: project.workspaceDir,
+      files,
+      task: `warmup project index: ${project.name}`,
+      tier: "small",
+      tokenBudget: 800,
+      stage: "PLAN",
+      retrievalConfig
+    });
+
+    const providerResults = inspection.retrieval.providerResults.map((result) => ({
+      provider: result.provider,
+      status: result.status,
+      tookMs: result.tookMs,
+      error: result.error
+    }));
+
     const updatedProject = await patchProject(project.id, {
       lastIndexedAt: nowIso(),
-      lastIndexSummary: "indexed files=0"
+      lastIndexSummary: `indexed files=${files.length} changed=${inspection.changedFiles.length} reused=${inspection.reusedFiles.length}`
+    });
+
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "index",
+      status: "success",
+      message: "warmup indexing finished",
+      metadata: {
+        files: files.length,
+        changedFiles: inspection.changedFiles.length,
+        selectedProvider: inspection.retrieval.selectedProvider,
+        fallbackUsed: inspection.retrieval.fallbackUsed
+      }
     });
 
     return {
       project: updatedProject,
-      fileCount: 0,
-      changedFiles: 0,
-      reusedFiles: 0,
-      selectedProvider: "lexical",
-      fallbackUsed: false,
-      providerResults: []
+      fileCount: files.length,
+      changedFiles: inspection.changedFiles.length,
+      reusedFiles: inspection.reusedFiles.length,
+      selectedProvider: inspection.retrieval.selectedProvider,
+      fallbackUsed: inspection.retrieval.fallbackUsed,
+      providerResults
     };
+  } catch (error) {
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "index",
+      status: "failure",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
   }
-
-  const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, project.retrieval);
-  const inspection = await inspectContext({
-    cwd: project.workspaceDir,
-    files,
-    task: `warmup project index: ${project.name}`,
-    tier: "small",
-    tokenBudget: 800,
-    stage: "PLAN",
-    retrievalConfig
-  });
-
-  const providerResults = inspection.retrieval.providerResults.map((result) => ({
-    provider: result.provider,
-    status: result.status,
-    tookMs: result.tookMs,
-    error: result.error
-  }));
-
-  const updatedProject = await patchProject(project.id, {
-    lastIndexedAt: nowIso(),
-    lastIndexSummary: `indexed files=${files.length} changed=${inspection.changedFiles.length} reused=${inspection.reusedFiles.length}`
-  });
-
-  return {
-    project: updatedProject,
-    fileCount: files.length,
-    changedFiles: inspection.changedFiles.length,
-    reusedFiles: inspection.reusedFiles.length,
-    selectedProvider: inspection.retrieval.selectedProvider,
-    fallbackUsed: inspection.retrieval.fallbackUsed,
-    providerResults
-  };
 }
 
 function isInsideParent(parent: string, child: string): boolean {
@@ -951,18 +1109,30 @@ export async function analyzeServerProject(options: {
   projectId: string;
   maxFiles?: number;
 }): Promise<ProjectAnalysisResult> {
-  const project = await getServerProject(options.projectId);
-  if (!project) {
-    throw new Error(`project not found: ${options.projectId}`);
-  }
-
-  const warmup = await warmupServerProjectIndex({
+  await appendProjectDebugEvent({
+    timestamp: nowIso(),
     projectId: options.projectId,
-    maxFiles: options.maxFiles
+    stage: "analyze",
+    status: "start",
+    message: "project analyze started",
+    metadata: {
+      maxFiles: options.maxFiles
+    }
   });
-  const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
-  const memoryRoot = resolveMemoryHome(project.workspaceDir);
-  await fs.mkdir(memoryRoot, { recursive: true });
+
+  try {
+    const project = await getServerProject(options.projectId);
+    if (!project) {
+      throw new Error(`project not found: ${options.projectId}`);
+    }
+
+    const warmup = await warmupServerProjectIndex({
+      projectId: options.projectId,
+      maxFiles: options.maxFiles
+    });
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    const memoryRoot = resolveMemoryHome(project.workspaceDir);
+    await fs.mkdir(memoryRoot, { recursive: true });
 
   const extStats = buildFileExtensionStats(files);
   const topDirs = buildTopDirectoryStats(files);
@@ -1096,34 +1266,76 @@ export async function analyzeServerProject(options: {
     });
   }
 
-  return {
-    project: warmup.project,
-    analyzedAt,
-    memoryHome: memoryRoot,
-    memoryFiles: [analysisFiles.latestPath, analysisFiles.snapshotPath],
-    ...normalizedOutput,
-    diagnostics: {
-      warmup,
-      lowConfidenceSignals,
-      usedFallback: generation.usedFallback
-    }
-  };
+    const result: ProjectAnalysisResult = {
+      project: warmup.project,
+      analyzedAt,
+      memoryHome: memoryRoot,
+      memoryFiles: [analysisFiles.latestPath, analysisFiles.snapshotPath],
+      ...normalizedOutput,
+      diagnostics: {
+        warmup,
+        lowConfidenceSignals,
+        usedFallback: generation.usedFallback
+      }
+    };
+
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "success",
+      message: "project analyze completed",
+      metadata: {
+        confidence: result.confidence,
+        memoryFiles: result.memoryFiles.length,
+        usedFallback: result.diagnostics.usedFallback
+      }
+    });
+
+    return result;
+  } catch (error) {
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "failure",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
 }
 
-function qualityGateForAsk(output: z.infer<typeof ProjectAskOutputSchema>): {
+function hasCodeFileEvidence(hits: ProjectSearchHit[]): boolean {
+  return hits.some((hit) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(hit.path));
+}
+
+function qualityGateForAsk(options: {
+  output: z.infer<typeof ProjectAskOutputSchema>;
+  question: string;
+  hits: ProjectSearchHit[];
+}): {
   passed: boolean;
   failures: string[];
 } {
   const failures: string[] = [];
-  if (output.answer.trim().length < 40) {
+  const output = options.output;
+  if (output.answer.trim().length < 80) {
     failures.push("answer-too-short");
   }
-  if (output.evidence.length === 0) {
+  if (output.evidence.length < 2) {
     failures.push("missing-evidence");
   }
-  if (output.confidence < 0.2) {
+  if (output.confidence < 0.45) {
     failures.push("confidence-too-low");
   }
+
+  const logicQuestion = /(로직|흐름|어떻게|처리|구현|검증|계산|상태전이|service|controller|domain)/i.test(
+    options.question
+  );
+  if (logicQuestion && !hasCodeFileEvidence(options.hits)) {
+    failures.push("missing-code-evidence");
+  }
+
   return {
     passed: failures.length === 0,
     failures
@@ -1136,189 +1348,259 @@ export async function askServerProject(options: {
   maxAttempts?: number;
   limit?: number;
 }): Promise<ProjectAskResponse> {
-  const project = await getServerProject(options.projectId);
-  if (!project) {
-    throw new Error(`project not found: ${options.projectId}`);
-  }
-
-  const question = options.question.trim();
-  if (!question) {
-    throw new Error("question is required");
-  }
-
-  const analysis = await analyzeServerProject({
-    projectId: options.projectId
-  });
-  const search = await searchServerProject({
+  await appendProjectDebugEvent({
+    timestamp: nowIso(),
     projectId: options.projectId,
-    query: question,
-    limit: options.limit ?? 12
+    stage: "ask",
+    status: "start",
+    message: "project ask started",
+    metadata: {
+      question: options.question
+    }
   });
 
-  const lowConfidenceMode =
-    search.hits.length === 0 || normalizeHitConfidence(search.hits[0]) < 0.4;
-  const memoryRoot = resolveMemoryHome(project.workspaceDir);
-  const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
-  const memoryPreview: Array<{ path: string; content: string }> = [];
-  for (const relativePath of memoryMarkdownFiles.slice(0, 10)) {
-    const absolutePath = path.resolve(memoryRoot, relativePath);
-    const content = await readTextFileSafe(absolutePath);
-    if (!content) {
-      continue;
+  try {
+    const project = await getServerProject(options.projectId);
+    if (!project) {
+      throw new Error(`project not found: ${options.projectId}`);
     }
-    memoryPreview.push({
-      path: relativePath,
-      content: content.slice(0, 1800)
-    });
-  }
 
-  const llm = new OpenAICompatibleLlmClient();
-  const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? DEFAULT_ASK_MAX_ATTEMPTS, 5));
-  const qualityFailures: string[] = [];
+    const question = options.question.trim();
+    if (!question) {
+      throw new Error("question is required");
+    }
 
-  let bestOutput: z.infer<typeof ProjectAskOutputSchema> = {
-    answer:
-      "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
-    confidence: 0.2,
-    evidence: [],
-    caveats: ["low-evidence"]
-  };
-  let attempts = 0;
-  let usedFallback = false;
-  let passed = false;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    attempts = attempt;
-    const priorFailures = qualityFailures.slice(-5);
-    const generation = await llm.generateStructured({
-      systemPrompt: [
-        "You are a strict project Q&A engine for software architecture and implementation logic.",
-        "Return ONLY JSON object.",
-        "Prioritize high confidence evidence; if low confidence then explicitly state uncertainty.",
-        "Do not hallucinate missing files."
-      ].join("\n"),
-      userPrompt: JSON.stringify(
-        {
-          task: "Answer user question using project analysis memory + retrieval evidence.",
-          outputSchema: {
-            answer: "string",
-            confidence: "0..1",
-            evidence: ["string"],
-            caveats: ["string"]
-          },
-          question,
-          qualityGateContext: {
-            attempt,
-            priorFailures,
-            lowConfidenceMode
-          },
-          projectAnalysis: {
-            summary: analysis.summary,
-            architecture: analysis.architecture,
-            keyModules: analysis.keyModules,
-            confidence: analysis.confidence,
-            risks: analysis.risks
-          },
-          retrieval: {
-            provider: search.provider,
-            fallbackUsed: search.fallbackUsed,
-            topHits: search.hits.slice(0, 12).map((hit) => ({
-              path: hit.path,
-              score: hit.score,
-              confidence: normalizeHitConfidence(hit),
-              reasons: hit.reasons ?? [],
-              snippet: hit.snippet ?? ""
-            }))
-          },
-          memory: memoryPreview,
-          instruction:
-            lowConfidenceMode
-              ? "검색 confidence가 낮으므로, 누락 가능성을 명확히 경고하고 추정/확정 범위를 구분하세요."
-              : "근거 중심으로 간결하고 정확하게 답변하세요."
-        },
-        null,
-        2
-      ),
-      fallback: bestOutput,
-      parse: (value) => ProjectAskOutputSchema.parse(value)
+    const analysis = await analyzeServerProject({
+      projectId: options.projectId
     });
 
-    usedFallback ||= generation.usedFallback;
-    bestOutput = generation.output;
+    const expandedQueries = unique([
+      question,
+      `${question} service controller domain transaction`,
+      `${question} process proc impl logic`,
+      `${question} xml api endpoint`
+    ]);
+    const searchResults = await Promise.all(
+      expandedQueries.map((query) =>
+        searchServerProject({
+          projectId: options.projectId,
+          query,
+          limit: options.limit ?? 14
+        })
+      )
+    );
 
-    const gate = qualityGateForAsk(bestOutput);
-    if (gate.passed) {
-      passed = true;
-      break;
+    const mergedHitsMap = new Map<string, ProjectSearchHit>();
+    for (const result of searchResults) {
+      for (const hit of result.hits) {
+        const existing = mergedHitsMap.get(hit.path);
+        if (!existing || existing.score < hit.score) {
+          mergedHitsMap.set(hit.path, hit);
+        }
+      }
+    }
+    const mergedHits = Array.from(mergedHitsMap.values())
+      .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)))
+      .slice(0, options.limit ?? 14);
+
+    const bestSearch = searchResults[0]!;
+    const lowConfidenceMode =
+      mergedHits.length === 0 || normalizeHitConfidence(mergedHits[0]) < 0.45;
+
+    const memoryRoot = resolveMemoryHome(project.workspaceDir);
+    const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
+    const memoryPreview: Array<{ path: string; content: string }> = [];
+    for (const relativePath of memoryMarkdownFiles.slice(0, 12)) {
+      const absolutePath = path.resolve(memoryRoot, relativePath);
+      const content = await readTextFileSafe(absolutePath);
+      if (!content) {
+        continue;
+      }
+      memoryPreview.push({
+        path: relativePath,
+        content: content.slice(0, 2200)
+      });
     }
 
-    qualityFailures.push(...gate.failures);
-  }
+    const llm = new OpenAICompatibleLlmClient();
+    const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? DEFAULT_ASK_MAX_ATTEMPTS, 5));
+    const qualityFailures: string[] = [];
 
-  const reportLines: string[] = [
-    `# Query Report`,
-    ``,
-    `- projectId: ${project.id}`,
-    `- projectName: ${project.name}`,
-    `- askedAt: ${nowIso()}`,
-    `- question: ${question}`,
-    `- confidence: ${bestOutput.confidence.toFixed(2)}`,
-    `- qualityGatePassed: ${passed}`,
-    `- attempts: ${attempts}`,
-    ``,
-    `## Answer`,
-    bestOutput.answer,
-    ``,
-    `## Evidence`
-  ];
-  for (const line of bestOutput.evidence) {
-    reportLines.push(`- ${line}`);
-  }
-  reportLines.push("", "## Caveats");
-  for (const line of bestOutput.caveats) {
-    reportLines.push(`- ${line}`);
-  }
-  reportLines.push("", "## Retrieval");
-  reportLines.push(`- provider=${search.provider}`);
-  reportLines.push(`- fallback=${search.fallbackUsed}`);
-  reportLines.push(`- hitCount=${search.hits.length}`);
-  reportLines.push(`- topConfidence=${(search.hits[0] ? normalizeHitConfidence(search.hits[0]) : 0).toFixed(2)}`);
-  reportLines.push("");
+    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = {
+      answer:
+        "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
+      confidence: 0.2,
+      evidence: [],
+      caveats: ["low-evidence"]
+    };
+    let attempts = 0;
+    let usedFallback = false;
+    let passed = false;
 
-  const queryReportFiles = await writeMemoryDocs({
-    memoryRoot,
-    groupDir: QUERY_MEMORY_DIR,
-    latestFileName: "latest.md",
-    content: `${reportLines.join("\n")}\n`
-  });
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      attempts = attempt;
+      const priorFailures = qualityFailures.slice(-8);
+      const generation = await llm.generateStructured({
+        systemPrompt: [
+          "You are a strict project Q&A engine for implementation logic.",
+          "Return ONLY one JSON object.",
+          "Use only provided evidence, never fabricate.",
+          "For logic questions, prefer code-level evidence over XML-only evidence.",
+          "If confidence is low, explicitly say uncertainty and missing coverage."
+        ].join("\n"),
+        userPrompt: JSON.stringify(
+          {
+            task: "Answer user question using project analysis memory + retrieval evidence.",
+            outputSchema: {
+              answer: "string",
+              confidence: "0..1",
+              evidence: ["string with file path and why"],
+              caveats: ["string"]
+            },
+            question,
+            qualityGateContext: {
+              attempt,
+              priorFailures,
+              lowConfidenceMode,
+              requireCodeEvidence: /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(question)
+            },
+            projectAnalysis: {
+              summary: analysis.summary,
+              architecture: analysis.architecture,
+              keyModules: analysis.keyModules,
+              confidence: analysis.confidence,
+              risks: analysis.risks
+            },
+            retrieval: {
+              provider: bestSearch.provider,
+              fallbackUsed: bestSearch.fallbackUsed,
+              mergedHits: mergedHits.map((hit) => ({
+                path: hit.path,
+                score: hit.score,
+                confidence: normalizeHitConfidence(hit),
+                reasons: hit.reasons ?? [],
+                snippet: hit.snippet ?? ""
+              }))
+            },
+            memory: memoryPreview,
+            instruction:
+              lowConfidenceMode
+                ? "검색 confidence가 낮으므로 누락 가능성을 명확히 경고하고, 확정/추정 범위를 분리하세요."
+                : "근거 중심으로 구체적으로 답변하세요."
+          },
+          null,
+          2
+        ),
+        fallback: bestOutput,
+        parse: (value) => ProjectAskOutputSchema.parse(value)
+      });
 
-  return {
-    project,
-    question,
-    answer: bestOutput.answer,
-    confidence: bestOutput.confidence,
-    qualityGatePassed: passed,
-    attempts,
-    evidence: bestOutput.evidence,
-    caveats: bestOutput.caveats,
-    retrieval: {
-      provider: search.provider,
-      fallbackUsed: search.fallbackUsed,
-      hitCount: search.hits.length,
-      topConfidence: search.hits[0] ? normalizeHitConfidence(search.hits[0]) : 0
-    },
-    diagnostics: {
-      lowConfidenceMode,
-      qualityGateFailures: unique(qualityFailures),
-      usedFallback,
-      memoryFiles: [
-        analysis.memoryFiles[0],
-        analysis.memoryFiles[1],
-        queryReportFiles.latestPath,
-        queryReportFiles.snapshotPath
-      ]
+      usedFallback ||= generation.usedFallback;
+      bestOutput = generation.output;
+
+      const gate = qualityGateForAsk({
+        output: bestOutput,
+        question,
+        hits: mergedHits
+      });
+      if (gate.passed) {
+        passed = true;
+        break;
+      }
+
+      qualityFailures.push(...gate.failures);
     }
-  };
+
+    const reportLines: string[] = [
+      `# Query Report`,
+      ``,
+      `- projectId: ${project.id}`,
+      `- projectName: ${project.name}`,
+      `- askedAt: ${nowIso()}`,
+      `- question: ${question}`,
+      `- confidence: ${bestOutput.confidence.toFixed(2)}`,
+      `- qualityGatePassed: ${passed}`,
+      `- attempts: ${attempts}`,
+      ``,
+      `## Answer`,
+      bestOutput.answer,
+      ``,
+      `## Evidence`
+    ];
+    for (const line of bestOutput.evidence) {
+      reportLines.push(`- ${line}`);
+    }
+    reportLines.push("", "## Caveats");
+    for (const line of bestOutput.caveats) {
+      reportLines.push(`- ${line}`);
+    }
+    reportLines.push("", "## Retrieval");
+    reportLines.push(`- provider=${bestSearch.provider}`);
+    reportLines.push(`- fallback=${bestSearch.fallbackUsed}`);
+    reportLines.push(`- hitCount=${mergedHits.length}`);
+    reportLines.push(`- topConfidence=${(mergedHits[0] ? normalizeHitConfidence(mergedHits[0]) : 0).toFixed(2)}`);
+    reportLines.push("");
+
+    const queryReportFiles = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: QUERY_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: `${reportLines.join("\n")}\n`
+    });
+
+    const response: ProjectAskResponse = {
+      project,
+      question,
+      answer: bestOutput.answer,
+      confidence: bestOutput.confidence,
+      qualityGatePassed: passed,
+      attempts,
+      evidence: bestOutput.evidence,
+      caveats: bestOutput.caveats,
+      retrieval: {
+        provider: bestSearch.provider,
+        fallbackUsed: bestSearch.fallbackUsed,
+        hitCount: mergedHits.length,
+        topConfidence: mergedHits[0] ? normalizeHitConfidence(mergedHits[0]) : 0
+      },
+      diagnostics: {
+        lowConfidenceMode,
+        qualityGateFailures: unique(qualityFailures),
+        usedFallback,
+        memoryFiles: [
+          analysis.memoryFiles[0],
+          analysis.memoryFiles[1],
+          queryReportFiles.latestPath,
+          queryReportFiles.snapshotPath
+        ]
+      }
+    };
+
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "success",
+      message: "project ask completed",
+      metadata: {
+        confidence: response.confidence,
+        qualityGatePassed: response.qualityGatePassed,
+        attempts: response.attempts,
+        hitCount: response.retrieval.hitCount
+      }
+    });
+
+    return response;
+  } catch (error) {
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "failure",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
 }
 
 export async function searchServerProject(options: {

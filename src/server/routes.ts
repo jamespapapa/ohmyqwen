@@ -7,6 +7,7 @@ import {
   askServerProject,
   getServerProject,
   listServerProjects,
+  listProjectDebugEvents,
   readServerProjectFile,
   removeServerProject,
   searchServerProject,
@@ -45,7 +46,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask"
+  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -376,6 +377,28 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         maxBytes: Number.isFinite(maxBytes) ? maxBytes : undefined
       });
       json(res, 200, result);
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectDebugId = matchProjectPath(pathname, "debug");
+  if (projectDebugId && method === "GET") {
+    try {
+      const limitRaw = url.searchParams.get("limit");
+      const limit = limitRaw ? Number.parseInt(limitRaw, 10) : undefined;
+      const events = await listProjectDebugEvents({
+        projectId: projectDebugId,
+        limit: Number.isFinite(limit) ? limit : undefined
+      });
+      json(res, 200, {
+        projectId: projectDebugId,
+        events
+      });
       return true;
     } catch (error) {
       json(res, 400, {

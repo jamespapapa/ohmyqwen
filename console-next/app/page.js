@@ -493,6 +493,8 @@ export default function HomePage() {
   const [askQuestion, setAskQuestion] = useState("");
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
+  const [debugEvents, setDebugEvents] = useState([]);
+  const [debugLoading, setDebugLoading] = useState(false);
   const [indexing, setIndexing] = useState(false);
 
   const [projectName, setProjectName] = useState("");
@@ -584,9 +586,7 @@ export default function HomePage() {
     setSelectedSearchHit(null);
     setSelectedFileDetail(null);
     setSelectedFileError("");
-    setAnalysisResult(null);
-    setAskResult(null);
-    setAskQuestion("");
+    void loadDebugEvents(selectedProject.id);
   }, [selectedProject]);
 
   useEffect(() => {
@@ -655,6 +655,23 @@ export default function HomePage() {
     await loadPicker(workspaceDir || pickerData?.path || "");
   }
 
+  async function loadDebugEvents(projectId = selectedProjectId) {
+    if (!projectId) {
+      setDebugEvents([]);
+      return;
+    }
+
+    setDebugLoading(true);
+    try {
+      const response = await getJson(`/api/projects/${projectId}/debug?limit=80`);
+      setDebugEvents(response.events || []);
+    } catch {
+      setDebugEvents([]);
+    } finally {
+      setDebugLoading(false);
+    }
+  }
+
   async function onSaveProject() {
     if (!projectName.trim()) {
       setProjectError("프로젝트 이름을 입력해주세요.");
@@ -696,6 +713,7 @@ export default function HomePage() {
         setSelectedProjectId(savedProjectId);
       }
       setProjectMessage("프로젝트 설정이 저장되었습니다.");
+      await loadDebugEvents(savedProjectId || selectedProjectId);
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -745,6 +763,7 @@ export default function HomePage() {
         `인덱싱 완료: files=${response.fileCount}, changed=${response.changedFiles}, provider=${response.selectedProvider}`
       );
       await loadProjects(true);
+      await loadDebugEvents();
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -772,6 +791,7 @@ export default function HomePage() {
         `분석 완료: confidence=${Number(response.confidence || 0).toFixed(2)}, memory=${response.memoryFiles?.length || 0} files`
       );
       await loadProjects(true);
+      await loadDebugEvents();
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
       setAnalysisResult(null);
@@ -807,6 +827,7 @@ export default function HomePage() {
         })
       });
       setSearchResult(response);
+      await loadDebugEvents();
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
       setSearchResult(null);
@@ -831,6 +852,7 @@ export default function HomePage() {
       });
       const response = await getJson(`/api/projects/${selectedProjectId}/file?${query.toString()}`);
       setSelectedFileDetail(response);
+      await loadDebugEvents();
     } catch (e) {
       setSelectedFileError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -861,6 +883,7 @@ export default function HomePage() {
         })
       });
       setAskResult(response);
+      await loadDebugEvents();
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1232,6 +1255,30 @@ export default function HomePage() {
                 ) : null}
               </div>
             ) : null}
+
+            <div className="search-result-box" style={{ marginTop: 10 }}>
+              <div className="label">트러블슈팅 로그</div>
+              <div className="hint">
+                {debugLoading ? "로그 갱신 중..." : `events=${debugEvents.length}`}
+              </div>
+              <ul className="artifacts" style={{ marginTop: 6, maxHeight: 180 }}>
+                {debugEvents.length === 0 ? (
+                  <li>
+                    <span>로그 없음</span>
+                    <span>-</span>
+                  </li>
+                ) : (
+                  debugEvents.map((event, index) => (
+                    <li key={`${event.timestamp}-${index}`}>
+                      <span title={JSON.stringify(event.metadata || {}, null, 2)}>
+                        [{event.stage}/{event.status}] {shortText(event.message, 70)}
+                      </span>
+                      <span>{event.timestamp}</span>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
 
             <div className="row" style={{ marginTop: 10 }}>
               <div>
