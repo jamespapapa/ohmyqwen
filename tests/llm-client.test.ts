@@ -872,6 +872,87 @@ describe("OpenAICompatibleLlmClient auth headers", () => {
     ).toBe(false);
   });
 
+  it("includes dependencyPolicy and allowlist hint when availableLibraries are provided", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: "impl",
+                  changes: [],
+                  actions: [],
+                  notes: []
+                })
+              }
+            }
+          ]
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpenAICompatibleLlmClient({
+      baseUrl: "http://localhost:4096",
+      model: "openai/gpt-5.2",
+      endpointKind: "openai"
+    });
+
+    const objective = "Node.js REST API를 만들고 /hello를 제공해.";
+    const context = packContext({
+      objective,
+      constraints: [],
+      symbols: [],
+      errorLogs: [],
+      diffSummary: [],
+      tier: "small",
+      tokenBudget: 1000,
+      stage: "IMPLEMENT"
+    });
+
+    await client.proposeImplementation({
+      input: {
+        ...baseInput,
+        objective,
+        availableLibraries: ["express", "zod"]
+      },
+      plan: {
+        summary: "plan",
+        steps: ["step-1"],
+        risks: [],
+        targetSymbols: [],
+        successCriteria: []
+      },
+      context,
+      patchAttempt: 0,
+      strategy: "focused-fix"
+    });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(requestInit.body)) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const userMessage = payload.messages.find((entry) => entry.role === "user");
+    const userPayload = JSON.parse(userMessage?.content ?? "{}") as {
+      objectiveHints?: string[];
+      dependencyPolicy?: { allowlistOnly?: boolean; availableLibraries?: string[] };
+    };
+
+    expect(userPayload.dependencyPolicy?.allowlistOnly).toBe(true);
+    expect(userPayload.dependencyPolicy?.availableLibraries).toEqual(["express", "zod"]);
+    expect(
+      userPayload.objectiveHints?.some((hint) => hint.includes("Dependency allowlist is active"))
+    ).toBe(true);
+  });
+
   it("removes run_command actions for Spring objective during IMPLEMENT", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

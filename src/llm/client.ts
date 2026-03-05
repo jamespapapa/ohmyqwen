@@ -740,6 +740,8 @@ function makePlanSystemPrompt(planningTemplate?: string): string {
     "Return ONLY one JSON object.",
     "Do not include markdown fences.",
     "Respect short-session execution and state-machine constraints.",
+    "Include a feasibility-tuning step before implementation when requirements/tooling constraints conflict.",
+    "If dependencyPolicy.allowlistOnly=true, include an explicit dependency design step constrained to dependencyPolicy.availableLibraries.",
     "Output keys: summary, steps, risks, targetSymbols, successCriteria."
   ];
 
@@ -765,6 +767,7 @@ function makeImplementSystemPrompt(): string {
     "Do not use node -e inline scripts. Prefer write_file/patch_file for code and package.json updates.",
     "Do not run build/test/lint/wrapper commands during IMPLEMENT; VERIFY phase executes quality gates.",
     "Avoid long-running server start commands unless explicitly requested.",
+    "If dependencyPolicy.allowlistOnly=true, use only dependency names from dependencyPolicy.availableLibraries.",
     "For API/server objectives, include at least one automated test file validating the endpoint contract.",
     "For patch_file, always provide explicit find and replace fields.",
     "Do not claim execution success. Propose actions only.",
@@ -772,14 +775,34 @@ function makeImplementSystemPrompt(): string {
   ].join("\n");
 }
 
+function normalizeAvailableLibraries(list?: string[]): string[] {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      list
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .map((entry) => entry.toLowerCase())
+    )
+  );
+}
+
 function makePlanUserPrompt(params: ProposePlanParams): string {
-  const objectiveHints = buildObjectiveHints(params.input.objective);
+  const availableLibraries = normalizeAvailableLibraries(params.input.availableLibraries);
+  const objectiveHints = buildObjectiveHints(params.input.objective, availableLibraries);
   return JSON.stringify(
     {
       phase: "PLAN",
       taskId: params.input.taskId,
       objective: params.input.objective,
       objectiveHints,
+      dependencyPolicy: {
+        allowlistOnly: availableLibraries.length > 0,
+        availableLibraries
+      },
       constraints: params.input.constraints,
       packedContext: params.context.payload,
       tokenBudget: {
@@ -827,7 +850,7 @@ function detectSpringCrudMemberIntent(objective: string): boolean {
   return mentionsMember && mentionsCrud;
 }
 
-function buildObjectiveHints(objective: string): string[] {
+function buildObjectiveHints(objective: string, availableLibraries: string[] = []): string[] {
   const hints: string[] = [];
   const normalized = objective.trim();
   const lower = normalized.toLowerCase();
@@ -878,6 +901,11 @@ function buildObjectiveHints(objective: string): string[] {
     hints.push("Express latest requirement detected: ensure dependency uses latest-compatible range.");
   }
 
+  if (availableLibraries.length > 0) {
+    hints.push("Dependency allowlist is active. Use only availableLibraries entries.");
+    hints.push(`Allowed libraries: ${availableLibraries.join(", ")}`);
+  }
+
   return hints;
 }
 
@@ -901,6 +929,7 @@ function buildPlanParseFallback(
   rawResponse: string
 ): PlanOutput {
   const objective = params.input.objective;
+  const availableLibraries = normalizeAvailableLibraries(params.input.availableLibraries);
   const runtime = detectObjectiveRuntime(objective);
   const preferredJvmTool = detectPreferredJvmBuildTool(objective);
   const isApiObjective =
@@ -910,22 +939,34 @@ function buildPlanParseFallback(
 
   const steps = runtime === "spring"
     ? [
+        "요구사항/환경 제약 충돌 여부를 튜닝 단계에서 먼저 정리",
         `프로젝트 골격 생성 (${preferredJvmTool} + Spring Boot 3+)`,
         "애플리케이션 엔트리포인트 및 컨트롤러 구현",
         `필수 API '${endpoint}' 구현`,
+        ...(availableLibraries.length > 0
+          ? ["허용 라이브러리 목록 내에서만 의존성 설계 및 매핑"]
+          : []),
         "빌드/테스트/검증 게이트 준비",
         "실패 원인 재현 및 수정 전략 수립"
       ]
     : isApiObjective
     ? [
+        "요구사항/환경 제약 충돌 여부를 튜닝 단계에서 먼저 정리",
         "프로젝트 메타데이터 점검 및 보강",
         "Express 서버 엔트리 파일 구현",
         `필수 API '${endpoint}' 추가`,
+        ...(availableLibraries.length > 0
+          ? ["허용 라이브러리 목록 내에서만 의존성 설계 및 매핑"]
+          : []),
         "실행 및 동작 검증",
         "문서 최소 반영"
       ]
     : [
+        "요구사항/환경 제약 충돌 여부를 튜닝 단계에서 먼저 정리",
         "작업 대상 파일 확인",
+        ...(availableLibraries.length > 0
+          ? ["허용 라이브러리 목록 내에서만 의존성 설계 및 매핑"]
+          : []),
         "최소 수정 구현",
         "로컬 검증 및 정리"
       ];
@@ -1725,7 +1766,8 @@ function isWeakImplementOutput(output: ImplementOutput): boolean {
 }
 
 function makeImplementUserPrompt(params: ProposeImplementationParams): string {
-  const objectiveHints = buildObjectiveHints(params.input.objective);
+  const availableLibraries = normalizeAvailableLibraries(params.input.availableLibraries);
+  const objectiveHints = buildObjectiveHints(params.input.objective, availableLibraries);
 
   return JSON.stringify(
     {
@@ -1733,6 +1775,10 @@ function makeImplementUserPrompt(params: ProposeImplementationParams): string {
       taskId: params.input.taskId,
       objective: params.input.objective,
       objectiveHints,
+      dependencyPolicy: {
+        allowlistOnly: availableLibraries.length > 0,
+        availableLibraries
+      },
       plan: params.plan,
       patchAttempt: params.patchAttempt,
       strategy: params.strategy,

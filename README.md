@@ -56,6 +56,7 @@ LLM (OpenAI-compatible):
 - `OHMYQWEN_LLM_BASIC_AUTH` (옵션, `user:password` 또는 `user/password`)
 - `OHMYQWEN_LLM_BASIC_AUTH_USER` / `OHMYQWEN_LLM_BASIC_AUTH_PASSWORD` (옵션)
 - `OHMYQWEN_LLM_ENDPOINT_KIND` (옵션: `auto` | `openai` | `opencode`)
+- `OHMYQWEN_AVAILABLE_LIBRARIES_URL` (옵션: available library 파일이 없을 때 fallback fetch URL)
 
 미설정 시 fallback 모드로 안전 동작.
 
@@ -114,6 +115,21 @@ pnpm run ui:dev
 - `GET /api/runs/:id`
 - `GET /api/runs/:id/events`
 - `GET /api/runs/:id/artifacts`
+
+`POST /api/runs`에서 의존성 allowlist 입력을 지원:
+
+- `availableLibraries: string[]` (직접 전달)
+- `availableLibrariesFile: string` (워크스페이스 기준 파일 경로)
+- `availableLibrariesUrl: string` (파일 미존재 시 fallback fetch URL)
+
+파일 자동 탐색 순서(입력 미지정 시):
+
+- `.ohmyqwen/available-libraries.json`
+- `.ohmyqwen/available-libraries.txt`
+- `config/available-libraries.json`
+- `config/available-libraries.txt`
+- `available-libraries.json`
+- `available-libraries.txt`
 
 웹 콘솔(기본): `web/index.html`, `web/app.js`  
 웹 콘솔(Next.js): `console-next/`

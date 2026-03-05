@@ -54,6 +54,9 @@ export interface StartRunPayload {
   task?: string;
   mode?: RunMode;
   input?: Partial<AnalyzeInput>;
+  availableLibraries?: string[];
+  availableLibrariesFile?: string;
+  availableLibrariesUrl?: string;
   files?: string[];
   constraints?: string[];
   symbols?: string[];
@@ -254,6 +257,9 @@ function toAnalyzeInput(payload: StartRunPayload, runId: string): AnalyzeInput {
     taskId: payload.input?.taskId ?? `web-${runId}`,
     objective: payload.input?.objective ?? payload.task ?? "",
     constraints: payload.input?.constraints ?? payload.constraints ?? [],
+    availableLibraries: payload.input?.availableLibraries ?? payload.availableLibraries,
+    availableLibrariesFile: payload.input?.availableLibrariesFile ?? payload.availableLibrariesFile,
+    availableLibrariesUrl: payload.input?.availableLibrariesUrl ?? payload.availableLibrariesUrl,
     files: payload.input?.files ?? payload.files ?? [],
     symbols: payload.input?.symbols ?? payload.symbols ?? [],
     errorLogs: payload.input?.errorLogs ?? [],

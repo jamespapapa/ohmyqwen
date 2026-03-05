@@ -1,13 +1,17 @@
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AnalyzeInput } from "../src/core/types.js";
 import { runLoop } from "../src/loop/runner.js";
 
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  delete process.env.OHMYQWEN_AVAILABLE_LIBRARIES_URL;
+  delete process.env.OHMYQWEN_LIBRARY_INDEX_URL;
+  vi.unstubAllGlobals();
+
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) {
@@ -88,6 +92,111 @@ describe("runLoop durable state", () => {
     expect(packed.constraintFlags).toContain("state-machine-control");
     expect(packed.payload.symbols.length).toBeGreaterThan(0);
     expect(packed.hash).toHaveLength(16);
+  });
+
+  it("applies analyze tuning when availableLibraries are provided", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-run-tuning-"));
+    tempDirs.push(workspace);
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/demo.ts"), "export const demo = 1;", "utf8");
+
+    const input: AnalyzeInput = {
+      ...baseInput(),
+      objective: "작업 디렉터리에서 안전하게 기능을 구현해줘.",
+      availableLibraries: ["express", "zod"],
+      constraints: ["short-session", "state-machine-control"],
+      dryRun: true
+    };
+
+    const result = await runLoop(input, {
+      cwd: workspace,
+      runId: "tuning-pass",
+      dryRun: true
+    });
+
+    expect(result.finalState).toBe("FINISH");
+
+    const tuningRaw = await readFile(
+      path.join(workspace, ".ohmyqwen", "runs", "tuning-pass", "outputs", "analyze.tuning.json"),
+      "utf8"
+    );
+    const tuning = JSON.parse(tuningRaw) as { constraints: string[]; availableLibraries: string[] };
+    expect(tuning.availableLibraries).toEqual(["express", "zod"]);
+    expect(tuning.constraints).toContain("dependency-allowlist-only");
+  });
+
+  it("loads availableLibraries from workspace file when input list is absent", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-run-lib-file-"));
+    tempDirs.push(workspace);
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await mkdir(path.join(workspace, ".ohmyqwen"), { recursive: true });
+    await writeFile(path.join(workspace, "src/demo.ts"), "export const demo = 1;", "utf8");
+    await writeFile(
+      path.join(workspace, ".ohmyqwen", "available-libraries.json"),
+      JSON.stringify({ availableLibraries: ["express", "zod"] }, null, 2),
+      "utf8"
+    );
+
+    const input: AnalyzeInput = {
+      ...baseInput(),
+      objective: "작업 디렉터리에서 안전하게 기능을 구현해줘.",
+      constraints: ["short-session", "state-machine-control"],
+      dryRun: true
+    };
+
+    const result = await runLoop(input, {
+      cwd: workspace,
+      runId: "lib-file-pass",
+      dryRun: true
+    });
+
+    expect(result.finalState).toBe("FINISH");
+
+    const analyzeRaw = await readFile(
+      path.join(workspace, ".ohmyqwen", "runs", "lib-file-pass", "outputs", "analyze.input.json"),
+      "utf8"
+    );
+    const analyze = JSON.parse(analyzeRaw) as { availableLibraries?: string[] };
+    expect(analyze.availableLibraries).toEqual(["express", "zod"]);
+  });
+
+  it("fetches availableLibraries from URL when file is missing", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-run-lib-url-"));
+    tempDirs.push(workspace);
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/demo.ts"), "export const demo = 1;", "utf8");
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ libraries: ["express", "axios"] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.OHMYQWEN_AVAILABLE_LIBRARIES_URL = "https://example.com/libs.json";
+
+    const input: AnalyzeInput = {
+      ...baseInput(),
+      objective: "작업 디렉터리에서 안전하게 기능을 구현해줘.",
+      constraints: ["short-session", "state-machine-control"],
+      dryRun: true
+    };
+
+    const result = await runLoop(input, {
+      cwd: workspace,
+      runId: "lib-url-pass",
+      dryRun: true
+    });
+
+    expect(result.finalState).toBe("FINISH");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const analyzeRaw = await readFile(
+      path.join(workspace, ".ohmyqwen", "runs", "lib-url-pass", "outputs", "analyze.input.json"),
+      "utf8"
+    );
+    const analyze = JSON.parse(analyzeRaw) as { availableLibraries?: string[] };
+    expect(analyze.availableLibraries).toEqual(["express", "axios"]);
   });
 
   it("fails after one controlled attempt when verify gates fail", async () => {

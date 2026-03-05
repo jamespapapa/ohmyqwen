@@ -12,6 +12,19 @@
       "items": { "type": "string" },
       "default": []
     },
+    "availableLibraries": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 200
+    },
+    "availableLibrariesFile": {
+      "type": "string",
+      "minLength": 1
+    },
+    "availableLibrariesUrl": {
+      "type": "string",
+      "format": "uri"
+    },
     "files": {
       "type": "array",
       "items": { "type": "string" },

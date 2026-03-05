@@ -421,4 +421,48 @@ describe("objective contract gate", () => {
     expect(gate?.passed).toBe(false);
     expect(gate?.details).toMatch(/JPA requirement|H2 requirement|CRUD requirement|Member/);
   });
+
+  it("fails when dependency is outside provided availableLibraries for Node", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-objective-node-allowlist-"));
+    tempDirs.push(workspace);
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+
+    await writeFile(
+      path.join(workspace, "package.json"),
+      JSON.stringify(
+        {
+          name: "allowlist-node",
+          version: "1.0.0",
+          scripts: {
+            start: "node src/server.js"
+          },
+          dependencies: {
+            express: "latest",
+            axios: "^1.7.0"
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(workspace, "src/server.js"),
+      "const express = require('express'); const app = express(); app.get('/hello', (_req, res) => res.send('Hello World!')); app.listen(process.env.PORT || 3000);",
+      "utf8"
+    );
+
+    const gate = await runObjectiveContractGate({
+      objective: "express REST API를 만들고 /hello에서 Hello World!를 반환해.",
+      cwd: workspace,
+      availableLibraries: ["express"],
+      runSmoke: false
+    });
+
+    expect(gate).toBeTruthy();
+    expect(gate?.passed).toBe(false);
+    expect(gate?.details).toContain("allowlist violation");
+    expect(gate?.details).toContain("axios");
+  });
 });

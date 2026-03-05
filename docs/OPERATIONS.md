@@ -99,3 +99,11 @@
   - `GET /api/runs/:id`
   - `GET /api/runs/:id/events`
   - `GET /api/runs/:id/artifacts`
+
+### available 라이브러리 allowlist 입력
+
+- 권장: 워크스페이스에 파일 배치
+  - `.ohmyqwen/available-libraries.json` 또는 `.txt`
+- 대안: `POST /api/runs` payload에 직접 전달
+  - `availableLibraries`, `availableLibrariesFile`, `availableLibrariesUrl`
+- 파일이 없으면 allowlist를 무시하며, URL이 지정된 경우(`availableLibrariesUrl` 또는 `OHMYQWEN_AVAILABLE_LIBRARIES_URL`) fetch 후 적용한다.

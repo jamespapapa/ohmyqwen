@@ -379,9 +379,159 @@ function parseMajor(version: string): number | undefined {
   return Number.isFinite(major) ? major : undefined;
 }
 
+function normalizeAvailableLibraries(list?: string[]): string[] {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      list
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .map((entry) => entry.toLowerCase())
+    )
+  );
+}
+
+function parseNpmTokenName(token: string): string | undefined {
+  const normalized = token.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const raw = normalized.startsWith("npm:") ? normalized.slice("npm:".length) : normalized;
+  if (!raw) {
+    return undefined;
+  }
+
+  if (raw.startsWith("@")) {
+    const secondAt = raw.indexOf("@", 1);
+    return secondAt > 0 ? raw.slice(0, secondAt) : raw;
+  }
+
+  const at = raw.indexOf("@");
+  return at > 0 ? raw.slice(0, at) : raw;
+}
+
+function buildNodeAllowlist(availableLibraries: string[]): Set<string> {
+  const allowed = new Set<string>();
+
+  for (const token of availableLibraries) {
+    if (token.includes(":") && !token.startsWith("npm:")) {
+      continue;
+    }
+
+    const name = parseNpmTokenName(token);
+    if (name) {
+      allowed.add(name);
+    }
+  }
+
+  return allowed;
+}
+
+function parseMavenCoordinate(
+  token: string
+): { groupId: string; artifactId: string } | undefined {
+  const normalized = token.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  const raw = normalized.startsWith("maven:") ? normalized.slice("maven:".length) : normalized;
+  const parts = raw.split(":").filter(Boolean);
+  if (parts.length < 2) {
+    return undefined;
+  }
+
+  return {
+    groupId: parts[0] as string,
+    artifactId: parts[1] as string
+  };
+}
+
+function buildSpringAllowlist(availableLibraries: string[]): {
+  exact: Set<string>;
+  artifactOnly: Set<string>;
+} {
+  const exact = new Set<string>();
+  const artifactOnly = new Set<string>();
+
+  for (const token of availableLibraries) {
+    const coordinate = parseMavenCoordinate(token);
+    if (coordinate) {
+      exact.add(`${coordinate.groupId}:${coordinate.artifactId}`);
+      artifactOnly.add(coordinate.artifactId);
+      continue;
+    }
+
+    if (!token.includes(":")) {
+      artifactOnly.add(token);
+    }
+  }
+
+  return { exact, artifactOnly };
+}
+
+function collectNodeDependencies(packageJson: Record<string, unknown> | undefined): string[] {
+  if (!packageJson) {
+    return [];
+  }
+
+  const sections = ["dependencies", "devDependencies", "peerDependencies"] as const;
+  const deps = new Set<string>();
+
+  for (const key of sections) {
+    const value = packageJson[key];
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+
+    for (const name of Object.keys(value as Record<string, unknown>)) {
+      deps.add(name.toLowerCase());
+    }
+  }
+
+  return Array.from(deps);
+}
+
+function collectMavenCoordinates(text: string): Array<{ groupId: string; artifactId: string }> {
+  const out: Array<{ groupId: string; artifactId: string }> = [];
+  const dependencyBlocks = text.match(/<dependency>[\s\S]*?<\/dependency>/gi) ?? [];
+
+  for (const block of dependencyBlocks) {
+    const groupId = block.match(/<groupId>\s*([^<\s]+)\s*<\/groupId>/i)?.[1]?.toLowerCase();
+    const artifactId = block.match(/<artifactId>\s*([^<\s]+)\s*<\/artifactId>/i)?.[1]?.toLowerCase();
+    if (groupId && artifactId) {
+      out.push({ groupId, artifactId });
+    }
+  }
+
+  return out;
+}
+
+function collectGradleCoordinates(text: string): Array<{ groupId: string; artifactId: string }> {
+  const out: Array<{ groupId: string; artifactId: string }> = [];
+  const matches = text.matchAll(
+    /(?:implementation|api|runtimeOnly|testImplementation|compileOnly|annotationProcessor)\s*\(?\s*["']([^:"']+):([^:"']+)(?::[^"']+)?["']/g
+  );
+
+  for (const match of matches) {
+    const groupId = (match[1] ?? "").trim().toLowerCase();
+    const artifactId = (match[2] ?? "").trim().toLowerCase();
+    if (groupId && artifactId) {
+      out.push({ groupId, artifactId });
+    }
+  }
+
+  return out;
+}
+
 async function runNodeContractChecks(options: {
   spec: ObjectiveContractSpec;
   cwd: string;
+  availableLibraries: string[];
   timeoutMs?: number;
   runSmoke?: boolean;
 }): Promise<{ failures: ObjectiveContractFailure[]; notes: string[] }> {
@@ -435,6 +585,22 @@ async function runNodeContractChecks(options: {
     notes.push(
       `express version is "${String(expressRange)}"; objective asked latest so consider "latest" tag or explicit upgrade`
     );
+  }
+
+  if (options.availableLibraries.length > 0) {
+    const allowlist = buildNodeAllowlist(options.availableLibraries);
+    const usedDependencies = collectNodeDependencies(packageJson);
+    const blocked = usedDependencies.filter((dep) => !allowlist.has(dep));
+    if (blocked.length > 0) {
+      failures.push(
+        failure(
+          `dependency allowlist violation (Node): ${blocked.join(", ")} not in availableLibraries`,
+          "tooling"
+        )
+      );
+    } else {
+      notes.push(`dependency allowlist check passed (${allowlist.size} allowed)`);
+    }
   }
 
   const serverFile = await findLikelyNodeServerFile(cwd, startScript ?? serveScript ?? devScript);
@@ -510,6 +676,7 @@ async function runNodeContractChecks(options: {
 async function runSpringContractChecks(options: {
   spec: ObjectiveContractSpec;
   cwd: string;
+  availableLibraries: string[];
 }): Promise<{ failures: ObjectiveContractFailure[]; notes: string[] }> {
   const { spec, cwd } = options;
   const failures: ObjectiveContractFailure[] = [];
@@ -588,6 +755,40 @@ async function runSpringContractChecks(options: {
   );
   const combinedBuildAndResource = [...buildSources, ...resourceSources].join("\n");
   const combinedSources = contents.join("\n");
+
+  if (options.availableLibraries.length > 0) {
+    const allowlist = buildSpringAllowlist(options.availableLibraries);
+    const buildCoordinates = new Set<string>();
+
+    for (const raw of buildSources) {
+      for (const entry of collectMavenCoordinates(raw)) {
+        buildCoordinates.add(`${entry.groupId}:${entry.artifactId}`);
+      }
+      for (const entry of collectGradleCoordinates(raw)) {
+        buildCoordinates.add(`${entry.groupId}:${entry.artifactId}`);
+      }
+    }
+
+    const blocked = Array.from(buildCoordinates).filter((coordinate) => {
+      const [groupId, artifactId] = coordinate.split(":");
+      if (!groupId || !artifactId) {
+        return false;
+      }
+
+      return !allowlist.exact.has(coordinate) && !allowlist.artifactOnly.has(artifactId);
+    });
+
+    if (blocked.length > 0) {
+      failures.push(
+        failure(
+          `dependency allowlist violation (Spring): ${blocked.join(", ")} not in availableLibraries`,
+          "tooling"
+        )
+      );
+    } else if (buildCoordinates.size > 0) {
+      notes.push(`dependency allowlist check passed (${allowlist.artifactOnly.size} allowed)`);
+    }
+  }
 
   if (spec.requiresJpa) {
     const hasJpaDependency =
@@ -726,12 +927,14 @@ async function runSpringContractChecks(options: {
 export async function runObjectiveContractGate(options: {
   objective: string;
   cwd: string;
+  availableLibraries?: string[];
   timeoutMs?: number;
   runSmoke?: boolean;
   verifyLogPath?: string;
 }): Promise<VerifyGateResult | undefined> {
   const startedAt = Date.now();
   const spec = parseObjectiveSpec(options.objective);
+  const availableLibraries = normalizeAvailableLibraries(options.availableLibraries);
   if (!shouldRunContractGate(spec)) {
     return undefined;
   }
@@ -739,10 +942,11 @@ export async function runObjectiveContractGate(options: {
   const runtimeFamily = inferRuntimeFamily(spec);
   const checkResult =
     runtimeFamily === "spring"
-      ? await runSpringContractChecks({ spec, cwd: options.cwd })
+      ? await runSpringContractChecks({ spec, cwd: options.cwd, availableLibraries })
       : await runNodeContractChecks({
           spec,
           cwd: options.cwd,
+          availableLibraries,
           timeoutMs: options.timeoutMs,
           runSmoke: options.runSmoke
         });

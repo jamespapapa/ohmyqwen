@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   AnalyzeInput,
@@ -124,6 +125,275 @@ function inferGateProfileFromObjective(objective: string): string | undefined {
   }
 
   return undefined;
+}
+
+function normalizeLibraryTokens(list?: string[]): string[] {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  return unique(
+    list
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => entry.toLowerCase())
+  );
+}
+
+const DEFAULT_AVAILABLE_LIBRARY_FILES = [
+  ".ohmyqwen/available-libraries.json",
+  ".ohmyqwen/available-libraries.txt",
+  "config/available-libraries.json",
+  "config/available-libraries.txt",
+  "available-libraries.json",
+  "available-libraries.txt"
+];
+
+function parseLibraryListFromUnknown(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((entry): entry is string => typeof entry === "string");
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const record = payload as Record<string, unknown>;
+  const fromKeys = [record.availableLibraries, record.libraries, record.items];
+  for (const value of fromKeys) {
+    if (Array.isArray(value)) {
+      const mapped = value
+        .map((entry) => {
+          if (typeof entry === "string") {
+            return entry;
+          }
+          if (entry && typeof entry === "object") {
+            const name = (entry as Record<string, unknown>).name;
+            return typeof name === "string" ? name : "";
+          }
+          return "";
+        })
+        .filter(Boolean);
+      if (mapped.length > 0) {
+        return mapped;
+      }
+    }
+  }
+
+  return [];
+}
+
+function parseLibrariesFromText(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return parseLibraryListFromUnknown(JSON.parse(trimmed));
+    } catch {
+      // fallback to line parser
+    }
+  }
+
+  return raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"))
+    .map((line) => line.replace(/,$/, "").trim())
+    .filter(Boolean);
+}
+
+async function findAvailableLibrariesFile(
+  cwd: string,
+  explicitPath?: string
+): Promise<string | undefined> {
+  const candidates = explicitPath
+    ? [path.isAbsolute(explicitPath) ? explicitPath : path.resolve(cwd, explicitPath)]
+    : DEFAULT_AVAILABLE_LIBRARY_FILES.map((entry) => path.resolve(cwd, entry));
+
+  for (const candidate of candidates) {
+    try {
+      const stat = await fs.stat(candidate);
+      if (stat.isFile()) {
+        return candidate;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return undefined;
+}
+
+async function loadAvailableLibrariesFromFile(options: {
+  cwd: string;
+  explicitPath?: string;
+}): Promise<{ libraries: string[]; source?: string; notes: string[] }> {
+  const notes: string[] = [];
+  const foundFile = await findAvailableLibrariesFile(options.cwd, options.explicitPath);
+  if (!foundFile) {
+    return { libraries: [], notes };
+  }
+
+  try {
+    const raw = await fs.readFile(foundFile, "utf8");
+    const libraries = normalizeLibraryTokens(parseLibrariesFromText(raw));
+    if (libraries.length === 0) {
+      notes.push(`available library file is empty: ${foundFile}`);
+      return { libraries: [], source: foundFile, notes };
+    }
+    return { libraries, source: foundFile, notes };
+  } catch (error) {
+    notes.push(
+      `failed to read available library file (${foundFile}): ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return { libraries: [], source: foundFile, notes };
+  }
+}
+
+async function fetchAvailableLibrariesFromUrl(
+  url: string
+): Promise<{ libraries: string[]; notes: string[] }> {
+  const notes: string[] = [];
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      notes.push(`available library URL fetch failed: status=${response.status}`);
+      return { libraries: [], notes };
+    }
+
+    const raw = await response.text();
+    const libraries = normalizeLibraryTokens(parseLibrariesFromText(raw));
+    if (libraries.length === 0) {
+      notes.push("available library URL returned empty payload");
+      return { libraries: [], notes };
+    }
+
+    return { libraries, notes };
+  } catch (error) {
+    notes.push(`available library URL fetch failed: ${error instanceof Error ? error.message : String(error)}`);
+    return { libraries: [], notes };
+  }
+}
+
+async function resolveAvailableLibraries(
+  input: AnalyzeInput,
+  cwd: string
+): Promise<{ libraries: string[]; notes: string[] }> {
+  const notes: string[] = [];
+  const direct = normalizeLibraryTokens(input.availableLibraries);
+  if (direct.length > 0) {
+    return { libraries: direct, notes: ["available libraries loaded from input"] };
+  }
+
+  const fromFile = await loadAvailableLibrariesFromFile({
+    cwd,
+    explicitPath: input.availableLibrariesFile
+  });
+  notes.push(...fromFile.notes);
+  if (fromFile.libraries.length > 0) {
+    notes.push(`available libraries loaded from file: ${fromFile.source}`);
+    return { libraries: fromFile.libraries, notes };
+  }
+
+  const fallbackUrl =
+    input.availableLibrariesUrl?.trim() ||
+    process.env.OHMYQWEN_AVAILABLE_LIBRARIES_URL?.trim() ||
+    process.env.OHMYQWEN_LIBRARY_INDEX_URL?.trim();
+  if (fallbackUrl) {
+    const fromUrl = await fetchAvailableLibrariesFromUrl(fallbackUrl);
+    notes.push(...fromUrl.notes);
+    if (fromUrl.libraries.length > 0) {
+      notes.push(`available libraries loaded from URL: ${fallbackUrl}`);
+      return { libraries: fromUrl.libraries, notes };
+    }
+  }
+
+  notes.push("available library source not found; skipping allowlist");
+  return { libraries: [], notes };
+}
+
+function extractObjectiveDependencyTokens(objective: string): string[] {
+  const normalized = objective.toLowerCase();
+  const hits: string[] = [];
+
+  if (/\bexpress\b/.test(normalized)) {
+    hits.push("express");
+  }
+  if (/spring\s*boot|springboot/.test(normalized)) {
+    hits.push("spring-boot-starter-web");
+  }
+  if (/\bjpa\b|spring-data-jpa|hibernate/.test(normalized)) {
+    hits.push("spring-boot-starter-data-jpa");
+  }
+  if (/\bh2\b|h2db|h2 db/.test(normalized)) {
+    hits.push("com.h2database:h2");
+  }
+
+  return unique(hits);
+}
+
+function libraryTokenMatches(token: string, candidate: string): boolean {
+  const normalizedToken = token.trim().toLowerCase();
+  const normalizedCandidate = candidate.trim().toLowerCase();
+  if (!normalizedToken || !normalizedCandidate) {
+    return false;
+  }
+
+  if (normalizedToken === normalizedCandidate) {
+    return true;
+  }
+
+  if (normalizedToken.endsWith(`:${normalizedCandidate}`)) {
+    return true;
+  }
+
+  if (normalizedCandidate.endsWith(`:${normalizedToken}`)) {
+    return true;
+  }
+
+  return false;
+}
+
+function tuneAnalyzeInput(
+  input: AnalyzeInput,
+  options?: { availableLibraries?: string[]; notes?: string[] }
+): { tuned: AnalyzeInput; notes: string[] } {
+  const availableLibraries = normalizeLibraryTokens(options?.availableLibraries ?? input.availableLibraries);
+  const notes: string[] = [...(options?.notes ?? [])];
+
+  const constraints = [...input.constraints];
+  if (availableLibraries.length > 0 && !constraints.includes("dependency-allowlist-only")) {
+    constraints.push("dependency-allowlist-only");
+    notes.push(`dependency allowlist enabled (${availableLibraries.length})`);
+  }
+
+  const requestedLibraries = extractObjectiveDependencyTokens(input.objective);
+  const unavailable = requestedLibraries.filter(
+    (required) => !availableLibraries.some((candidate) => libraryTokenMatches(candidate, required))
+  );
+
+  const errorLogs = [...input.errorLogs];
+  if (availableLibraries.length > 0 && unavailable.length > 0) {
+    const summary = `objective-requested libraries not in allowlist: ${unavailable.join(", ")}`;
+    errorLogs.unshift(summary);
+    notes.push(`allowlist mismatch detected (${unavailable.join(", ")})`);
+  }
+
+  return {
+    tuned: {
+      ...input,
+      availableLibraries,
+      constraints: unique(constraints),
+      errorLogs: unique(errorLogs).slice(0, 20)
+    },
+    notes
+  };
 }
 
 function findAttempt(manifest: RunManifest, attempt: number): AttemptCheckpoint | undefined {
@@ -360,7 +630,7 @@ export async function runLoop(
     ? await readAnalyzeInputFromArtifacts(artifacts)
     : undefined;
   let manifest: RunManifest;
-  const analyzeInput =
+  let analyzeInput =
     options?.resume && loadedManifest && resumeAnalyzeInput
       ? AnalyzeInputSchema.parse({
           ...resumeAnalyzeInput,
@@ -370,6 +640,13 @@ export async function runLoop(
               : resumeAnalyzeInput.clarificationAnswers
         })
       : parsed;
+
+  const resolvedLibraries = await resolveAvailableLibraries(analyzeInput, cwd);
+  const tuning = tuneAnalyzeInput(analyzeInput, {
+    availableLibraries: resolvedLibraries.libraries,
+    notes: resolvedLibraries.notes
+  });
+  analyzeInput = tuning.tuned;
 
   const resolvedMode = resolveModePolicy({
     ...analyzeInput,
@@ -480,6 +757,14 @@ export async function runLoop(
 
   try {
     await writeOutput(artifacts, "analyze.input.json", analyzeInput);
+    await writeOutput(artifacts, "analyze.tuning.json", {
+      notes: tuning.notes,
+      availableLibraries: analyzeInput.availableLibraries ?? [],
+      constraints: analyzeInput.constraints
+    });
+    if (tuning.notes.length > 0) {
+      await emitProgress(`analyze tuning applied: ${tuning.notes.join(" | ")}`);
+    }
 
     const beforeAnalyze = await pluginManager.runHook("beforeAnalyze", {
       cwd,
@@ -1050,6 +1335,7 @@ export async function runLoop(
         const objectiveGate = await runObjectiveContractGate({
           objective: analyzeInput.objective,
           cwd,
+          availableLibraries: analyzeInput.availableLibraries,
           verifyLogPath: artifacts.verifyLogPath
         });
         if (objectiveGate) {

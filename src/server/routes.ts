@@ -96,6 +96,9 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         task?: string;
         mode?: string;
         input?: unknown;
+        availableLibraries?: string[];
+        availableLibrariesFile?: string;
+        availableLibrariesUrl?: string;
         files?: string[];
         constraints?: string[];
         symbols?: string[];
@@ -126,6 +129,9 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         task: payload.task,
         mode: payload.mode ? RunModeSchema.parse(payload.mode) : undefined,
         input: payload.input as never,
+        availableLibraries: payload.availableLibraries,
+        availableLibrariesFile: payload.availableLibrariesFile,
+        availableLibrariesUrl: payload.availableLibrariesUrl,
         files: payload.files,
         constraints: payload.constraints,
         symbols: payload.symbols,
