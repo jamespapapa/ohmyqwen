@@ -100,6 +100,19 @@ export interface ProjectAnalysisResult {
   analyzedAt: string;
   memoryHome: string;
   memoryFiles: string[];
+  projectPreset?: {
+    name: string;
+    summary: string;
+  };
+  eaiCatalog?: {
+    interfaceCount: number;
+    topInterfaces: Array<{
+      interfaceId: string;
+      interfaceName: string;
+      purpose: string;
+      usagePaths: string[];
+    }>;
+  };
   summary: string;
   architecture: string[];
   keyModules: Array<{
@@ -115,6 +128,8 @@ export interface ProjectAnalysisResult {
     warmup: ProjectWarmupResult;
     lowConfidenceSignals: string[];
     usedFallback: boolean;
+    profileApplied: boolean;
+    eaiCatalogCount: number;
   };
 }
 
@@ -201,6 +216,8 @@ const MAX_FILE_SIZE_BYTES = 512 * 1024;
 const MAX_DETAIL_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_ASK_MAX_ATTEMPTS = 3;
 const ANALYSIS_MEMORY_DIR = "project-analysis";
+const PROFILE_MEMORY_DIR = "project-profile";
+const EAI_MEMORY_DIR = "eai-dictionary";
 const QUERY_MEMORY_DIR = "query-reports";
 
 let cachedStore: ServerProjectStore | null = null;
@@ -328,6 +345,52 @@ function resolveMemoryHome(workspaceDir: string): string {
 
 function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
+}
+
+interface ProjectPresetContext {
+  name: string;
+  summary: string;
+  keyFacts: string[];
+}
+
+interface EaiDictionaryEntry {
+  interfaceId: string;
+  interfaceName: string;
+  purpose: string;
+  sourcePath: string;
+  usagePaths: string[];
+}
+
+function detectProjectPreset(project: ServerProject, files: string[]): ProjectPresetContext | undefined {
+  const workspaceBase = path.basename(project.workspaceDir).toLowerCase();
+  const projectName = project.name.toLowerCase();
+  const fileSet = new Set(files.map((file) => toForwardSlash(file)));
+  const hasDcpCore = Array.from(fileSet).some((file) => file.includes("dcp-core/"));
+  const dcpServiceCount = Array.from(fileSet).filter((file) => /(^|\/)dcp-(loan|insurance|batch|cms|member|retire|fund|pension|gateway)\//.test(file)).length;
+
+  const isDcpServices =
+    workspaceBase.includes("dcp-services") ||
+    projectName.includes("dcp-services") ||
+    hasDcpCore ||
+    dcpServiceCount >= 10;
+
+  if (!isDcpServices) {
+    return undefined;
+  }
+
+  return {
+    name: "dcp-services",
+    summary:
+      "삼성생명 홈페이지 백엔드 통합 레포. dcp-* 마이크로서비스 구조이며 dcp-core 공통 의존 기반, dcp-gateway 전단 인증/권한/세션 및 라우팅, 주요 도메인은 보험/대출/회원/퇴직연금/펀드.",
+    keyFacts: [
+      "dcp-core는 공통 코어 의존 모듈로 다수 서비스가 참조한다.",
+      "dcp-gateway는 엔드포인트 수신 후 권한체크 및 Redis 세션 기반 전처리/라우팅을 담당한다.",
+      "주요 업무 처리(dcp-loan/dcp-insurance/dcp-member/dcp-retire/dcp-fund/dcp-pension/dcp-batch/dcp-cms)는 Spring 5 MVC 기반이다.",
+      "DB는 Oracle + MyBatis 연동이 기본이며 Redis 캐시/세션을 적극 사용한다.",
+      "대출/보험 등 핵심 처리 최종 실행은 EAI 뒷단 인터페이스 호출이 중심이다.",
+      "dcp-async/dcp-upload/dcp-display는 보조 기능 성격이며, dcp-chatbot 등 일부 저장소는 비활성 가능성이 있다."
+    ]
+  };
 }
 
 function toSearchTokens(query: string): string[] {
@@ -963,6 +1026,161 @@ function buildAnalysisMarkdown(input: {
   return `${lines.join("\n")}\n`;
 }
 
+function buildProjectPresetMarkdown(input: {
+  project: ServerProject;
+  preset: ProjectPresetContext;
+  updatedAt: string;
+}): string {
+  const lines: string[] = [];
+  lines.push("# Project Preset Context");
+  lines.push("");
+  lines.push(`- projectId: ${input.project.id}`);
+  lines.push(`- projectName: ${input.project.name}`);
+  lines.push(`- preset: ${input.preset.name}`);
+  lines.push(`- updatedAt: ${input.updatedAt}`);
+  lines.push("");
+  lines.push("## Summary");
+  lines.push(input.preset.summary);
+  lines.push("");
+  lines.push("## Key Facts");
+  for (const fact of input.preset.keyFacts) {
+    lines.push(`- ${fact}`);
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function parseXmlTag(content: string, tagName: string): string | undefined {
+  const matched = content.match(new RegExp(`<${tagName}>\\s*([^<]+?)\\s*<\\/${tagName}>`, "i"));
+  return matched?.[1]?.trim();
+}
+
+function inferEaiPurpose(content: string): string {
+  const candidates = [
+    parseXmlTag(content, "description"),
+    parseXmlTag(content, "serviceDesc"),
+    parseXmlTag(content, "serviceName"),
+    parseXmlTag(content, "interfaceDesc")
+  ].filter(Boolean) as string[];
+
+  return candidates[0] ?? "purpose-not-found";
+}
+
+async function buildEaiDictionary(options: {
+  workspaceDir: string;
+  files: string[];
+  maxEntries?: number;
+}): Promise<EaiDictionaryEntry[]> {
+  const eaiServiceFiles = options.files
+    .map((file) => toForwardSlash(file))
+    .filter((file) => /(^|\/)resources\/eai\/.+_service\.xml$/i.test(file))
+    .slice(0, options.maxEntries ?? 800);
+
+  if (eaiServiceFiles.length === 0) {
+    return [];
+  }
+
+  const searchableContents: Array<{ path: string; content: string }> = [];
+  for (const file of options.files.slice(0, 8_000)) {
+    const normalized = toForwardSlash(file);
+    const absolutePath = path.resolve(options.workspaceDir, normalized);
+    const content = await readTextFileSafe(absolutePath);
+    if (!content) {
+      continue;
+    }
+    searchableContents.push({
+      path: normalized,
+      content: content.toLowerCase()
+    });
+  }
+
+  const entries: EaiDictionaryEntry[] = [];
+  for (const relativePath of eaiServiceFiles) {
+    const absolutePath = path.resolve(options.workspaceDir, relativePath);
+    const content = await readTextFileSafe(absolutePath);
+    if (!content) {
+      continue;
+    }
+
+    const baseName = path.basename(relativePath);
+    const interfaceId = baseName.replace(/_service\.xml$/i, "");
+    const interfaceName = parseXmlTag(content, "serviceName") ?? interfaceId;
+    const purpose = inferEaiPurpose(content);
+    const lowerTokens = unique([
+      interfaceId.toLowerCase(),
+      interfaceName.toLowerCase()
+    ]).filter((token) => token.length >= 3);
+
+    const usagePaths: string[] = [];
+    for (const candidate of searchableContents) {
+      if (candidate.path === relativePath) {
+        continue;
+      }
+      if (!candidate.path.endsWith(".java") && !candidate.path.endsWith(".xml") && !candidate.path.endsWith(".kt")) {
+        continue;
+      }
+
+      const matched = lowerTokens.some((token) => candidate.content.includes(token));
+      if (!matched) {
+        continue;
+      }
+      usagePaths.push(candidate.path);
+      if (usagePaths.length >= 8) {
+        break;
+      }
+    }
+
+    entries.push({
+      interfaceId,
+      interfaceName,
+      purpose,
+      sourcePath: relativePath,
+      usagePaths
+    });
+  }
+
+  return entries
+    .sort((a, b) =>
+      a.interfaceId === b.interfaceId
+        ? a.sourcePath.localeCompare(b.sourcePath)
+        : a.interfaceId.localeCompare(b.interfaceId)
+    )
+    .slice(0, options.maxEntries ?? 800);
+}
+
+function buildEaiDictionaryMarkdown(input: {
+  project: ServerProject;
+  generatedAt: string;
+  entries: EaiDictionaryEntry[];
+}): string {
+  const lines: string[] = [];
+  lines.push("# EAI Interface Dictionary");
+  lines.push("");
+  lines.push(`- projectId: ${input.project.id}`);
+  lines.push(`- projectName: ${input.project.name}`);
+  lines.push(`- generatedAt: ${input.generatedAt}`);
+  lines.push(`- interfaceCount: ${input.entries.length}`);
+  lines.push("");
+
+  lines.push("## Entries");
+  for (const entry of input.entries) {
+    lines.push(`### ${entry.interfaceId} - ${entry.interfaceName}`);
+    lines.push(`- purpose: ${entry.purpose}`);
+    lines.push(`- source: ${entry.sourcePath}`);
+    if (entry.usagePaths.length > 0) {
+      lines.push("- usages:");
+      for (const usage of entry.usagePaths.slice(0, 8)) {
+        lines.push(`  - ${usage}`);
+      }
+    } else {
+      lines.push("- usages: (no direct usage match found)");
+    }
+    lines.push("");
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
 async function writeMemoryDocs(options: {
   memoryRoot: string;
   groupDir: string;
@@ -988,6 +1206,19 @@ async function writeMemoryDocs(options: {
       toForwardSlash(path.relative(options.memoryRoot, snapshotPath))
     ]
   };
+}
+
+async function writeMemoryJson(options: {
+  memoryRoot: string;
+  groupDir: string;
+  fileName: string;
+  payload: unknown;
+}): Promise<string> {
+  const groupRoot = path.resolve(options.memoryRoot, options.groupDir);
+  await fs.mkdir(groupRoot, { recursive: true });
+  const targetPath = path.resolve(groupRoot, options.fileName);
+  await fs.writeFile(targetPath, `${JSON.stringify(options.payload, null, 2)}\n`, "utf8");
+  return targetPath;
 }
 
 async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): Promise<string[]> {
@@ -1134,148 +1365,243 @@ export async function analyzeServerProject(options: {
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
     await fs.mkdir(memoryRoot, { recursive: true });
 
-  const extStats = buildFileExtensionStats(files);
-  const topDirs = buildTopDirectoryStats(files);
-  const seedSearch = await searchServerProject({
-    projectId: options.projectId,
-    query: "architecture module service controller repository flow entrypoint",
-    limit: 14
-  });
-  const hitConfidence = seedSearch.hits.map((hit) => normalizeHitConfidence(hit));
-  const topConfidence = hitConfidence[0] ?? 0;
-  const avgConfidence =
-    hitConfidence.reduce((sum, value) => sum + value, 0) / Math.max(1, hitConfidence.length);
-  const lowConfidenceSignals = summarizeLowConfidenceSignals(seedSearch.hits);
-  const lowConfidenceMode = topConfidence < 0.4 || avgConfidence < 0.3 || seedSearch.hits.length < 3;
+    const extStats = buildFileExtensionStats(files);
+    const topDirs = buildTopDirectoryStats(files);
+    const projectPreset = detectProjectPreset(warmup.project, files);
+    const generatedAt = nowIso();
 
-  const deterministic = buildDeterministicProjectSummary({
-    project: warmup.project,
-    files,
-    warmup
-  });
-
-  const llm = new OpenAICompatibleLlmClient();
-  const analysisPromptPayload = {
-    project: {
-      id: warmup.project.id,
-      name: warmup.project.name,
-      description: warmup.project.description,
-      workspaceDir: warmup.project.workspaceDir
-    },
-    indexed: {
-      fileCount: files.length,
-      warmupProvider: warmup.selectedProvider,
-      warmupFallbackUsed: warmup.fallbackUsed,
-      topExtensions: extStats.slice(0, 12),
-      topDirectories: topDirs.slice(0, 15)
-    },
-    retrievalEvidence: seedSearch.hits.slice(0, 14).map((hit) => ({
-      path: hit.path,
-      score: hit.score,
-      confidence: normalizeHitConfidence(hit),
-      reasons: hit.reasons ?? [],
-      snippet: hit.snippet ?? ""
-    })),
-    confidencePolicy: {
-      topConfidence,
-      averageConfidence: avgConfidence,
-      lowConfidenceMode,
-      lowConfidenceSignals
+    let presetMemoryFiles: string[] = [];
+    if (projectPreset) {
+      const presetMarkdown = buildProjectPresetMarkdown({
+        project: warmup.project,
+        preset: projectPreset,
+        updatedAt: generatedAt
+      });
+      const presetDocs = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: PROFILE_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: presetMarkdown
+      });
+      presetMemoryFiles = [presetDocs.latestPath, presetDocs.snapshotPath];
     }
-  };
 
-  const generation = await llm.generateStructured({
-    systemPrompt: [
-      "You are an architecture analyst for a local coding runtime.",
-      "Return ONLY one JSON object.",
-      "If confidence is low, explicitly include missing-coverage risks and lower confidence.",
-      "Do not fabricate files or dependencies."
-    ].join("\n"),
-    userPrompt: JSON.stringify(
-      {
-        task: "Analyze project structure and architecture for memory indexing.",
-        outputSchema: {
-          summary: "string",
-          architecture: ["string"],
-          keyModules: [{ name: "string", path: "string", role: "string", confidence: "0..1" }],
-          risks: ["string"],
-          confidence: "0..1",
-          evidence: ["string"]
-        },
-        input: analysisPromptPayload
-      },
-      null,
-      2
-    ),
-    fallback: deterministic,
-    parse: (value) => ProjectAnalysisOutputSchema.parse(value)
-  });
-
-  const analyzedAt = nowIso();
-  const output = generation.output;
-  const normalizedOutput = {
-    summary: output.summary,
-    architecture: output.architecture.slice(0, 24),
-    keyModules: output.keyModules
-      .map((module) => ({
-        ...module,
-        path: toForwardSlash(module.path),
-        confidence: Math.max(0, Math.min(1, module.confidence))
-      }))
-      .slice(0, 32),
-    risks: unique([...output.risks, ...lowConfidenceSignals]).slice(0, 30),
-    confidence: Math.max(
-      0,
-      Math.min(
-        1,
-        output.confidence * (lowConfidenceMode ? 0.85 : 1)
-      )
-    ),
-    evidence: unique([
-      ...output.evidence,
-      `seedProvider=${seedSearch.provider}`,
-      `seedTopConfidence=${topConfidence.toFixed(2)}`,
-      `seedAverageConfidence=${avgConfidence.toFixed(2)}`
-    ]).slice(0, 30)
-  };
-
-  const markdown = buildAnalysisMarkdown({
-    project: warmup.project,
-    analyzedAt,
-    ...normalizedOutput,
-    lowConfidenceSignals
-  });
-  const analysisFiles = await writeMemoryDocs({
-    memoryRoot,
-    groupDir: ANALYSIS_MEMORY_DIR,
-    latestFileName: "latest.md",
-    content: markdown
-  });
-
-  if (isInsideParent(project.workspaceDir, memoryRoot)) {
-    const relativeMemoryFiles = analysisFiles.relativePaths.map((item) =>
-      toForwardSlash(path.join(path.relative(project.workspaceDir, memoryRoot), item))
-    );
-    await inspectContext({
-      cwd: project.workspaceDir,
-      files: unique([...files.slice(0, 5_000), ...relativeMemoryFiles]),
-      task: `reindex with memory docs: ${project.name}`,
-      tier: "small",
-      tokenBudget: 700,
-      stage: "PLAN"
+    const eaiEntries = await buildEaiDictionary({
+      workspaceDir: project.workspaceDir,
+      files
     });
-  }
+    let eaiMemoryFiles: string[] = [];
+    if (eaiEntries.length > 0) {
+      const eaiMarkdown = buildEaiDictionaryMarkdown({
+        project: warmup.project,
+        generatedAt,
+        entries: eaiEntries
+      });
+      const eaiDocs = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: EAI_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: eaiMarkdown
+      });
+      const eaiJsonPath = await writeMemoryJson({
+        memoryRoot,
+        groupDir: EAI_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: {
+          generatedAt,
+          interfaceCount: eaiEntries.length,
+          entries: eaiEntries
+        }
+      });
+      eaiMemoryFiles = [eaiDocs.latestPath, eaiDocs.snapshotPath, eaiJsonPath];
+    }
+
+    const seedSearch = await searchServerProject({
+      projectId: options.projectId,
+      query: "architecture module service controller repository flow entrypoint",
+      limit: 14
+    });
+    const hitConfidence = seedSearch.hits.map((hit) => normalizeHitConfidence(hit));
+    const topConfidence = hitConfidence[0] ?? 0;
+    const avgConfidence =
+      hitConfidence.reduce((sum, value) => sum + value, 0) / Math.max(1, hitConfidence.length);
+    const lowConfidenceSignals = summarizeLowConfidenceSignals(seedSearch.hits);
+    const lowConfidenceMode = topConfidence < 0.4 || avgConfidence < 0.3 || seedSearch.hits.length < 3;
+
+    const deterministic = buildDeterministicProjectSummary({
+      project: warmup.project,
+      files,
+      warmup
+    });
+
+    const llm = new OpenAICompatibleLlmClient();
+    const analysisPromptPayload = {
+      project: {
+        id: warmup.project.id,
+        name: warmup.project.name,
+        description: warmup.project.description,
+        workspaceDir: warmup.project.workspaceDir
+      },
+      knownProjectContext: projectPreset
+        ? {
+            preset: projectPreset.name,
+            summary: projectPreset.summary,
+            keyFacts: projectPreset.keyFacts
+          }
+        : null,
+      indexed: {
+        fileCount: files.length,
+        warmupProvider: warmup.selectedProvider,
+        warmupFallbackUsed: warmup.fallbackUsed,
+        topExtensions: extStats.slice(0, 12),
+        topDirectories: topDirs.slice(0, 15)
+      },
+      eaiDictionary: {
+        interfaceCount: eaiEntries.length,
+        topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
+          interfaceId: entry.interfaceId,
+          interfaceName: entry.interfaceName,
+          purpose: entry.purpose,
+          usagePaths: entry.usagePaths.slice(0, 5)
+        }))
+      },
+      retrievalEvidence: seedSearch.hits.slice(0, 14).map((hit) => ({
+        path: hit.path,
+        score: hit.score,
+        confidence: normalizeHitConfidence(hit),
+        reasons: hit.reasons ?? [],
+        snippet: hit.snippet ?? ""
+      })),
+      confidencePolicy: {
+        topConfidence,
+        averageConfidence: avgConfidence,
+        lowConfidenceMode,
+        lowConfidenceSignals
+      }
+    };
+
+    const generation = await llm.generateStructured({
+      systemPrompt: [
+        "You are an architecture analyst for a local coding runtime.",
+        "Return ONLY one JSON object.",
+        "Use knownProjectContext as prior domain context when provided.",
+        "If confidence is low, explicitly include missing-coverage risks and lower confidence.",
+        "Do not fabricate files or dependencies."
+      ].join("\n"),
+      userPrompt: JSON.stringify(
+        {
+          task: "Analyze project structure and architecture for memory indexing.",
+          outputSchema: {
+            summary: "string",
+            architecture: ["string"],
+            keyModules: [{ name: "string", path: "string", role: "string", confidence: "0..1" }],
+            risks: ["string"],
+            confidence: "0..1",
+            evidence: ["string"]
+          },
+          input: analysisPromptPayload
+        },
+        null,
+        2
+      ),
+      fallback: deterministic,
+      parse: (value) => ProjectAnalysisOutputSchema.parse(value)
+    });
+
+    const analyzedAt = nowIso();
+    const output = generation.output;
+    const normalizedOutput = {
+      summary: output.summary,
+      architecture: output.architecture.slice(0, 24),
+      keyModules: output.keyModules
+        .map((module) => ({
+          ...module,
+          path: toForwardSlash(module.path),
+          confidence: Math.max(0, Math.min(1, module.confidence))
+        }))
+        .slice(0, 32),
+      risks: unique([...output.risks, ...lowConfidenceSignals]).slice(0, 30),
+      confidence: Math.max(
+        0,
+        Math.min(
+          1,
+          output.confidence * (lowConfidenceMode ? 0.85 : 1)
+        )
+      ),
+      evidence: unique([
+        ...output.evidence,
+        `seedProvider=${seedSearch.provider}`,
+        `seedTopConfidence=${topConfidence.toFixed(2)}`,
+        `seedAverageConfidence=${avgConfidence.toFixed(2)}`,
+        projectPreset ? `projectPreset=${projectPreset.name}` : "",
+        `eaiCatalogCount=${eaiEntries.length}`
+      ]).slice(0, 30)
+    };
+
+    const markdown = buildAnalysisMarkdown({
+      project: warmup.project,
+      analyzedAt,
+      ...normalizedOutput,
+      lowConfidenceSignals
+    });
+    const analysisFiles = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: ANALYSIS_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: markdown
+    });
+
+    if (isInsideParent(project.workspaceDir, memoryRoot)) {
+      const relativeToWorkspace = path.relative(project.workspaceDir, memoryRoot);
+      const relativeMemoryFiles = analysisFiles.relativePaths.map((item) =>
+        toForwardSlash(path.join(relativeToWorkspace, item))
+      );
+      const extraMemoryFiles = [
+        ...presetMemoryFiles,
+        ...eaiMemoryFiles
+      ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
+      await inspectContext({
+        cwd: project.workspaceDir,
+        files: unique([...files.slice(0, 5_000), ...relativeMemoryFiles, ...extraMemoryFiles]),
+        task: `reindex with memory docs: ${project.name}`,
+        tier: "small",
+        tokenBudget: 700,
+        stage: "PLAN"
+      });
+    }
 
     const result: ProjectAnalysisResult = {
       project: warmup.project,
       analyzedAt,
       memoryHome: memoryRoot,
-      memoryFiles: [analysisFiles.latestPath, analysisFiles.snapshotPath],
+      memoryFiles: unique([
+        analysisFiles.latestPath,
+        analysisFiles.snapshotPath,
+        ...presetMemoryFiles,
+        ...eaiMemoryFiles
+      ]),
+      projectPreset: projectPreset
+        ? {
+            name: projectPreset.name,
+            summary: projectPreset.summary
+          }
+        : undefined,
+      eaiCatalog: {
+        interfaceCount: eaiEntries.length,
+        topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
+          interfaceId: entry.interfaceId,
+          interfaceName: entry.interfaceName,
+          purpose: entry.purpose,
+          usagePaths: entry.usagePaths.slice(0, 5)
+        }))
+      },
       ...normalizedOutput,
       diagnostics: {
         warmup,
         lowConfidenceSignals,
-        usedFallback: generation.usedFallback
+        usedFallback: generation.usedFallback,
+        profileApplied: Boolean(projectPreset),
+        eaiCatalogCount: eaiEntries.length
       }
     };
 
@@ -1469,7 +1795,9 @@ export async function askServerProject(options: {
               architecture: analysis.architecture,
               keyModules: analysis.keyModules,
               confidence: analysis.confidence,
-              risks: analysis.risks
+              risks: analysis.risks,
+              projectPreset: analysis.projectPreset ?? null,
+              eaiCatalog: analysis.eaiCatalog ?? null
             },
             retrieval: {
               provider: bestSearch.provider,
@@ -1610,41 +1938,53 @@ export async function searchServerProject(options: {
   queryMode?: "query_then_search" | "search_only" | "query_only";
   maxFiles?: number;
 }): Promise<ProjectSearchResult> {
-  const project = await getServerProject(options.projectId);
-  if (!project) {
-    throw new Error(`project not found: ${options.projectId}`);
-  }
-
-  const query = String(options.query || "").trim();
-  if (!query) {
-    throw new Error("query is required");
-  }
-
-  const limit = Math.max(1, Math.min(200, options.limit ?? 20));
-
-  const qmdOverrides = options.queryMode
-    ? {
-        qmd: {
-          queryMode: options.queryMode
-        }
-      }
-    : undefined;
-
-  const retrievalOverrides = {
-    ...(project.retrieval ?? {}),
-    ...(qmdOverrides ?? {}),
-    qmd: {
-      ...(project.retrieval?.qmd ?? {}),
-      ...(qmdOverrides?.qmd ?? {})
+  await appendProjectDebugEvent({
+    timestamp: nowIso(),
+    projectId: options.projectId,
+    stage: "search",
+    status: "start",
+    message: "project search started",
+    metadata: {
+      query: options.query,
+      limit: options.limit
     }
-  };
+  });
 
-  const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, retrievalOverrides);
+  try {
+    const project = await getServerProject(options.projectId);
+    if (!project) {
+      throw new Error(`project not found: ${options.projectId}`);
+    }
 
-  const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    const query = String(options.query || "").trim();
+    if (!query) {
+      throw new Error("query is required");
+    }
 
-  if (retrievalConfig.qmd.enabled) {
-    try {
+    const limit = Math.max(1, Math.min(200, options.limit ?? 20));
+
+    const qmdOverrides = options.queryMode
+      ? {
+          qmd: {
+            queryMode: options.queryMode
+          }
+        }
+      : undefined;
+
+    const retrievalOverrides = {
+      ...(project.retrieval ?? {}),
+      ...(qmdOverrides ?? {}),
+      qmd: {
+        ...(project.retrieval?.qmd ?? {}),
+        ...(qmdOverrides?.qmd ?? {})
+      }
+    };
+
+    const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, retrievalOverrides);
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+
+    if (retrievalConfig.qmd.enabled) {
+      try {
       const runtime = resolveQmdRuntime({
         cwd: project.workspaceDir,
         command: retrievalConfig.qmd.command,
@@ -1701,7 +2041,7 @@ export async function searchServerProject(options: {
             query,
             limit
           });
-          return {
+          const response: ProjectSearchResult = {
             project,
             query,
             provider: "lexical",
@@ -1718,9 +2058,21 @@ export async function searchServerProject(options: {
               fileCount: files.length
             }
           };
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "search",
+            status: "info",
+            message: "qmd returned stale paths only; fallback to lexical",
+            metadata: {
+              staleCount: missingQmdPaths.length,
+              hitCount: response.hits.length
+            }
+          });
+          return response;
         }
 
-        return {
+        const response: ProjectSearchResult = {
           project,
           query,
           provider: "qmd",
@@ -1741,6 +2093,19 @@ export async function searchServerProject(options: {
             fileCount: files.length
           }
         };
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "search",
+          status: "success",
+          message: "qmd search succeeded",
+          metadata: {
+            provider: "qmd",
+            hitCount: response.hits.length,
+            mode: response.modeUsed
+          }
+        });
+        return response;
       }
 
       const lexicalHits = await lexicalSearch({
@@ -1750,7 +2115,7 @@ export async function searchServerProject(options: {
         limit
       });
 
-      return {
+      const response: ProjectSearchResult = {
         project,
         query,
         provider: "lexical",
@@ -1765,6 +2130,18 @@ export async function searchServerProject(options: {
           fileCount: files.length
         }
       };
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "search",
+        status: "info",
+        message: "qmd empty/failed; lexical fallback used",
+        metadata: {
+          qmdStatus: qmdResult.status,
+          hitCount: response.hits.length
+        }
+      });
+      return response;
     } catch (error) {
       const lexicalHits = await lexicalSearch({
         workspaceDir: project.workspaceDir,
@@ -1773,7 +2150,7 @@ export async function searchServerProject(options: {
         limit
       });
 
-      return {
+      const response: ProjectSearchResult = {
         project,
         query,
         provider: "lexical",
@@ -1787,25 +2164,57 @@ export async function searchServerProject(options: {
           fileCount: files.length
         }
       };
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "search",
+        status: "failure",
+        message: `qmd search error, lexical fallback used: ${error instanceof Error ? error.message : String(error)}`,
+        metadata: {
+          hitCount: response.hits.length
+        }
+      });
+      return response;
     }
+    }
+
+    const lexicalHits = await lexicalSearch({
+      workspaceDir: project.workspaceDir,
+      files,
+      query,
+      limit
+    });
+
+    const response: ProjectSearchResult = {
+      project,
+      query,
+      provider: "lexical",
+      fallbackUsed: false,
+      hits: lexicalHits,
+      diagnostics: {
+        qmdStatus: "skipped",
+        fileCount: files.length
+      }
+    };
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "search",
+      status: "success",
+      message: "lexical search used (qmd disabled)",
+      metadata: {
+        hitCount: response.hits.length
+      }
+    });
+    return response;
+  } catch (error) {
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "search",
+      status: "failure",
+      message: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
   }
-
-  const lexicalHits = await lexicalSearch({
-    workspaceDir: project.workspaceDir,
-    files,
-    query,
-    limit
-  });
-
-  return {
-    project,
-    query,
-    provider: "lexical",
-    fallbackUsed: false,
-    hits: lexicalHits,
-    diagnostics: {
-      qmdStatus: "skipped",
-      fileCount: files.length
-    }
-  };
 }

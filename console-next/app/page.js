@@ -1195,6 +1195,14 @@ export default function HomePage() {
                     <span>메모리 경로</span>
                     <span title={analysisResult.memoryHome}>{shortText(analysisResult.memoryHome || "-", 70)}</span>
                   </div>
+                  <div className="report-row">
+                    <span>프리셋</span>
+                    <span>{analysisResult.projectPreset?.name || "-"}</span>
+                  </div>
+                  <div className="report-row">
+                    <span>EAI 사전</span>
+                    <span>{analysisResult.eaiCatalog?.interfaceCount ?? 0} entries</span>
+                  </div>
                 </div>
 
                 <div className="label" style={{ marginTop: 8 }}>핵심 모듈</div>
@@ -1215,6 +1223,22 @@ export default function HomePage() {
                     ))
                   )}
                 </ul>
+
+                {(analysisResult.eaiCatalog?.topInterfaces || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>EAI Top Interfaces</div>
+                    <ul className="artifacts" style={{ maxHeight: 140 }}>
+                      {analysisResult.eaiCatalog.topInterfaces.slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.interfaceId}-${index}`}>
+                          <span title={`${entry.interfaceId} ${entry.interfaceName} ${entry.purpose}`}>
+                            {shortText(entry.interfaceId, 24)} · {shortText(entry.interfaceName, 30)}
+                          </span>
+                          <span>{entry.usagePaths?.length || 0}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
               </div>
             ) : null}
 
@@ -1257,10 +1281,19 @@ export default function HomePage() {
             ) : null}
 
             <div className="search-result-box" style={{ marginTop: 10 }}>
-              <div className="label">트러블슈팅 로그</div>
-              <div className="hint">
-                {debugLoading ? "로그 갱신 중..." : `events=${debugEvents.length}`}
+              <div className="label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>트러블슈팅 로그</span>
+                <button
+                  type="button"
+                  className="tiny secondary"
+                  style={{ width: "auto" }}
+                  onClick={() => loadDebugEvents()}
+                  disabled={!selectedProjectId || debugLoading}
+                >
+                  {debugLoading ? "갱신 중" : "새로고침"}
+                </button>
               </div>
+              <div className="hint">{debugLoading ? "로그 갱신 중..." : `events=${debugEvents.length}`}</div>
               <ul className="artifacts" style={{ marginTop: 6, maxHeight: 180 }}>
                 {debugEvents.length === 0 ? (
                   <li>
