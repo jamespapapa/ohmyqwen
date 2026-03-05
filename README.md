@@ -91,9 +91,10 @@ Retrieval / Local Embedding (옵션):
 - 결과를 runtime 공통 RetrievalHit으로 정규화
 
 Web UI 프로젝트 모드에서는:
+- 프로젝트 프리셋 관리/선택(`/api/presets`, `/api/presets/:id`)
 - 프로젝트 인덱싱 + LLM 구조 분석(`/api/projects/:id/analyze`)
 - memory markdown 저장(`memory/project-analysis/*.md`, `memory/query-reports/*.md`)
-- 프로젝트 프리셋 컨텍스트 자동 주입(예: `dcp-services`, `memory/project-profile/*.md`)
+- 프로젝트 프리셋 컨텍스트 자동 주입(`config/project-presets.json` + 사용자 프리셋, `memory/project-profile/*.md`)
 - EAI 인터페이스 사전 자동 생성(`memory/eai-dictionary/latest.md`, `latest.json`)
 - 검색 결과 파일 상세 조회(`/api/projects/:id/file`)
 - 프로젝트 질의응답 + confidence 반환(`/api/projects/:id/ask`)

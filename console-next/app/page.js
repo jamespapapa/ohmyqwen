@@ -476,10 +476,20 @@ async function getJson(url, init) {
 export default function HomePage() {
   const [task, setTask] = useState("Node.js로 Hello World 프로젝트를 생성하고 실행 스크립트를 추가해줘.");
   const [projects, setProjects] = useState([]);
+  const [presets, setPresets] = useState([]);
+  const [presetLoading, setPresetLoading] = useState(false);
+  const [presetError, setPresetError] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState("");
   const [projectLoading, setProjectLoading] = useState(false);
   const [projectMessage, setProjectMessage] = useState("");
   const [projectError, setProjectError] = useState("");
+  const [presetName, setPresetName] = useState("");
+  const [presetSummary, setPresetSummary] = useState("");
+  const [presetFactsText, setPresetFactsText] = useState("");
+  const [presetWorkspaceRules, setPresetWorkspaceRules] = useState("");
+  const [presetProjectNameRules, setPresetProjectNameRules] = useState("");
+  const [presetRequiredPaths, setPresetRequiredPaths] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLimit, setSearchLimit] = useState(20);
   const [searchResult, setSearchResult] = useState(null);
@@ -520,6 +530,10 @@ export default function HomePage() {
     () => projects.find((project) => project.id === selectedProjectId) || null,
     [projects, selectedProjectId]
   );
+  const selectedPreset = useMemo(
+    () => presets.find((preset) => preset.id === selectedPresetId) || null,
+    [presets, selectedPresetId]
+  );
 
   const done = useMemo(() => {
     const status = run?.status;
@@ -538,6 +552,19 @@ export default function HomePage() {
   );
   const actionProgress = useMemo(() => buildActionProgress(events), [events]);
   const verifyProgress = useMemo(() => buildVerifyProgress(events), [events]);
+
+  async function loadPresets() {
+    setPresetLoading(true);
+    setPresetError("");
+    try {
+      const response = await getJson("/api/presets");
+      setPresets(response.presets || []);
+    } catch (e) {
+      setPresetError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetLoading(false);
+    }
+  }
 
   async function loadProjects(keepMessage = false) {
     setProjectLoading(true);
@@ -568,6 +595,7 @@ export default function HomePage() {
 
   useEffect(() => {
     void loadProjects();
+    void loadPresets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -579,6 +607,7 @@ export default function HomePage() {
     setProjectName(selectedProject.name || "");
     setWorkspaceDir(selectedProject.workspaceDir || "");
     setProjectDescription(selectedProject.description || "");
+    setSelectedPresetId(selectedProject.presetId || "");
     setProjectQueryMode(selectedProject.retrieval?.qmd?.queryMode || "query_then_search");
     setMode(selectedProject.defaultMode || "feature");
     setDryRun(Boolean(selectedProject.defaultDryRun));
@@ -588,6 +617,27 @@ export default function HomePage() {
     setSelectedFileError("");
     void loadDebugEvents(selectedProject.id);
   }, [selectedProject]);
+
+  useEffect(() => {
+    if (!selectedPreset) {
+      if (!selectedPresetId) {
+        setPresetName("");
+        setPresetSummary("");
+        setPresetFactsText("");
+        setPresetWorkspaceRules("");
+        setPresetProjectNameRules("");
+        setPresetRequiredPaths("");
+      }
+      return;
+    }
+
+    setPresetName(selectedPreset.name || "");
+    setPresetSummary(selectedPreset.summary || "");
+    setPresetFactsText((selectedPreset.keyFacts || []).join("\n"));
+    setPresetWorkspaceRules((selectedPreset.rules?.workspaceIncludes || []).join("\n"));
+    setPresetProjectNameRules((selectedPreset.rules?.projectNameIncludes || []).join("\n"));
+    setPresetRequiredPaths((selectedPreset.rules?.requiredPaths || []).join("\n"));
+  }, [selectedPreset, selectedPresetId]);
 
   useEffect(() => {
     if (done || !runId) return;
@@ -655,6 +705,85 @@ export default function HomePage() {
     await loadPicker(workspaceDir || pickerData?.path || "");
   }
 
+  function parseLines(value) {
+    return Array.from(
+      new Set(
+        String(value || "")
+          .split(/\r?\n|,/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+      )
+    );
+  }
+
+  async function onSavePreset() {
+    if (!presetName.trim()) {
+      setPresetError("프리셋 이름을 입력해주세요.");
+      return;
+    }
+    if (!presetSummary.trim()) {
+      setPresetError("프리셋 요약을 입력해주세요.");
+      return;
+    }
+    const keyFacts = parseLines(presetFactsText);
+    if (keyFacts.length === 0) {
+      setPresetError("프리셋 핵심 사실을 최소 1개 입력해주세요.");
+      return;
+    }
+
+    setPresetLoading(true);
+    setPresetError("");
+    try {
+      const payload = {
+        id: selectedPreset?.builtIn ? undefined : selectedPresetId || undefined,
+        name: presetName.trim(),
+        summary: presetSummary.trim(),
+        keyFacts,
+        rules: {
+          workspaceIncludes: parseLines(presetWorkspaceRules),
+          projectNameIncludes: parseLines(presetProjectNameRules),
+          requiredPaths: parseLines(presetRequiredPaths)
+        }
+      };
+      const response = await getJson("/api/presets", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      await loadPresets();
+      setSelectedPresetId(response.preset?.id || "");
+      setProjectMessage("프리셋이 저장되었습니다.");
+    } catch (e) {
+      setPresetError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetLoading(false);
+    }
+  }
+
+  async function onDeletePreset() {
+    if (!selectedPresetId) {
+      return;
+    }
+    if (selectedPreset?.builtIn) {
+      setPresetError("내장 프리셋은 삭제할 수 없습니다.");
+      return;
+    }
+
+    setPresetLoading(true);
+    setPresetError("");
+    try {
+      await getJson(`/api/presets/${selectedPresetId}`, {
+        method: "DELETE"
+      });
+      setSelectedPresetId("");
+      await loadPresets();
+      setProjectMessage("프리셋이 삭제되었습니다.");
+    } catch (e) {
+      setPresetError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPresetLoading(false);
+    }
+  }
+
   async function loadDebugEvents(projectId = selectedProjectId) {
     if (!projectId) {
       setDebugEvents([]);
@@ -693,6 +822,7 @@ export default function HomePage() {
         name: projectName.trim(),
         workspaceDir: workspaceDir.trim(),
         description: projectDescription.trim(),
+        presetId: selectedPresetId || undefined,
         defaultMode: mode,
         defaultDryRun: dryRun,
         retrieval: {
@@ -996,6 +1126,81 @@ export default function HomePage() {
               onChange={(e) => setProjectDescription(e.target.value)}
               placeholder="프로젝트 메모"
             />
+
+            <div className="label" style={{ marginTop: 10 }}>프로젝트 프리셋</div>
+            <div className="workspace-row">
+              <select
+                value={selectedPresetId}
+                onChange={(e) => setSelectedPresetId(e.target.value)}
+                disabled={presetLoading}
+              >
+                <option value="">(프리셋 자동 선택/미사용)</option>
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}{preset.builtIn ? " [built-in]" : ""}
+                  </option>
+                ))}
+              </select>
+              <button type="button" className="secondary" onClick={loadPresets} disabled={presetLoading}>
+                프리셋 새로고침
+              </button>
+            </div>
+
+            <div className="hint">
+              프로젝트 저장 시 선택한 프리셋이 우선 적용됩니다. 미선택 시 규칙 기반 자동 매칭을 시도합니다.
+            </div>
+
+            <details className="preset-editor">
+              <summary>프리셋 추가/수정</summary>
+              <div className="label" style={{ marginTop: 8 }}>Preset Name</div>
+              <input
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                placeholder="예: My Enterprise Backend"
+              />
+              <div className="label" style={{ marginTop: 8 }}>Preset Summary</div>
+              <textarea
+                value={presetSummary}
+                onChange={(e) => setPresetSummary(e.target.value)}
+                placeholder="프로젝트의 큰 그림/목적 요약"
+                style={{ minHeight: 70 }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>Key Facts (줄바꿈 구분)</div>
+              <textarea
+                value={presetFactsText}
+                onChange={(e) => setPresetFactsText(e.target.value)}
+                placeholder={"핵심 사실 1\n핵심 사실 2"}
+                style={{ minHeight: 90 }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>Rule: workspaceIncludes (줄바꿈/콤마)</div>
+              <input
+                value={presetWorkspaceRules}
+                onChange={(e) => setPresetWorkspaceRules(e.target.value)}
+                placeholder="예: dcp-services"
+              />
+              <div className="label" style={{ marginTop: 8 }}>Rule: projectNameIncludes</div>
+              <input
+                value={presetProjectNameRules}
+                onChange={(e) => setPresetProjectNameRules(e.target.value)}
+                placeholder="예: backend-core"
+              />
+              <div className="label" style={{ marginTop: 8 }}>Rule: requiredPaths</div>
+              <textarea
+                value={presetRequiredPaths}
+                onChange={(e) => setPresetRequiredPaths(e.target.value)}
+                placeholder={"예: src/main/java\nresources/eai/"}
+                style={{ minHeight: 70 }}
+              />
+              <div className="action-row" style={{ marginTop: 8 }}>
+                <button type="button" className="secondary" onClick={onSavePreset} disabled={presetLoading}>
+                  {presetLoading ? "저장 중..." : "프리셋 저장"}
+                </button>
+                <button type="button" className="secondary" onClick={onDeletePreset} disabled={!selectedPresetId || presetLoading || selectedPreset?.builtIn}>
+                  프리셋 삭제
+                </button>
+              </div>
+              {presetError ? <div className="error">{presetError}</div> : null}
+            </details>
 
             <div className="label" style={{ marginTop: 10 }}>QMD Query Mode</div>
             <select value={projectQueryMode} onChange={(e) => setProjectQueryMode(e.target.value)}>

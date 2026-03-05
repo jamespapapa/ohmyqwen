@@ -7,6 +7,15 @@ import { RetrievalConfigOverrideSchema, RunModeSchema } from "../core/types.js";
 import { OpenAICompatibleLlmClient } from "../llm/client.js";
 import { resolveRetrievalConfig } from "../retrieval/config.js";
 import {
+  getProjectPresetById,
+  listProjectPresets,
+  matchProjectPreset,
+  ProjectPreset,
+  removeProjectPreset,
+  UpsertProjectPresetInput,
+  upsertProjectPreset
+} from "./presets.js";
+import {
   buildQmdQueryFromSignals,
   ensureQmdIndexed,
   queryQmd,
@@ -18,6 +27,7 @@ const ServerProjectSchema = z.object({
   name: z.string().min(1),
   workspaceDir: z.string().min(1),
   description: z.string().default(""),
+  presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.default("feature"),
   defaultDryRun: z.boolean().default(false),
   retrieval: RetrievalConfigOverrideSchema.optional(),
@@ -38,6 +48,7 @@ const UpsertServerProjectInputSchema = z.object({
   name: z.string().min(1),
   workspaceDir: z.string().min(1),
   description: z.string().optional(),
+  presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.optional(),
   defaultDryRun: z.boolean().optional(),
   retrieval: RetrievalConfigOverrideSchema.optional()
@@ -347,50 +358,12 @@ function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
-interface ProjectPresetContext {
-  name: string;
-  summary: string;
-  keyFacts: string[];
-}
-
 interface EaiDictionaryEntry {
   interfaceId: string;
   interfaceName: string;
   purpose: string;
   sourcePath: string;
   usagePaths: string[];
-}
-
-function detectProjectPreset(project: ServerProject, files: string[]): ProjectPresetContext | undefined {
-  const workspaceBase = path.basename(project.workspaceDir).toLowerCase();
-  const projectName = project.name.toLowerCase();
-  const fileSet = new Set(files.map((file) => toForwardSlash(file)));
-  const hasDcpCore = Array.from(fileSet).some((file) => file.includes("dcp-core/"));
-  const dcpServiceCount = Array.from(fileSet).filter((file) => /(^|\/)dcp-(loan|insurance|batch|cms|member|retire|fund|pension|gateway)\//.test(file)).length;
-
-  const isDcpServices =
-    workspaceBase.includes("dcp-services") ||
-    projectName.includes("dcp-services") ||
-    hasDcpCore ||
-    dcpServiceCount >= 10;
-
-  if (!isDcpServices) {
-    return undefined;
-  }
-
-  return {
-    name: "dcp-services",
-    summary:
-      "삼성생명 홈페이지 백엔드 통합 레포. dcp-* 마이크로서비스 구조이며 dcp-core 공통 의존 기반, dcp-gateway 전단 인증/권한/세션 및 라우팅, 주요 도메인은 보험/대출/회원/퇴직연금/펀드.",
-    keyFacts: [
-      "dcp-core는 공통 코어 의존 모듈로 다수 서비스가 참조한다.",
-      "dcp-gateway는 엔드포인트 수신 후 권한체크 및 Redis 세션 기반 전처리/라우팅을 담당한다.",
-      "주요 업무 처리(dcp-loan/dcp-insurance/dcp-member/dcp-retire/dcp-fund/dcp-pension/dcp-batch/dcp-cms)는 Spring 5 MVC 기반이다.",
-      "DB는 Oracle + MyBatis 연동이 기본이며 Redis 캐시/세션을 적극 사용한다.",
-      "대출/보험 등 핵심 처리 최종 실행은 EAI 뒷단 인터페이스 호출이 중심이다.",
-      "dcp-async/dcp-upload/dcp-display는 보조 기능 성격이며, dcp-chatbot 등 일부 저장소는 비활성 가능성이 있다."
-    ]
-  };
 }
 
 function toSearchTokens(query: string): string[] {
@@ -618,6 +591,18 @@ export async function getServerProject(id: string): Promise<ServerProject | unde
   return found ? toProject(found) : undefined;
 }
 
+export async function listServerProjectPresets(): Promise<ProjectPreset[]> {
+  return listProjectPresets();
+}
+
+export async function upsertServerProjectPreset(input: UpsertProjectPresetInput): Promise<ProjectPreset> {
+  return upsertProjectPreset(input);
+}
+
+export async function removeServerProjectPreset(id: string): Promise<void> {
+  await removeProjectPreset(id);
+}
+
 export async function listProjectDebugEvents(options: {
   projectId: string;
   limit?: number;
@@ -660,6 +645,13 @@ export async function listProjectDebugEvents(options: {
 export async function upsertServerProject(input: UpsertServerProjectInput): Promise<ServerProject> {
   const parsed = UpsertServerProjectInputSchema.parse(input);
   const resolvedWorkspace = await ensureWorkspaceDir(parsed.workspaceDir);
+  const normalizedPresetId = parsed.presetId?.trim() || undefined;
+  if (normalizedPresetId) {
+    const preset = await getProjectPresetById(normalizedPresetId);
+    if (!preset) {
+      throw new Error(`preset not found: ${normalizedPresetId}`);
+    }
+  }
 
   const store = await loadStore();
   const now = nowIso();
@@ -675,6 +667,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
       name: parsed.name,
       workspaceDir: resolvedWorkspace,
       description: parsed.description ?? existing.description,
+      presetId: normalizedPresetId ?? existing.presetId,
       defaultMode: parsed.defaultMode ?? existing.defaultMode,
       defaultDryRun: parsed.defaultDryRun ?? existing.defaultDryRun,
       retrieval: parsed.retrieval ?? existing.retrieval,
@@ -691,6 +684,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
     name: parsed.name,
     workspaceDir: resolvedWorkspace,
     description: parsed.description ?? "",
+    presetId: normalizedPresetId,
     defaultMode: parsed.defaultMode ?? "feature",
     defaultDryRun: parsed.defaultDryRun ?? false,
     retrieval: parsed.retrieval,
@@ -1028,7 +1022,7 @@ function buildAnalysisMarkdown(input: {
 
 function buildProjectPresetMarkdown(input: {
   project: ServerProject;
-  preset: ProjectPresetContext;
+  preset: ProjectPreset;
   updatedAt: string;
 }): string {
   const lines: string[] = [];
@@ -1367,7 +1361,23 @@ export async function analyzeServerProject(options: {
 
     const extStats = buildFileExtensionStats(files);
     const topDirs = buildTopDirectoryStats(files);
-    const projectPreset = detectProjectPreset(warmup.project, files);
+    const presetList = await listProjectPresets();
+    let projectPreset =
+      (warmup.project.presetId ? await getProjectPresetById(warmup.project.presetId) : undefined) ??
+      matchProjectPreset({
+        project: warmup.project,
+        files,
+        presets: presetList
+      });
+    if (warmup.project.presetId && !projectPreset) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: `configured preset not found: ${warmup.project.presetId}`
+      });
+    }
     const generatedAt = nowIso();
 
     let presetMemoryFiles: string[] = [];

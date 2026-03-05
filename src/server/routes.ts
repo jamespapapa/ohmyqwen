@@ -6,12 +6,15 @@ import {
   analyzeServerProject,
   askServerProject,
   getServerProject,
+  listServerProjectPresets,
   listServerProjects,
   listProjectDebugEvents,
   readServerProjectFile,
   removeServerProject,
+  removeServerProjectPreset,
   searchServerProject,
   upsertServerProject,
+  upsertServerProjectPreset,
   warmupServerProjectIndex
 } from "./projects.js";
 import { getRunArtifacts, getRunRecord, listRunEvents, startBackgroundRun } from "./store.js";
@@ -55,6 +58,11 @@ function matchProjectPath(
   return matched?.[1];
 }
 
+function matchPresetPath(urlPath: string): string | undefined {
+  const matched = urlPath.match(/^\/api\/presets\/([^/]+)$/);
+  return matched?.[1];
+}
+
 function resolveBrowsePath(raw: string | null): string {
   const value = raw?.trim();
   if (!value) {
@@ -78,6 +86,75 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
   const url = new URL(req.url ?? "/", "http://localhost");
   const pathname = url.pathname;
 
+  if (method === "GET" && pathname === "/api/presets") {
+    try {
+      const presets = await listServerProjectPresets();
+      json(res, 200, {
+        presets
+      });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  if (method === "POST" && pathname === "/api/presets") {
+    try {
+      const payload = (await readJsonBody(req)) as {
+        id?: string;
+        name?: string;
+        summary?: string;
+        keyFacts?: string[];
+        rules?: {
+          workspaceIncludes?: string[];
+          projectNameIncludes?: string[];
+          requiredPaths?: string[];
+        };
+      };
+
+      const preset = await upsertServerProjectPreset({
+        id: payload.id,
+        name: payload.name ?? "",
+        summary: payload.summary ?? "",
+        keyFacts: payload.keyFacts ?? [],
+        rules: payload.rules
+          ? {
+              workspaceIncludes: payload.rules.workspaceIncludes ?? [],
+              projectNameIncludes: payload.rules.projectNameIncludes ?? [],
+              requiredPaths: payload.rules.requiredPaths ?? []
+            }
+          : undefined
+      });
+
+      json(res, 201, {
+        preset
+      });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const presetId = matchPresetPath(pathname);
+  if (presetId && method === "DELETE") {
+    try {
+      await removeServerProjectPreset(presetId);
+      json(res, 200, { ok: true });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
   if (method === "GET" && pathname === "/api/projects") {
     try {
       const projects = await listServerProjects();
@@ -100,6 +177,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         name?: string;
         workspaceDir?: string;
         description?: string;
+        presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
         defaultDryRun?: boolean;
         retrieval?: {
@@ -143,6 +221,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         name: payload.name ?? "",
         workspaceDir: payload.workspaceDir ?? "",
         description: payload.description,
+        presetId: payload.presetId,
         defaultMode: payload.defaultMode ? RunModeSchema.parse(payload.defaultMode) : undefined,
         defaultDryRun: payload.defaultDryRun,
         retrieval: payload.retrieval as never
@@ -189,6 +268,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         name?: string;
         workspaceDir?: string;
         description?: string;
+        presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
         defaultDryRun?: boolean;
         retrieval?: {
@@ -240,6 +320,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         name: payload.name ?? existing.name,
         workspaceDir: payload.workspaceDir ?? existing.workspaceDir,
         description: payload.description ?? existing.description,
+        presetId: payload.presetId ?? existing.presetId,
         defaultMode: payload.defaultMode
           ? RunModeSchema.parse(payload.defaultMode)
           : existing.defaultMode,
