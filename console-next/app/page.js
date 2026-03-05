@@ -484,6 +484,10 @@ export default function HomePage() {
   const [searchLimit, setSearchLimit] = useState(20);
   const [searchResult, setSearchResult] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedSearchHit, setSelectedSearchHit] = useState(null);
+  const [selectedFileDetail, setSelectedFileDetail] = useState(null);
+  const [selectedFileLoading, setSelectedFileLoading] = useState(false);
+  const [selectedFileError, setSelectedFileError] = useState("");
   const [indexing, setIndexing] = useState(false);
 
   const [projectName, setProjectName] = useState("");
@@ -571,6 +575,10 @@ export default function HomePage() {
     setProjectQueryMode(selectedProject.retrieval?.qmd?.queryMode || "query_then_search");
     setMode(selectedProject.defaultMode || "feature");
     setDryRun(Boolean(selectedProject.defaultDryRun));
+    setSearchResult(null);
+    setSelectedSearchHit(null);
+    setSelectedFileDetail(null);
+    setSelectedFileError("");
   }, [selectedProject]);
 
   useEffect(() => {
@@ -749,6 +757,9 @@ export default function HomePage() {
 
     setSearchLoading(true);
     setProjectError("");
+    setSelectedSearchHit(null);
+    setSelectedFileDetail(null);
+    setSelectedFileError("");
 
     try {
       const response = await getJson(`/api/projects/${selectedProjectId}/search`, {
@@ -765,6 +776,29 @@ export default function HomePage() {
       setSearchResult(null);
     } finally {
       setSearchLoading(false);
+    }
+  }
+
+  async function onSelectSearchHit(hit) {
+    if (!selectedProjectId || !hit?.path) {
+      return;
+    }
+
+    setSelectedSearchHit(hit);
+    setSelectedFileLoading(true);
+    setSelectedFileError("");
+    setSelectedFileDetail(null);
+
+    try {
+      const query = new URLSearchParams({
+        path: String(hit.path)
+      });
+      const response = await getJson(`/api/projects/${selectedProjectId}/file?${query.toString()}`);
+      setSelectedFileDetail(response);
+    } catch (e) {
+      setSelectedFileError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSelectedFileLoading(false);
     }
   }
 
@@ -1010,13 +1044,47 @@ export default function HomePage() {
                     </li>
                   ) : (
                     searchResult.hits.map((hit, index) => (
-                      <li key={`${hit.path}-${index}`}>
-                        <span>{shortText(hit.path, 60)}</span>
+                      <li
+                        key={`${hit.path}-${index}`}
+                        className={`clickable ${selectedSearchHit?.path === hit.path ? "selected" : ""}`}
+                        onClick={() => onSelectSearchHit(hit)}
+                      >
+                        <span title={hit.path}>
+                          {shortText(hit.path, 60)}
+                          {hit.reasons?.length ? ` · ${shortText(hit.reasons[0], 40)}` : ""}
+                        </span>
                         <span>{hit.score?.toFixed ? hit.score.toFixed(2) : hit.score}</span>
                       </li>
                     ))
                   )}
                 </ul>
+
+                {selectedSearchHit ? (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="label">파일 상세: {selectedSearchHit.path}</div>
+                    {selectedSearchHit.reasons?.length ? (
+                      <ul className="reason-list">
+                        {selectedSearchHit.reasons.map((reason, index) => (
+                          <li key={`reason-${index}`}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="hint">검색 사유가 제공되지 않아 파일 내용을 표시합니다.</div>
+                    )}
+
+                    {selectedFileError ? <div className="error">{selectedFileError}</div> : null}
+                    {selectedFileLoading ? <div className="hint">파일 내용을 불러오는 중...</div> : null}
+                    {selectedFileDetail?.content ? (
+                      <>
+                        <div className="hint">
+                          {selectedFileDetail.path} · {selectedFileDetail.sizeBytes} bytes
+                          {selectedFileDetail.truncated ? " (크기 제한으로 일부만 표시)" : ""}
+                        </div>
+                        <pre className="file-scroll-view">{selectedFileDetail.content}</pre>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

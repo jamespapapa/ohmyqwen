@@ -5,6 +5,7 @@ import { AnalyzeInputSchema, RunModeSchema } from "../core/types.js";
 import {
   getServerProject,
   listServerProjects,
+  readServerProjectFile,
   removeServerProject,
   searchServerProject,
   upsertServerProject,
@@ -42,7 +43,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs"
+  suffix: "" | "index" | "search" | "runs" | "file"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -306,6 +307,27 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         limit: payload.limit,
         queryMode: payload.queryMode,
         maxFiles: payload.maxFiles
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectFileId = matchProjectPath(pathname, "file");
+  if (projectFileId && method === "GET") {
+    try {
+      const filePath = url.searchParams.get("path") ?? "";
+      const maxBytesRaw = url.searchParams.get("maxBytes");
+      const maxBytes = maxBytesRaw ? Number.parseInt(maxBytesRaw, 10) : undefined;
+      const result = await readServerProjectFile({
+        projectId: projectFileId,
+        filePath,
+        maxBytes: Number.isFinite(maxBytes) ? maxBytes : undefined
       });
       json(res, 200, result);
       return true;

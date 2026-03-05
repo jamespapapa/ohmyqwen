@@ -447,6 +447,39 @@ button:disabled {
   gap: 10px;
 }
 
+.artifacts li.clickable {
+  cursor: pointer;
+}
+
+.artifacts li.clickable.selected {
+  border-color: #4a73d8;
+  background: rgba(78, 128, 255, 0.12);
+}
+
+.reason-list {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--text-soft);
+  font-size: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.file-scroll-view {
+  margin-top: 8px;
+  border: 1px solid #2f4176;
+  border-radius: 10px;
+  background: #091127;
+  max-height: 280px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .error {
   margin-top: 10px;
   color: var(--fail);

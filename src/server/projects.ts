@@ -64,6 +64,7 @@ export interface ProjectSearchHit {
   path: string;
   score: number;
   source: "qmd" | "lexical";
+  reasons?: string[];
   title?: string;
   snippet?: string;
 }
@@ -83,6 +84,14 @@ export interface ProjectSearchResult {
     qmdCommand?: string;
     fileCount?: number;
   };
+}
+
+export interface ProjectFileDetailResult {
+  project: ServerProject;
+  path: string;
+  content: string;
+  sizeBytes: number;
+  truncated: boolean;
 }
 
 interface ServerProjectStore {
@@ -133,6 +142,7 @@ const SEARCHABLE_EXTENSIONS = new Set([
 ]);
 
 const MAX_FILE_SIZE_BYTES = 512 * 1024;
+const MAX_DETAIL_FILE_BYTES = 2 * 1024 * 1024;
 
 let cachedStore: ServerProjectStore | null = null;
 
@@ -233,6 +243,10 @@ function toSearchTokens(query: string): string[] {
         .filter((entry) => entry.length >= 2)
     )
   ).slice(0, 24);
+}
+
+function unique(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
 function isSearchableFile(filePath: string): boolean {
@@ -340,10 +354,13 @@ async function lexicalSearch(options: {
   for (const relativePath of options.files) {
     const normalizedPath = relativePath.toLowerCase();
     let score = 0;
+    const pathMatches: string[] = [];
+    const contentMatches: string[] = [];
 
     for (const token of tokens) {
       if (normalizedPath.includes(token)) {
         score += 4;
+        pathMatches.push(token);
       }
     }
 
@@ -354,6 +371,7 @@ async function lexicalSearch(options: {
       for (const token of tokens) {
         if (lowered.includes(token)) {
           score += 1.5;
+          contentMatches.push(token);
         }
       }
 
@@ -362,6 +380,12 @@ async function lexicalSearch(options: {
           path: relativePath,
           score,
           source: "lexical",
+          reasons: unique([
+            pathMatches.length > 0 ? `path-match:${unique(pathMatches).slice(0, 6).join(",")}` : "",
+            contentMatches.length > 0
+              ? `content-match:${unique(contentMatches).slice(0, 8).join(",")}`
+              : ""
+          ]),
           snippet: makeSnippet(content, tokens[0])
         });
       }
@@ -372,7 +396,10 @@ async function lexicalSearch(options: {
       hits.push({
         path: relativePath,
         score,
-        source: "lexical"
+        source: "lexical",
+        reasons: unique([
+          pathMatches.length > 0 ? `path-match:${unique(pathMatches).slice(0, 6).join(",")}` : ""
+        ])
       });
     }
   }
@@ -468,6 +495,79 @@ async function patchProject(id: string, patch: Partial<ServerProject>): Promise<
   store.projects[index] = next;
   await saveStore(store);
   return toProject(next);
+}
+
+function resolveProjectFilePath(workspaceDir: string, rawPath: string): {
+  absolutePath: string;
+  relativePath: string;
+} {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    throw new Error("file path is required");
+  }
+
+  const absolutePath = path.isAbsolute(trimmed)
+    ? path.resolve(trimmed)
+    : path.resolve(workspaceDir, trimmed);
+  const relativePath = path.relative(workspaceDir, absolutePath);
+
+  if (
+    !relativePath ||
+    relativePath.startsWith("..") ||
+    path.isAbsolute(relativePath)
+  ) {
+    throw new Error(`file path escapes workspace: ${rawPath}`);
+  }
+
+  return {
+    absolutePath,
+    relativePath: relativePath.replace(/\\/g, "/")
+  };
+}
+
+export async function readServerProjectFile(options: {
+  projectId: string;
+  filePath: string;
+  maxBytes?: number;
+}): Promise<ProjectFileDetailResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+
+  const resolved = resolveProjectFilePath(project.workspaceDir, options.filePath);
+  const maxBytes = Math.max(16 * 1024, Math.min(options.maxBytes ?? MAX_DETAIL_FILE_BYTES, 8 * 1024 * 1024));
+
+  const stat = await fs.stat(resolved.absolutePath);
+  if (!stat.isFile()) {
+    throw new Error(`not a file: ${resolved.relativePath}`);
+  }
+
+  if (stat.size <= maxBytes) {
+    const content = await fs.readFile(resolved.absolutePath, "utf8");
+    return {
+      project,
+      path: resolved.relativePath,
+      content,
+      sizeBytes: stat.size,
+      truncated: false
+    };
+  }
+
+  const handle = await fs.open(resolved.absolutePath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    return {
+      project,
+      path: resolved.relativePath,
+      content: buffer.toString("utf8", 0, bytesRead),
+      sizeBytes: stat.size,
+      truncated: true
+    };
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function warmupServerProjectIndex(options: {
@@ -608,6 +708,12 @@ export async function searchServerProject(options: {
             path: hit.path,
             score: hit.score,
             source: "qmd",
+            reasons: unique([
+              hit.docid ? `docid=${hit.docid}` : "",
+              hit.title ? `title=${hit.title}` : "",
+              hit.context ? `context=${hit.context}` : "",
+              hit.snippet ? `snippet=${hit.snippet.split("\n")[0]?.slice(0, 120)}` : ""
+            ]),
             title: hit.title,
             snippet: hit.snippet
           })),
