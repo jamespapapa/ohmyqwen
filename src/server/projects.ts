@@ -21,11 +21,12 @@ import {
   upsertProjectPreset
 } from "./presets.js";
 import {
-  buildQmdQueryFromSignals,
   ensureQmdIndexed,
   queryQmd,
   resolveQmdRuntime
 } from "../retrieval/qmd-cli.js";
+import { buildQmdQueryCandidates } from "../retrieval/qmd-planner.js";
+import { qualityGateForAskOutput } from "./ask-quality.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -3876,19 +3877,6 @@ export async function analyzeServerProject(options: {
   }
 }
 
-function hasCodeFileEvidence(hits: ProjectSearchHit[]): boolean {
-  return hits.some((hit) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(hit.path));
-}
-
-function extractHydratedCalleeNames(hydratedEvidence: AskHydratedEvidenceItem[]): string[] {
-  return hydratedEvidence
-    .map((item) => {
-      const match = item.reason.match(/^callee:([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/);
-      return match?.[2];
-    })
-    .filter((item): item is string => Boolean(item));
-}
-
 function qualityGateForAsk(options: {
   output: z.infer<typeof ProjectAskOutputSchema>;
   question: string;
@@ -3900,55 +3888,19 @@ function qualityGateForAsk(options: {
   passed: boolean;
   failures: string[];
 } {
-  const failures: string[] = [];
-  const output = options.output;
-  const hydratedEvidence = options.hydratedEvidence ?? [];
-  const moduleCandidates = options.moduleCandidates ?? [];
-  if (output.answer.trim().length < 80) {
-    failures.push("answer-too-short");
-  }
-  if (output.evidence.length < 2) {
-    failures.push("missing-evidence");
-  }
-  if (output.confidence < 0.45) {
-    failures.push("confidence-too-low");
-  }
-
-  const logicQuestion = /(로직|흐름|어떻게|처리|구현|검증|계산|상태전이|service|controller|domain)/i.test(
-    options.question
-  );
-  if (logicQuestion && !hasCodeFileEvidence(options.hits)) {
-    failures.push("missing-code-evidence");
-  }
-  if (logicQuestion && options.hydratedEvidence && hydratedEvidence.filter((item) => item.codeFile).length === 0) {
-    failures.push("missing-code-body-evidence");
-  }
-  if (
-    moduleCandidates.length > 0 &&
-    options.hydratedEvidence &&
-    hydratedEvidence.filter((item) => item.moduleMatched && item.codeFile).length === 0
-  ) {
-    failures.push("missing-module-scoped-code-evidence");
-  }
-  if (
-    options.strategy === "module_flow_topdown" &&
-    !/(controller|service|entry|진입|호출|downstream|eai|mapper|dao)/i.test(output.answer)
-  ) {
-    failures.push("missing-topdown-structure");
-  }
-  const calleeNames = extractHydratedCalleeNames(hydratedEvidence);
-  if (
-    options.strategy === "module_flow_topdown" &&
-    calleeNames.length > 0 &&
-    !calleeNames.some((name) => output.answer.includes(name))
-  ) {
-    failures.push("missing-service-callee-detail");
-  }
-
-  return {
-    passed: failures.length === 0,
-    failures
-  };
+  return qualityGateForAskOutput({
+    output: options.output,
+    question: options.question,
+    hitPaths: options.hits.map((hit) => hit.path),
+    strategy: options.strategy,
+    hydratedEvidence: (options.hydratedEvidence ?? []).map((item) => ({
+      path: item.path,
+      reason: item.reason,
+      codeFile: item.codeFile,
+      moduleMatched: item.moduleMatched
+    })),
+    moduleCandidates: options.moduleCandidates
+  });
 }
 
 async function decideAskStrategy(options: {
@@ -4853,15 +4805,9 @@ export async function searchServerProject(options: {
       });
 
       const indexed = await ensureQmdIndexed(runtime);
-      const qmdQueries = unique(
-        [
-          buildQmdQueryFromSignals({
-            task: query
-          }),
-          compactQueryForSearch(query),
-          toSearchTokens(query).slice(0, 2).join(" ")
-        ].filter(Boolean)
-      );
+      const qmdQueries = buildQmdQueryCandidates({
+        task: query
+      });
 
       let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
         status: "empty",

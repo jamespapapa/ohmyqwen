@@ -1,9 +1,9 @@
 import {
-  buildQmdQueryFromSignals,
   ensureQmdIndexed,
   queryQmd,
   resolveQmdRuntime
 } from "../qmd-cli.js";
+import { buildQmdQueryCandidates } from "../qmd-planner.js";
 import { RetrievalHit, RetrievalProvider, RetrievalProviderResult } from "../types.js";
 import { tokenizeQuery } from "../utils.js";
 
@@ -15,21 +15,25 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
-function buildQueryString(context: Parameters<RetrievalProvider["run"]>[0]): string {
+function buildQueryCandidates(context: Parameters<RetrievalProvider["run"]>[0]): string[] {
   const queryTokens = tokenizeQuery(context.query);
   const explicitPaths = context.query.targetFiles.map((file) => file.trim()).filter(Boolean);
-  const query = buildQmdQueryFromSignals({
+  const planned = buildQmdQueryCandidates({
     task: context.query.task,
     targetFiles: context.query.targetFiles,
     diffSummary: context.query.diffSummary,
     errorLogs: context.query.errorLogs,
     verifyFeedback: context.query.verifyFeedback
   });
-
-  return unique([...query.split(/\s+/), ...queryTokens.slice(0, 32), ...explicitPaths.slice(0, 10)])
+  const fallback = unique([
+    ...queryTokens.slice(0, 32),
+    ...explicitPaths.slice(0, 10)
+  ])
     .join(" ")
-    .slice(0, 900)
+    .slice(0, 220)
     .trim();
+
+  return unique([...planned, fallback]).filter(Boolean);
 }
 
 function toRetrievalHits(
@@ -76,8 +80,8 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       };
     }
 
-    const query = buildQueryString(context);
-    if (!query) {
+    const queries = buildQueryCandidates(context);
+    if (queries.length === 0) {
       return {
         provider: this.name,
         status: "empty",
@@ -127,7 +131,8 @@ export class QmdRetrievalProvider implements RetrievalProvider {
         error: `qmd indexing failed: ${error instanceof Error ? error.message : String(error)}`,
         metadata: {
           command: runtime.command,
-          query,
+          query: queries[0] ?? "",
+          queriesTried: queries,
           queryMode: runtime.queryMode,
           indexName: runtime.indexName,
           indexPath: runtime.indexPath,
@@ -137,11 +142,32 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       };
     }
 
-    const qmdResult = await queryQmd({
-      runtime,
-      query,
-      limit: context.config.topK.qmd
-    });
+    let usedQuery = "";
+    let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
+      status: "empty",
+      hits: [],
+      errors: []
+    };
+
+    for (const candidate of queries) {
+      const query = candidate.trim();
+      if (!query) {
+        continue;
+      }
+      const result = await queryQmd({
+        runtime,
+        query,
+        limit: context.config.topK.qmd
+      });
+      usedQuery = query;
+      qmdResult = {
+        ...result,
+        errors: unique([...qmdResult.errors, ...result.errors])
+      };
+      if (result.status === "ok" && result.hits.length > 0) {
+        break;
+      }
+    }
 
     const hits = toRetrievalHits(qmdResult.hits).slice(0, context.config.topK.qmd);
 
@@ -154,7 +180,8 @@ export class QmdRetrievalProvider implements RetrievalProvider {
         error: qmdResult.errors.join(" | ") || "qmd query failed",
         metadata: {
           command: runtime.command,
-          query,
+          query: usedQuery,
+          queriesTried: queries,
           mode: qmdResult.mode,
           queryMode: runtime.queryMode,
           indexMethod,
@@ -173,7 +200,8 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       hits,
       metadata: {
         command: runtime.command,
-        query,
+        query: usedQuery,
+        queriesTried: queries,
         mode: qmdResult.mode,
         queryMode: runtime.queryMode,
         indexMethod,

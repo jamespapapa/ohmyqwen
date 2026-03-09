@@ -153,6 +153,86 @@ exit 1
     expect(logRaw).toContain(" search ");
   });
 
+  it("retries qmd with multiple planned queries before falling back to lexical", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-retry-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "claim.ts"), "export const saveBenefitClaimDoc = 1;", "utf8");
+
+    const logPath = path.join(workspace, "qmd-retry.log");
+    const countPath = path.join(workspace, "qmd-count.txt");
+    const fakeQmdPath = path.join(workspace, "qmd");
+    await writeFile(
+      fakeQmdPath,
+      `#!/bin/sh
+echo "$@" >> "${logPath}"
+if [ "$3" = "collection" ]; then
+  exit 0
+fi
+if [ "$3" = "update" ]; then
+  exit 0
+fi
+if [ "$3" = "query" ]; then
+  count=0
+  if [ -f "${countPath}" ]; then
+    count=$(cat "${countPath}")
+  fi
+  count=$((count + 1))
+  echo "$count" > "${countPath}"
+  if [ "$count" -eq 1 ]; then
+    echo "no result" 1>&2
+    exit 1
+  fi
+  cat <<'JSON'
+[
+  {
+    "docid": "#claim-1",
+    "score": 9.1,
+    "file": "qmd://workspace/claim.ts",
+    "title": "claim",
+    "snippet": "export const saveBenefitClaimDoc = 1;"
+  }
+]
+JSON
+  exit 0
+fi
+echo "unsupported command" 1>&2
+exit 1
+`,
+      "utf8"
+    );
+    await chmod(fakeQmdPath, 0o755);
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.command = fakeQmdPath;
+    config.qmd.queryMode = "query_only";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["claim.ts"],
+      task: "dcp-insurance 보험금 청구 saveBenefitClaimDoc 흐름 분석",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    const qmdProvider = inspection.retrieval.providerResults.find((result) => result.provider === "qmd");
+    const qmdMetadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
+    expect(Array.isArray(qmdMetadata.queriesTried)).toBe(true);
+    expect((qmdMetadata.queriesTried as unknown[]).length).toBeGreaterThanOrEqual(2);
+    expect(String(qmdMetadata.query ?? "")).toContain("saveBenefitClaimDoc");
+    const logRaw = await readFile(logPath, "utf8");
+    const queryLines = logRaw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes(" query "));
+    expect(queryLines.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("injects verify feedback signal into ranking", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-feedback-"));
     tempDirs.push(workspace);

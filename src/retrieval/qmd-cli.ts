@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+export { buildQmdQueryFromSignals } from "./qmd-planner.js";
 
 export interface QmdSearchHit {
   path: string;
@@ -474,50 +475,4 @@ export async function queryQmd(options: {
     hits: [],
     errors
   };
-}
-
-export function buildQmdQueryFromSignals(signals: {
-  task: string;
-  targetFiles?: string[];
-  diffSummary?: string[];
-  errorLogs?: string[];
-  verifyFeedback?: string[];
-}): string {
-  const stopwords = new Set([
-    "어떻게",
-    "어디",
-    "확인",
-    "확인해줘",
-    "해줘",
-    "로직이",
-    "이루어지는지",
-    "please",
-    "check",
-    "how",
-    "where",
-    "what",
-    "the",
-    "a",
-    "an",
-    "to",
-    "and",
-    "or",
-    "for"
-  ]);
-
-  const raw = unique([
-    ...(String(signals.task || "").match(/[A-Za-z0-9가-힣._/-]+/g) ?? []),
-    ...(signals.targetFiles ?? []),
-    ...(signals.diffSummary ?? []),
-    ...(signals.errorLogs ?? []),
-    ...(signals.verifyFeedback ?? [])
-  ]);
-
-  const tokens = raw
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length >= 2)
-    .filter((entry) => !stopwords.has(entry.toLowerCase()))
-    .slice(0, 10);
-
-  return tokens.join(" ").slice(0, 300).trim();
 }

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { inspectContext, packContext, persistPackedContext } from "../src/context/packer.js";
+import { defaultRetrievalConfig } from "../src/retrieval/index.js";
 
 const tempDirs: string[] = [];
 
@@ -16,6 +17,12 @@ afterEach(async () => {
 });
 
 describe("packContext", () => {
+  function makeLexicalOnlyRetrievalConfig() {
+    const config = defaultRetrievalConfig();
+    config.providerPriority = ["lexical"];
+    return config;
+  }
+
   it("enforces hard cap and truncates oversized payload", () => {
     const oversized = "symbol ".repeat(2000);
 
@@ -74,7 +81,8 @@ describe("packContext", () => {
       task: "update feature",
       tier: "small",
       tokenBudget: 1000,
-      stage: "PLAN"
+      stage: "PLAN",
+      retrievalConfig: makeLexicalOnlyRetrievalConfig()
     });
 
     expect(first.changedFiles.sort()).toEqual(["a.ts", "b.ts"]);
@@ -86,7 +94,8 @@ describe("packContext", () => {
       task: "update feature",
       tier: "small",
       tokenBudget: 1000,
-      stage: "PLAN"
+      stage: "PLAN",
+      retrievalConfig: makeLexicalOnlyRetrievalConfig()
     });
 
     expect(second.changedFiles).toEqual([]);
@@ -100,7 +109,8 @@ describe("packContext", () => {
       task: "update feature",
       tier: "small",
       tokenBudget: 1000,
-      stage: "PLAN"
+      stage: "PLAN",
+      retrievalConfig: makeLexicalOnlyRetrievalConfig()
     });
 
     expect(third.changedFiles).toEqual(["a.ts"]);
@@ -131,7 +141,8 @@ describe("packContext", () => {
       stage: "IMPLEMENT",
       targetFiles: ["hot.ts"],
       diffSummary: ["+++ hot.ts"],
-      errorLogs: ["error in hot.ts"]
+      errorLogs: ["error in hot.ts"],
+      retrievalConfig: makeLexicalOnlyRetrievalConfig()
     });
 
     expect(inspection.fragments[0]?.path).toBe("hot.ts");
