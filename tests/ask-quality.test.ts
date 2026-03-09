@@ -151,6 +151,67 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("missing-linked-eai-detail");
   });
 
+  it("fails cross-layer flow answers when graph evidence exists but frontend/api/backend chain detail is missing", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "서비스 로직 중심으로 처리되며 saveDivisionExpiry 가 실행된다.",
+        confidence: 0.74,
+        evidence: ["frontend screen evidence", "backend controller evidence"],
+        caveats: []
+      },
+      question: "프론트에서 분할만기보험금 화면 진입 후 어떤 API를 거쳐 백엔드 서비스까지 가는지 추적해줘.",
+      hitPaths: [
+        "dcp-front-develop/src/views/mo/mysamsunglife/insurance/give/MDP-MYINT022231M.vue",
+        "dcp-services-mevelop/dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/give/controller/DivisionExpController.java"
+      ],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/give/MDP-MYINT022231M",
+          screenCode: "MDP-MYINT022231M",
+          apiUrl: "/gw/api/insurance/division/appexpiry/inqury",
+          backendPath: "/insurance/division/appexpiry/inqury",
+          backendControllerMethod: "DivisionExpController.inqury",
+          serviceHints: ["DivisionExpService.selectDivisionExpiry"]
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-frontend-route-evidence");
+    expect(gate.failures).toContain("missing-api-url-evidence");
+    expect(gate.failures).toContain("missing-backend-route-evidence");
+    expect(gate.failures).toContain("missing-cross-layer-chain-detail");
+  });
+
+  it("passes cross-layer flow answers when frontend/api/backend chain detail is explicit", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "MDP-MYINT022231M 화면에서 /gw/api/insurance/division/appexpiry/inqury 를 호출하고, 이 요청은 gateway RouteController.route 를 거쳐 dcp-insurance 의 DivisionExpController.inqury 와 DivisionExpService.selectDivisionExpiry 로 이어진다.",
+        confidence: 0.82,
+        evidence: ["frontend screen evidence", "backend controller evidence"],
+        caveats: []
+      },
+      question: "프론트에서 분할만기보험금 화면 진입 후 어떤 API를 거쳐 백엔드 서비스까지 가는지 추적해줘.",
+      hitPaths: [
+        "dcp-front-develop/src/views/mo/mysamsunglife/insurance/give/MDP-MYINT022231M.vue",
+        "dcp-services-mevelop/dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/give/controller/DivisionExpController.java"
+      ],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/give/MDP-MYINT022231M",
+          screenCode: "MDP-MYINT022231M",
+          apiUrl: "/gw/api/insurance/division/appexpiry/inqury",
+          backendPath: "/insurance/division/appexpiry/inqury",
+          backendControllerMethod: "DivisionExpController.inqury",
+          serviceHints: ["DivisionExpService.selectDivisionExpiry"]
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(true);
+  });
+
   it("passes topdown answers when direct linked EAI evidence is explicitly named", () => {
     const gate = qualityGateForAskOutput({
       output: {

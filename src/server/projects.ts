@@ -31,11 +31,17 @@ import {
   type EaiDictionaryEntry
 } from "./eai-dictionary.js";
 import { buildLinkedEaiEvidence } from "./eai-links.js";
+import {
+  buildFrontBackGraph,
+  type FrontBackGraphSnapshot
+} from "./front-back-graph.js";
+import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   workspaceDir: z.string().min(1),
+  linkedWorkspaceDirs: z.array(z.string().min(1)).default([]),
   description: z.string().default(""),
   presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.default("feature"),
@@ -62,6 +68,7 @@ const UpsertServerProjectInputSchema = z.object({
   id: z.string().min(1).optional(),
   name: z.string().min(1),
   workspaceDir: z.string().min(1),
+  linkedWorkspaceDirs: z.array(z.string().min(1)).optional(),
   description: z.string().optional(),
   presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.optional(),
@@ -153,6 +160,32 @@ export interface ProjectAnalysisResult {
       javaCallSiteMethods: string[];
     }>;
   };
+  frontCatalog?: {
+    generatedAt: string;
+    workspaceCount: number;
+    screenCount: number;
+    routeCount: number;
+    apiCount: number;
+    topScreens: Array<{
+      screenCode?: string;
+      filePath: string;
+      routePaths: string[];
+      apiPaths: string[];
+    }>;
+  };
+  frontBackGraph?: {
+    generatedAt: string;
+    workspaceCount: number;
+    linkCount: number;
+    topLinks: Array<{
+      screenCode?: string;
+      routePath?: string;
+      apiUrl: string;
+      backendPath: string;
+      controllerMethod: string;
+      confidence: number;
+    }>;
+  };
   structureCatalog?: {
     generatedAt: string;
     fileCount: number;
@@ -184,6 +217,8 @@ export interface ProjectAnalysisResult {
     profileApplied: boolean;
     eaiCatalogCount: number;
     structureIndexCount: number;
+    frontCatalogCount?: number;
+    frontBackLinkCount?: number;
   };
 }
 
@@ -215,6 +250,9 @@ export interface ProjectAskResponse {
     scopeModules?: string[];
     hydratedEvidenceCount?: number;
     linkedEaiEvidenceCount?: number;
+    frontBackGraphLoaded?: boolean;
+    frontBackLinkCount?: number;
+    frontBackEvidenceUsedCount?: number;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
     memoryFiles: string[];
@@ -390,6 +428,8 @@ const ANALYSIS_CACHE_MAX_AGE_MS = Number.parseInt(
 const ANALYSIS_MEMORY_DIR = "project-analysis";
 const PROFILE_MEMORY_DIR = "project-profile";
 const EAI_MEMORY_DIR = "eai-dictionary";
+const FRONT_CATALOG_MEMORY_DIR = "front-catalog";
+const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
 const QUERY_MEMORY_DIR = "query-reports";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -543,9 +583,36 @@ async function ensureWorkspaceDir(workspaceDir: string): Promise<string> {
   return resolved;
 }
 
+async function ensureLinkedWorkspaceDirs(linkedWorkspaceDirs?: string[]): Promise<string[]> {
+  const uniqueDirs = unique((linkedWorkspaceDirs ?? []).map((entry) => entry.trim()).filter(Boolean));
+  const resolved: string[] = [];
+  for (const dir of uniqueDirs) {
+    resolved.push(await ensureWorkspaceDir(dir));
+  }
+  return resolved;
+}
+
+async function isFrontendWorkspace(workspaceDir: string): Promise<boolean> {
+  const candidates = [
+    path.resolve(workspaceDir, "src/views"),
+    path.resolve(workspaceDir, "src/router"),
+    path.resolve(workspaceDir, "src/plugins/com/Axios.js")
+  ];
+  for (const candidate of candidates) {
+    try {
+      await fs.stat(candidate);
+      return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
+}
+
 function toProject(value: ServerProject): ServerProject {
   return {
     ...value,
+    linkedWorkspaceDirs: [...(value.linkedWorkspaceDirs ?? [])],
     retrieval: value.retrieval ? { ...value.retrieval } : undefined,
     llm: value.llm ? { ...value.llm } : undefined
   };
@@ -1055,6 +1122,8 @@ export async function listProjectDebugEvents(options: {
 export async function upsertServerProject(input: UpsertServerProjectInput): Promise<ServerProject> {
   const parsed = UpsertServerProjectInputSchema.parse(input);
   const resolvedWorkspace = await ensureWorkspaceDir(parsed.workspaceDir);
+  const hasLinkedWorkspaceUpdate = Array.isArray(parsed.linkedWorkspaceDirs);
+  const resolvedLinkedWorkspaces = await ensureLinkedWorkspaceDirs(parsed.linkedWorkspaceDirs);
   const normalizedPresetId = parsed.presetId?.trim() || undefined;
   const normalizedModelId = parsed.llm?.modelId?.trim() || undefined;
   if (normalizedPresetId) {
@@ -1084,6 +1153,9 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
       ...existing,
       name: parsed.name,
       workspaceDir: resolvedWorkspace,
+      linkedWorkspaceDirs: hasLinkedWorkspaceUpdate
+        ? resolvedLinkedWorkspaces
+        : (existing.linkedWorkspaceDirs ?? []),
       description: parsed.description ?? existing.description,
       presetId: normalizedPresetId ?? existing.presetId,
       defaultMode: parsed.defaultMode ?? existing.defaultMode,
@@ -1102,6 +1174,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
     id: parsed.id ?? randomUUID().slice(0, 12),
     name: parsed.name,
     workspaceDir: resolvedWorkspace,
+    linkedWorkspaceDirs: resolvedLinkedWorkspaces,
     description: parsed.description ?? "",
     presetId: normalizedPresetId,
     defaultMode: parsed.defaultMode ?? "feature",
@@ -1768,7 +1841,9 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
-        structureIndexCount: Number(parsed.diagnostics?.structureIndexCount || 0)
+        structureIndexCount: Number(parsed.diagnostics?.structureIndexCount || 0),
+        frontCatalogCount: Number(parsed.diagnostics?.frontCatalogCount || 0),
+        frontBackLinkCount: Number(parsed.diagnostics?.frontBackLinkCount || 0)
       }
     };
   } catch {
@@ -1806,6 +1881,85 @@ async function readEaiDictionarySnapshot(memoryRoot: string): Promise<{
   } catch {
     return undefined;
   }
+}
+
+function frontBackGraphSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, FRONT_BACK_GRAPH_MEMORY_DIR, "latest.json");
+}
+
+async function readFrontBackGraphSnapshot(memoryRoot: string): Promise<FrontBackGraphSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(frontBackGraphSnapshotPath(memoryRoot), "utf8");
+    return JSON.parse(raw) as FrontBackGraphSnapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildFrontCatalogMarkdown(options: {
+  project: ServerProject;
+  generatedAt: string;
+  graph: FrontBackGraphSnapshot;
+}): string {
+  const lines = [
+    "# Front Catalog",
+    "",
+    `- project: ${options.project.name}`,
+    `- generatedAt: ${options.generatedAt}`,
+    `- frontendWorkspaces: ${options.graph.meta.frontendWorkspaceDirs.length}`,
+    `- routeCount: ${options.graph.frontend.routeCount}`,
+    `- screenCount: ${options.graph.frontend.screenCount}`,
+    `- apiCount: ${options.graph.frontend.apiCount}`,
+    "",
+    "## Top Screens",
+    ""
+  ];
+  for (const screen of options.graph.frontend.screens.slice(0, 20)) {
+    lines.push(`- ${screen.screenCode ?? path.basename(screen.filePath)} | ${screen.filePath}`);
+    if (screen.routePaths.length > 0) {
+      lines.push(`  - routes: ${screen.routePaths.join(", ")}`);
+    }
+    if (screen.apiPaths.length > 0) {
+      lines.push(`  - apis: ${screen.apiPaths.join(", ")}`);
+    }
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}
+
+function buildFrontBackGraphMarkdown(options: {
+  project: ServerProject;
+  generatedAt: string;
+  graph: FrontBackGraphSnapshot;
+}): string {
+  const lines = [
+    "# Front to Backend Flow Graph",
+    "",
+    `- project: ${options.project.name}`,
+    `- generatedAt: ${options.generatedAt}`,
+    `- backendWorkspace: ${options.graph.meta.backendWorkspaceDir}`,
+    `- frontendWorkspaces: ${options.graph.meta.frontendWorkspaceDirs.join(", ") || "(none)"}`,
+    `- linkCount: ${options.graph.links.length}`,
+    "",
+    "## Top Links",
+    ""
+  ];
+  for (const link of options.graph.links.slice(0, 20)) {
+    lines.push(
+      `- ${link.frontend.screenCode ?? path.basename(link.frontend.screenPath)} | ${link.api.rawUrl} -> ${link.backend.controllerMethod} (${link.backend.path}) | confidence=${link.confidence.toFixed(2)}`
+    );
+    if (link.backend.serviceHints.length > 0) {
+      lines.push(`  - services: ${link.backend.serviceHints.join(", ")}`);
+    }
+  }
+  if (options.graph.diagnostics.unmatchedFrontendApis.length > 0) {
+    lines.push("", "## Unmatched Frontend APIs");
+    for (const item of options.graph.diagnostics.unmatchedFrontendApis.slice(0, 30)) {
+      lines.push(`- ${item}`);
+    }
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
 }
 
 function structureSnapshotPath(workspaceDir: string): string {
@@ -3430,6 +3584,8 @@ export async function analyzeServerProject(options: {
     let eaiMemoryFiles: string[] = [];
     let eaiAsOfDate = eaiPresetAsOfDate || generatedAt.slice(0, 10);
     let eaiManualOverridesApplied = 0;
+    let frontBackGraph: FrontBackGraphSnapshot | undefined;
+    let frontBackMemoryFiles: string[] = [];
 
     if (eaiEnabled) {
       await appendProjectDebugEvent({
@@ -3522,6 +3678,88 @@ export async function analyzeServerProject(options: {
       });
     }
 
+    const linkedWorkspaceDirs = project.linkedWorkspaceDirs ?? [];
+    const frontendWorkspaceDirs: string[] = [];
+    for (const dir of linkedWorkspaceDirs) {
+      if (await isFrontendWorkspace(dir)) {
+        frontendWorkspaceDirs.push(dir);
+      }
+    }
+    if (frontendWorkspaceDirs.length > 0) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "front-back graph build started",
+        metadata: {
+          frontendWorkspaces: frontendWorkspaceDirs.length
+        }
+      });
+      frontBackGraph = await buildFrontBackGraph({
+        backendWorkspaceDir: project.workspaceDir,
+        frontendWorkspaceDirs
+      });
+      const frontCatalogDocs = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: FRONT_CATALOG_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: buildFrontCatalogMarkdown({
+          project: warmup.project,
+          generatedAt,
+          graph: frontBackGraph
+        })
+      });
+      const frontCatalogJsonPath = await writeMemoryJson({
+        memoryRoot,
+        groupDir: FRONT_CATALOG_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: {
+          generatedAt,
+          workspaceCount: frontBackGraph.meta.frontendWorkspaceDirs.length,
+          routeCount: frontBackGraph.frontend.routeCount,
+          screenCount: frontBackGraph.frontend.screenCount,
+          apiCount: frontBackGraph.frontend.apiCount,
+          screens: frontBackGraph.frontend.screens
+        }
+      });
+      const graphDocs = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: FRONT_BACK_GRAPH_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: buildFrontBackGraphMarkdown({
+          project: warmup.project,
+          generatedAt,
+          graph: frontBackGraph
+        })
+      });
+      const graphJsonPath = await writeMemoryJson({
+        memoryRoot,
+        groupDir: FRONT_BACK_GRAPH_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: frontBackGraph
+      });
+      frontBackMemoryFiles = [
+        frontCatalogDocs.latestPath,
+        frontCatalogDocs.snapshotPath,
+        frontCatalogJsonPath,
+        graphDocs.latestPath,
+        graphDocs.snapshotPath,
+        graphJsonPath
+      ];
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "front-back graph build finished",
+        metadata: {
+          screenCount: frontBackGraph.frontend.screenCount,
+          linkCount: frontBackGraph.links.length
+        }
+      });
+    }
+
     await appendProjectDebugEvent({
       timestamp: nowIso(),
       projectId: options.projectId,
@@ -3599,6 +3837,11 @@ export async function analyzeServerProject(options: {
         topExtensions: extStats.slice(0, 12),
         topDirectories: topDirs.slice(0, 15)
       },
+      linkedWorkspaces: {
+        count: linkedWorkspaceDirs.length,
+        frontendCount: frontendWorkspaceDirs.length,
+        dirs: linkedWorkspaceDirs.map((item) => toForwardSlash(item))
+      },
       structureIndex: {
         generatedAt: structure.snapshot.generatedAt,
         fileCount: structure.snapshot.stats.fileCount,
@@ -3619,6 +3862,26 @@ export async function analyzeServerProject(options: {
           purpose: entry.purpose,
           usagePaths: entry.usagePaths.slice(0, 5)
         }))
+      },
+      frontBackGraph: frontBackGraph
+        ? {
+            frontendWorkspaceCount: frontBackGraph.meta.frontendWorkspaceDirs.length,
+            routeCount: frontBackGraph.frontend.routeCount,
+            screenCount: frontBackGraph.frontend.screenCount,
+            apiCount: frontBackGraph.frontend.apiCount,
+            linkCount: frontBackGraph.links.length,
+            topLinks: frontBackGraph.links.slice(0, 10).map((link) => ({
+              screenCode: link.frontend.screenCode,
+              routePath: link.frontend.routePath,
+              apiUrl: link.api.rawUrl,
+              backendPath: link.backend.path,
+              controllerMethod: link.backend.controllerMethod,
+              serviceHints: link.backend.serviceHints
+            }))
+          }
+        : null,
+      projectContextHints: {
+        pairedWorkspaceSetEnabled: frontendWorkspaceDirs.length > 0
       },
       retrievalEvidence: seedSearch.hits.slice(0, 14).map((hit) => ({
         path: hit.path,
@@ -3727,7 +3990,8 @@ export async function analyzeServerProject(options: {
       const extraMemoryFiles = [
         ...structure.memoryFiles,
         ...presetMemoryFiles,
-        ...eaiMemoryFiles
+        ...eaiMemoryFiles,
+        ...frontBackMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -3748,7 +4012,8 @@ export async function analyzeServerProject(options: {
         analysisFiles.snapshotPath,
         ...structure.memoryFiles,
         ...presetMemoryFiles,
-        ...eaiMemoryFiles
+        ...eaiMemoryFiles,
+        ...frontBackMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -3782,6 +4047,36 @@ export async function analyzeServerProject(options: {
             source: "disabled",
             topInterfaces: []
           },
+      frontCatalog: frontBackGraph
+        ? {
+            generatedAt: frontBackGraph.generatedAt,
+            workspaceCount: frontBackGraph.meta.frontendWorkspaceDirs.length,
+            screenCount: frontBackGraph.frontend.screenCount,
+            routeCount: frontBackGraph.frontend.routeCount,
+            apiCount: frontBackGraph.frontend.apiCount,
+            topScreens: frontBackGraph.frontend.screens.slice(0, 12).map((screen) => ({
+              screenCode: screen.screenCode,
+              filePath: screen.filePath,
+              routePaths: screen.routePaths.slice(0, 4),
+              apiPaths: screen.apiPaths.slice(0, 4)
+            }))
+          }
+        : undefined,
+      frontBackGraph: frontBackGraph
+        ? {
+            generatedAt: frontBackGraph.generatedAt,
+            workspaceCount: frontBackGraph.meta.frontendWorkspaceDirs.length,
+            linkCount: frontBackGraph.links.length,
+            topLinks: frontBackGraph.links.slice(0, 12).map((link) => ({
+              screenCode: link.frontend.screenCode,
+              routePath: link.frontend.routePath,
+              apiUrl: link.api.rawUrl,
+              backendPath: link.backend.path,
+              controllerMethod: link.backend.controllerMethod,
+              confidence: link.confidence
+            }))
+          }
+        : undefined,
       structureCatalog: {
         generatedAt: structure.snapshot.generatedAt,
         fileCount: structure.snapshot.stats.fileCount,
@@ -3802,7 +4097,9 @@ export async function analyzeServerProject(options: {
         llmCallCount: generation.liveCallCount,
         profileApplied: Boolean(projectPreset),
         eaiCatalogCount: eaiEntries.length,
-        structureIndexCount: structure.snapshot.stats.fileCount
+        structureIndexCount: structure.snapshot.stats.fileCount,
+        frontCatalogCount: frontBackGraph?.frontend.screenCount ?? 0,
+        frontBackLinkCount: frontBackGraph?.links.length ?? 0
       }
     };
 
@@ -3847,6 +4144,14 @@ function qualityGateForAsk(options: {
   strategy?: AskStrategyType;
   hydratedEvidence?: AskHydratedEvidenceItem[];
   linkedEaiEvidence?: Array<{ interfaceId: string; interfaceName: string }>;
+  linkedFlowEvidence?: Array<{
+    routePath?: string;
+    screenCode?: string;
+    apiUrl: string;
+    backendPath: string;
+    backendControllerMethod: string;
+    serviceHints?: string[];
+  }>;
   moduleCandidates?: string[];
 }): {
   passed: boolean;
@@ -3864,6 +4169,7 @@ function qualityGateForAsk(options: {
       moduleMatched: item.moduleMatched
     })),
     linkedEaiEvidence: options.linkedEaiEvidence,
+    linkedFlowEvidence: options.linkedFlowEvidence,
     moduleCandidates: options.moduleCandidates
   });
 }
@@ -4322,6 +4628,20 @@ export async function askServerProject(options: {
         }
       });
     }
+    const frontBackGraphSnapshot = await readFrontBackGraphSnapshot(memoryRoot);
+    if (frontBackGraphSnapshot) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "loaded cached front-back graph for ask",
+        metadata: {
+          linkCount: frontBackGraphSnapshot.links.length,
+          frontendWorkspaces: frontBackGraphSnapshot.meta.frontendWorkspaceDirs.length
+        }
+      });
+    }
 
     const expandedQueries = buildAskQueryCandidates({
       question,
@@ -4455,6 +4775,35 @@ export async function askServerProject(options: {
         topInterfaces: linkedEaiEvidence.slice(0, 3).map((item) => item.interfaceId)
       }
     });
+    const linkedFlowEvidence = frontBackGraphSnapshot
+      ? buildLinkedFlowEvidence({
+          question,
+          hits: mergedHits.map((hit) => ({
+            path: hit.path,
+            score: hit.score,
+            reasons: hit.reasons
+          })),
+          snapshot: frontBackGraphSnapshot,
+          limit: 6
+        })
+      : [];
+    if (linkedFlowEvidence.length > 0) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "linked front-back flow evidence prepared",
+        metadata: {
+          count: linkedFlowEvidence.length,
+          topRoutes: linkedFlowEvidence.slice(0, 3).map((item) => item.routePath ?? item.screenCode ?? item.apiUrl)
+        }
+      });
+    }
+    const crossLayerFlowQuestion =
+      linkedFlowEvidence.length > 0 &&
+      /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(question) &&
+      /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(question);
 
     const bestSearch =
       [...searchResults].sort((a, b) => {
@@ -4484,13 +4833,18 @@ export async function askServerProject(options: {
 
     const qualityFailures: string[] = [];
 
-    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = {
-      answer:
-        "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
-      confidence: 0.2,
-      evidence: [],
-      caveats: ["low-evidence"]
-    };
+    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion
+      ? buildDeterministicFlowAnswer({
+          question,
+          linkedFlowEvidence
+        })
+      : {
+          answer:
+            "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
+          confidence: 0.2,
+          evidence: [],
+          caveats: ["low-evidence"]
+        };
     let attempts = 0;
     let usedFallback = false;
     let passed = false;
@@ -4521,7 +4875,8 @@ export async function askServerProject(options: {
           retrievalHits: llmMergedHits.length,
           retrievalChars: JSON.stringify(llmMergedHits).length,
           hydratedEvidenceCount: hydratedEvidence.length,
-          linkedEaiEvidenceCount: linkedEaiEvidence.length
+          linkedEaiEvidenceCount: linkedEaiEvidence.length,
+          linkedFlowEvidenceCount: linkedFlowEvidence.length
         }
       });
       await appendProjectDebugEvent({
@@ -4542,6 +4897,7 @@ export async function askServerProject(options: {
           "Use only provided evidence, never fabricate.",
           "For logic questions, prefer code-level evidence over XML-only evidence.",
           "If linkedEaiEvidence is present, prefer those interfaces over unrelated XML-only candidates and cite the interfaceId explicitly.",
+          "If linkedFlowEvidence is present for a cross-layer question, explicitly connect frontend screen/route -> API URL -> gateway/controller -> service.",
           "If confidence is low, explicitly say uncertainty and missing coverage.",
           "If hydratedEvidence contains callee:* method blocks, use at least one of them in the answer when explaining the internal flow."
         ].join("\n"),
@@ -4561,7 +4917,8 @@ export async function askServerProject(options: {
               lowConfidenceMode,
               requireCodeEvidence: /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(question),
               requireModuleEvidence: strategyDecision.moduleCandidates.length > 0,
-              moduleCandidates: strategyDecision.moduleCandidates
+              moduleCandidates: strategyDecision.moduleCandidates,
+              requireCrossLayerFlow: crossLayerFlowQuestion
             },
             projectAnalysis: {
               summary: analysis.summary,
@@ -4580,10 +4937,13 @@ export async function askServerProject(options: {
             },
             hydratedEvidence,
             linkedEaiEvidence,
+            linkedFlowEvidence,
             memory: memoryPreview,
             instruction:
               intent.methodFocused
                 ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
+                : crossLayerFlowQuestion
+                ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요."
                 : intent.moduleFlowFocused
                 ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. linkedEaiEvidence가 있으면 해당 interfaceId와 인터페이스명을 직접 연결해서 설명하세요. 확정 근거와 추정 범위를 분리하세요."
                 : lowConfidenceMode
@@ -4621,6 +4981,7 @@ export async function askServerProject(options: {
         strategy: strategyDecision.strategy,
         hydratedEvidence,
         linkedEaiEvidence,
+        linkedFlowEvidence,
         moduleCandidates: strategyDecision.moduleCandidates
       });
       if (gate.passed) {
@@ -4672,6 +5033,14 @@ export async function askServerProject(options: {
         );
       }
     }
+    if (linkedFlowEvidence.length > 0) {
+      reportLines.push("", "## Linked Front-Back Flow Evidence");
+      for (const item of linkedFlowEvidence.slice(0, 6)) {
+        reportLines.push(
+          `- ${item.screenCode ?? item.routePath ?? "(unknown screen)"} | ${item.apiUrl} -> ${item.backendControllerMethod} (${item.backendPath}) | reasons=${item.reasons.join(", ") || "(none)"}`
+        );
+      }
+    }
     reportLines.push("");
 
     const queryReportFiles = await writeMemoryDocs({
@@ -4709,6 +5078,9 @@ export async function askServerProject(options: {
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
         linkedEaiEvidenceCount: linkedEaiEvidence.length,
+        frontBackGraphLoaded: Boolean(frontBackGraphSnapshot),
+        frontBackLinkCount: frontBackGraphSnapshot?.links.length ?? 0,
+        frontBackEvidenceUsedCount: linkedFlowEvidence.length,
         memoryFiles: [
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],

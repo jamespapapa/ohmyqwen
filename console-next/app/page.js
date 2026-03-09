@@ -518,6 +518,7 @@ export default function HomePage() {
 
   const [projectName, setProjectName] = useState("");
   const [workspaceDir, setWorkspaceDir] = useState("");
+  const [linkedWorkspaceDirsText, setLinkedWorkspaceDirsText] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
   const [projectQueryMode, setProjectQueryMode] = useState("query_then_search");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -647,6 +648,7 @@ export default function HomePage() {
 
     setProjectName(selectedProject.name || "");
     setWorkspaceDir(selectedProject.workspaceDir || "");
+    setLinkedWorkspaceDirsText((selectedProject.linkedWorkspaceDirs || []).join("\n"));
     setProjectDescription(selectedProject.description || "");
     setSelectedLlmModelId(selectedProject.llm?.modelId || llmSettings?.defaultModelId || "");
     setSelectedPresetId(selectedProject.presetId || "");
@@ -905,6 +907,7 @@ export default function HomePage() {
         id: selectedProjectId || undefined,
         name: projectName.trim(),
         workspaceDir: workspaceDir.trim(),
+        linkedWorkspaceDirs: parseLines(linkedWorkspaceDirsText),
         description: projectDescription.trim(),
         presetId: selectedPresetId || undefined,
         llm: {
@@ -1245,6 +1248,14 @@ export default function HomePage() {
               </button>
             </div>
 
+            <div className="label" style={{ marginTop: 10 }}>연결 Workspace 경로(선택, 줄바꿈 구분)</div>
+            <textarea
+              value={linkedWorkspaceDirsText}
+              onChange={(e) => setLinkedWorkspaceDirsText(e.target.value)}
+              placeholder={"/Users/jules/Desktop/work/untitle/dcp/dcp-front-develop"}
+            />
+            <div className="hint">프론트/보조 저장소를 줄바꿈으로 추가하면 analyze 시 함께 연결 그래프를 만듭니다.</div>
+
             <div className="label" style={{ marginTop: 10 }}>설명(선택)</div>
             <input
               value={projectDescription}
@@ -1576,6 +1587,10 @@ export default function HomePage() {
                     <span>{analysisResult.projectPreset?.name || "-"}</span>
                   </div>
                   <div className="report-row">
+                    <span>연결 Workspace</span>
+                    <span>{selectedProject?.linkedWorkspaceDirs?.length ?? 0}개</span>
+                  </div>
+                  <div className="report-row">
                     <span>EAI 사전</span>
                     <span>{analysisResult.eaiCatalog?.interfaceCount ?? 0} entries</span>
                   </div>
@@ -1593,6 +1608,17 @@ export default function HomePage() {
                       files={analysisResult.structureCatalog?.fileCount ?? 0}, methods=
                       {analysisResult.structureCatalog?.methodCount ?? 0}
                     </span>
+                  </div>
+                  <div className="report-row">
+                    <span>Front Catalog</span>
+                    <span>
+                      screens={analysisResult.frontCatalog?.screenCount ?? 0}, apis=
+                      {analysisResult.frontCatalog?.apiCount ?? 0}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>Front→Back Graph</span>
+                    <span>links={analysisResult.frontBackGraph?.linkCount ?? 0}</span>
                   </div>
                 </div>
 
@@ -1625,6 +1651,38 @@ export default function HomePage() {
                             {shortText(entry.interfaceId, 24)} · {shortText(entry.interfaceName, 30)}
                           </span>
                           <span>{entry.usagePaths?.length || 0}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {(analysisResult.frontCatalog?.topScreens || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>Front Top Screens</div>
+                    <ul className="artifacts" style={{ maxHeight: 140 }}>
+                      {analysisResult.frontCatalog.topScreens.slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.filePath}-${index}`}>
+                          <span title={`${entry.filePath} | ${entry.routePaths.join(", ")} | ${entry.apiPaths.join(", ")}`}>
+                            {shortText(entry.screenCode || entry.filePath, 26)} · {shortText(entry.filePath, 34)}
+                          </span>
+                          <span>{entry.apiPaths?.length || 0}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {(analysisResult.frontBackGraph?.topLinks || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>Front→Back Top Links</div>
+                    <ul className="artifacts" style={{ maxHeight: 140 }}>
+                      {analysisResult.frontBackGraph.topLinks.slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.apiUrl}-${index}`}>
+                          <span title={`${entry.routePath || entry.screenCode || "-"} | ${entry.apiUrl} -> ${entry.controllerMethod}`}>
+                            {shortText(entry.screenCode || entry.routePath || entry.apiUrl, 26)} · {shortText(entry.apiUrl, 28)}
+                          </span>
+                          <span>{Number(entry.confidence || 0).toFixed(2)}</span>
                         </li>
                       ))}
                     </ul>
@@ -1686,6 +1744,9 @@ export default function HomePage() {
                     : ""}
                   {Number(askResult.diagnostics?.hydratedEvidenceCount || 0) > 0
                     ? ` · hydrated=${askResult.diagnostics.hydratedEvidenceCount}`
+                    : ""}
+                  {Number(askResult.diagnostics?.frontBackEvidenceUsedCount || 0) > 0
+                    ? ` · flowLinks=${askResult.diagnostics.frontBackEvidenceUsedCount}/${askResult.diagnostics.frontBackLinkCount || 0}`
                     : ""}
                   {askResult.diagnostics?.deterministicUsed
                     ? ` · deterministic=${askResult.diagnostics?.deterministicSymbol || "true"}`

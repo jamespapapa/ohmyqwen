@@ -25,6 +25,15 @@ export interface AskLinkedEaiQualityEvidence {
   interfaceName: string;
 }
 
+export interface AskLinkedFlowQualityEvidence {
+  routePath?: string;
+  screenCode?: string;
+  apiUrl: string;
+  backendPath: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+}
+
 function hasCodeFileEvidenceFromPaths(paths: string[]): boolean {
   return paths.some((entry) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(entry));
 }
@@ -45,6 +54,7 @@ export function qualityGateForAskOutput(options: {
   strategy?: AskQualityStrategy;
   hydratedEvidence?: AskHydratedQualityEvidence[];
   linkedEaiEvidence?: AskLinkedEaiQualityEvidence[];
+  linkedFlowEvidence?: AskLinkedFlowQualityEvidence[];
   moduleCandidates?: string[];
 }): {
   passed: boolean;
@@ -53,6 +63,7 @@ export function qualityGateForAskOutput(options: {
   const failures: string[] = [];
   const hydratedEvidence = options.hydratedEvidence ?? [];
   const linkedEaiEvidence = options.linkedEaiEvidence ?? [];
+  const linkedFlowEvidence = options.linkedFlowEvidence ?? [];
   const moduleCandidates = options.moduleCandidates ?? [];
 
   if (options.output.answer.trim().length < 80) {
@@ -101,6 +112,22 @@ export function qualityGateForAskOutput(options: {
     )
   ) {
     failures.push("missing-linked-eai-detail");
+  }
+
+  const crossLayerQuestion = /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(options.question) && /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(options.question);
+  if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
+    if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
+      failures.push("missing-frontend-route-evidence");
+    }
+    if (!linkedFlowEvidence.some((item) => options.output.answer.includes(item.apiUrl))) {
+      failures.push("missing-api-url-evidence");
+    }
+    if (!linkedFlowEvidence.some((item) => options.output.answer.includes(item.backendPath) || options.output.answer.includes(item.backendControllerMethod) || (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint)))) {
+      failures.push("missing-backend-route-evidence");
+    }
+    if (!/(->|거쳐|호출|이어|gateway|controller|service|route)/i.test(options.output.answer)) {
+      failures.push("missing-cross-layer-chain-detail");
+    }
   }
 
   return {

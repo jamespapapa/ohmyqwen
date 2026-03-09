@@ -217,6 +217,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         id?: string;
         name?: string;
         workspaceDir?: string;
+        linkedWorkspaceDirs?: string[];
         description?: string;
         presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
@@ -264,6 +265,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         id: payload.id,
         name: payload.name ?? "",
         workspaceDir: payload.workspaceDir ?? "",
+        linkedWorkspaceDirs: payload.linkedWorkspaceDirs ?? [],
         description: payload.description,
         presetId: payload.presetId,
         defaultMode: payload.defaultMode ? RunModeSchema.parse(payload.defaultMode) : undefined,
@@ -312,6 +314,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
       const payload = (await readJsonBody(req)) as {
         name?: string;
         workspaceDir?: string;
+        linkedWorkspaceDirs?: string[];
         description?: string;
         presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
@@ -364,6 +367,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         id: projectId,
         name: payload.name ?? existing.name,
         workspaceDir: payload.workspaceDir ?? existing.workspaceDir,
+        linkedWorkspaceDirs: payload.linkedWorkspaceDirs ?? existing.linkedWorkspaceDirs ?? [],
         description: payload.description ?? existing.description,
         presetId: payload.presetId ?? existing.presetId,
         defaultMode: payload.defaultMode
