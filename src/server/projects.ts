@@ -203,6 +203,8 @@ export interface ProjectAskResponse {
     strategyConfidence?: number;
     strategyLlmUsed?: boolean;
     strategyReason?: string;
+    scopeModules?: string[];
+    hydratedEvidenceCount?: number;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
     memoryFiles: string[];
@@ -228,10 +230,22 @@ export interface ServerLlmSettingsResult {
 
 type AskStrategyType =
   | "method_trace"
+  | "module_flow_topdown"
   | "architecture_overview"
   | "eai_interface"
   | "config_resource"
   | "general";
+
+interface AskHydratedEvidenceItem {
+  path: string;
+  reason: string;
+  snippet: string;
+  kind: "method_block" | "line_window" | "resource_snippet";
+  codeFile: boolean;
+  moduleMatched: boolean;
+  lineStart?: number;
+  lineEnd?: number;
+}
 
 interface StructureSymbolRef {
   name: string;
@@ -620,6 +634,7 @@ function buildAskQueryCandidates(options: {
   question: string;
   strategy: AskStrategyType;
   targetSymbols?: string[];
+  moduleCandidates?: string[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -627,15 +642,19 @@ function buildAskQueryCandidates(options: {
   const hasLogicIntent =
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
+  const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
 
   const candidates = [
     question,
     compact,
-    targetSymbols.length > 0 ? `${targetSymbols.join(" ")} ${compact}` : ""
+    targetSymbols.length > 0 ? `${targetSymbols.join(" ")} ${compact}` : "",
+    moduleCandidates.length > 0 ? `${moduleCandidates.join(" ")} ${compact}` : ""
   ];
 
   if (options.strategy === "method_trace" || hasLogicIntent) {
     candidates.push(`${compact} controller service domain mapper mybatis`);
+  } else if (options.strategy === "module_flow_topdown") {
+    candidates.push(`${compact} controller service requestmapping orchestration mapper eai`);
   } else if (options.strategy === "eai_interface") {
     candidates.push(`${compact} eai interface service xml`);
   } else if (options.strategy === "config_resource") {
@@ -646,6 +665,12 @@ function buildAskQueryCandidates(options: {
 
   if (hasInsuranceClaim) {
     candidates.push(`${compact} 보험금 청구 dcp-insurance`);
+  }
+  for (const moduleName of moduleCandidates) {
+    candidates.push(`${moduleName} ${compact} controller service`);
+    if (hasLogicIntent) {
+      candidates.push(`${moduleName} benefit claim controller service submit save`);
+    }
   }
 
   return unique(candidates.filter(Boolean));
@@ -1267,6 +1292,7 @@ const ProjectAskOutputSchema = z.object({
 const AskStrategyDecisionSchema = z.object({
   strategy: z.enum([
     "method_trace",
+    "module_flow_topdown",
     "architecture_overview",
     "eai_interface",
     "config_resource",
@@ -2450,6 +2476,74 @@ function extractOrderedMethodCalls(snippet: string): string[] {
   return output;
 }
 
+function extractOwnedCallCandidates(snippet: string): Array<{ owner: string; method: string }> {
+  const output: Array<{ owner: string; method: string }> = [];
+  const seen = new Set<string>();
+  for (const match of snippet.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const owner = match[1]?.trim();
+    const method = match[2]?.trim();
+    if (!owner || !method || CALL_KEYWORDS.has(method)) {
+      continue;
+    }
+    const key = `${owner}.${method}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push({ owner, method });
+  }
+  return output;
+}
+
+function toProbableClassName(ownerName: string): string {
+  return ownerName ? `${ownerName[0].toUpperCase()}${ownerName.slice(1)}` : ownerName;
+}
+
+function scoreOwnedCallCandidate(options: { owner: string; method: string; focusTokens: string[] }): number {
+  const owner = options.owner.toLowerCase();
+  const method = options.method.toLowerCase();
+  let score = 0;
+
+  if (/service|dao|mapper|client|support/.test(owner)) {
+    score += 20;
+  }
+  if (/save|submit|claim|benefit|check|apply|insert|delete|cancel|select|callf/.test(method)) {
+    score += 40;
+  }
+  if (/sendlms|debug|log|trace|print/.test(method)) {
+    score -= 20;
+  }
+  for (const token of options.focusTokens) {
+    if (owner.includes(token)) {
+      score += 8;
+    }
+    if (method.includes(token)) {
+      score += 12;
+    }
+  }
+
+  return score;
+}
+
+function findStructureEntryByClassName(options: {
+  structure?: StructureIndexSnapshot;
+  className: string;
+  moduleCandidates: string[];
+}): StructureFileEntry | undefined {
+  if (!options.structure) {
+    return undefined;
+  }
+  const normalizedClass = options.className.toLowerCase();
+  const candidates = Object.values(options.structure.entries).filter((entry) =>
+    entry.classes.some((klass) => klass.name.toLowerCase() === normalizedClass)
+  );
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  const moduleMatched = candidates.find((entry) => pathMatchesAnyModule(entry.path, options.moduleCandidates));
+  return moduleMatched ?? candidates[0];
+}
+
 function summarizeMethodSignature(snippet: string): string {
   const firstLine =
     snippet
@@ -2459,16 +2553,338 @@ function summarizeMethodSignature(snippet: string): string {
   return firstLine.slice(0, 220);
 }
 
+function extractModuleCandidates(question: string): string[] {
+  return unique(question.match(/\bdcp-[a-z0-9-]+\b/gi) ?? []).map((item) => item.toLowerCase());
+}
+
+function buildAskFocusTokens(question: string): string[] {
+  const tokens = new Set<string>(toSearchTokens(question).map((item) => item.toLowerCase()));
+  const rawWords = question.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
+  for (const word of rawWords) {
+    tokens.add(word.toLowerCase());
+  }
+
+  if (/(보험금|benefit)/i.test(question)) {
+    ["benefit", "give", "insurance"].forEach((item) => tokens.add(item));
+  }
+  if (/(청구|claim)/i.test(question)) {
+    ["claim", "submit", "save", "recept", "receipt", "doc", "document", "upload", "file"].forEach((item) =>
+      tokens.add(item)
+    );
+  }
+  if (/(사고|accident|acc)/i.test(question)) {
+    ["acc", "accident"].forEach((item) => tokens.add(item));
+  }
+  if (/(서류|문서|doc|document|파일|upload)/i.test(question)) {
+    ["doc", "document", "file", "upload", "image", "pdf"].forEach((item) => tokens.add(item));
+  }
+
+  return Array.from(tokens).filter((item) => item.length >= 2).slice(0, 24);
+}
+
+function pathMatchesAnyModule(filePath: string, moduleCandidates: string[]): boolean {
+  const normalized = toForwardSlash(filePath).toLowerCase();
+  return moduleCandidates.some((moduleName) => normalized.startsWith(`${moduleName}/`));
+}
+
+function scoreAskHitRelevance(options: {
+  hit: ProjectSearchHit;
+  question: string;
+  strategy: AskStrategyType;
+  moduleCandidates: string[];
+  focusTokens: string[];
+}): number {
+  const normalizedPath = toForwardSlash(options.hit.path).toLowerCase();
+  const ext = path.extname(normalizedPath);
+  let score = options.hit.score;
+
+  if (pathMatchesAnyModule(normalizedPath, options.moduleCandidates)) {
+    score += 200;
+  }
+  if (CODE_FILE_EXTENSIONS.has(ext)) {
+    score += 50;
+  }
+  if (/controller/i.test(normalizedPath)) {
+    score += 35;
+  }
+  if (/service/i.test(normalizedPath)) {
+    score += 30;
+  }
+  if (options.strategy === "module_flow_topdown" && !pathMatchesAnyModule(normalizedPath, options.moduleCandidates)) {
+    score -= 80;
+  }
+  if (
+    /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(options.question) &&
+    /\.(xml|yml|yaml|txt|ini)$/i.test(normalizedPath)
+  ) {
+    score -= 25;
+  }
+
+  for (const token of options.focusTokens) {
+    if (normalizedPath.includes(token)) {
+      score += 12;
+    }
+  }
+
+  return score;
+}
+
+function makeLineWindowSnippet(content: string, lineNumber: number, radius = 4): { snippet: string; lineStart: number; lineEnd: number } {
+  const lines = content.split(/\r?\n/);
+  const start = Math.max(0, lineNumber - 1 - radius);
+  const end = Math.min(lines.length, lineNumber + radius);
+  return {
+    snippet: lines.slice(start, end).join("\n").slice(0, 2200),
+    lineStart: start + 1,
+    lineEnd: end
+  };
+}
+
+function scoreStructureSymbolForAsk(options: {
+  entry: StructureFileEntry;
+  symbol: StructureSymbolRef;
+  strategy: AskStrategyType;
+  focusTokens: string[];
+  targetSymbols: string[];
+}): number {
+  const symbolName = options.symbol.name.toLowerCase();
+  const className = options.symbol.className?.toLowerCase() ?? "";
+  const entryPath = options.entry.path.toLowerCase();
+  let score = 0;
+
+  if (options.targetSymbols.some((item) => symbolName === item.toLowerCase())) {
+    score += 120;
+  }
+  if (options.strategy === "module_flow_topdown" && /controller|service/.test(entryPath)) {
+    score += 24;
+  }
+  if (/claim|benefit|acc|submit|save|cancel|upload|doc|file|apply|receipt/.test(symbolName)) {
+    score += 20;
+  }
+  if (/claim|benefit|acc/.test(className)) {
+    score += 10;
+  }
+
+  for (const token of options.focusTokens) {
+    if (symbolName.includes(token)) {
+      score += 18;
+    }
+    if (className.includes(token)) {
+      score += 12;
+    }
+    if (entryPath.includes(token)) {
+      score += 4;
+    }
+  }
+
+  return score;
+}
+
+async function hydrateAskEvidence(options: {
+  project: ServerProject;
+  question: string;
+  strategy: AskStrategyType;
+  targetSymbols: string[];
+  moduleCandidates: string[];
+  hits: ProjectSearchHit[];
+  structure?: StructureIndexSnapshot;
+}): Promise<AskHydratedEvidenceItem[]> {
+  const focusTokens = buildAskFocusTokens(options.question);
+  const rankedHits = [...options.hits]
+    .sort(
+      (a, b) =>
+        scoreAskHitRelevance({
+          hit: b,
+          question: options.question,
+          strategy: options.strategy,
+          moduleCandidates: options.moduleCandidates,
+          focusTokens
+        }) -
+        scoreAskHitRelevance({
+          hit: a,
+          question: options.question,
+          strategy: options.strategy,
+          moduleCandidates: options.moduleCandidates,
+          focusTokens
+        })
+    )
+    .slice(0, 12);
+
+  const hydrated: AskHydratedEvidenceItem[] = [];
+  const seenKeys = new Set<string>();
+  const contentCache = new Map<string, string>();
+
+  async function loadContent(relativePath: string): Promise<string | undefined> {
+    if (contentCache.has(relativePath)) {
+      return contentCache.get(relativePath);
+    }
+    const absolutePath = path.resolve(options.project.workspaceDir, relativePath);
+    const content = await readTextFileSafe(absolutePath);
+    if (content != null) {
+      contentCache.set(relativePath, content);
+    }
+    return content ?? undefined;
+  }
+
+  for (const hit of rankedHits) {
+    const content = await loadContent(hit.path);
+    if (!content) {
+      continue;
+    }
+
+    const codeFile = CODE_FILE_EXTENSIONS.has(path.extname(hit.path).toLowerCase());
+    const moduleMatched = pathMatchesAnyModule(hit.path, options.moduleCandidates);
+    const structureEntry = options.structure?.entries[hit.path];
+
+    if (codeFile && structureEntry) {
+      const symbolCandidates = [...structureEntry.methods, ...structureEntry.functions]
+        .map((symbol) => ({
+          symbol,
+          score: scoreStructureSymbolForAsk({
+            entry: structureEntry,
+            symbol,
+            strategy: options.strategy,
+            focusTokens,
+            targetSymbols: options.targetSymbols
+          })
+        }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.symbol.line - b.symbol.line))
+        .slice(0, options.strategy === "module_flow_topdown" ? 3 : 2);
+
+      for (const candidate of symbolCandidates) {
+        const block = findMethodBlock(content, candidate.symbol.name);
+        if (!block) {
+          continue;
+        }
+        const key = `${hit.path}:${candidate.symbol.name}:${block.startLine}:${block.endLine}`;
+        if (seenKeys.has(key)) {
+          continue;
+        }
+        seenKeys.add(key);
+        hydrated.push({
+          path: hit.path,
+          reason: `method:${candidate.symbol.className ? `${candidate.symbol.className}.` : ""}${candidate.symbol.name}`,
+          snippet: block.snippet.slice(0, 3600),
+          kind: "method_block",
+          codeFile: true,
+          moduleMatched,
+          lineStart: block.startLine,
+          lineEnd: block.endLine
+        });
+        if (options.strategy === "module_flow_topdown" || options.strategy === "method_trace") {
+          const externalCalls = extractOwnedCallCandidates(block.snippet)
+            .filter((item) => /(service|dao|mapper|support|helper|client)/i.test(item.owner))
+            .sort(
+              (a, b) =>
+                scoreOwnedCallCandidate({ ...b, focusTokens }) - scoreOwnedCallCandidate({ ...a, focusTokens })
+            )
+            .slice(0, 4);
+          for (const externalCall of externalCalls) {
+            const probableClassName = toProbableClassName(externalCall.owner);
+            const targetEntry = findStructureEntryByClassName({
+              structure: options.structure,
+              className: probableClassName,
+              moduleCandidates: options.moduleCandidates
+            });
+            if (!targetEntry) {
+              continue;
+            }
+            const targetContent = await loadContent(targetEntry.path);
+            if (!targetContent) {
+              continue;
+            }
+            const targetBlock = findMethodBlock(targetContent, externalCall.method);
+            if (!targetBlock) {
+              continue;
+            }
+            const externalKey = `${targetEntry.path}:${externalCall.method}:${targetBlock.startLine}:${targetBlock.endLine}`;
+            if (seenKeys.has(externalKey)) {
+              continue;
+            }
+            seenKeys.add(externalKey);
+            hydrated.push({
+              path: targetEntry.path,
+              reason: `callee:${probableClassName}.${externalCall.method}`,
+              snippet: targetBlock.snippet.slice(0, 3600),
+              kind: "method_block",
+              codeFile: true,
+              moduleMatched: pathMatchesAnyModule(targetEntry.path, options.moduleCandidates),
+              lineStart: targetBlock.startLine,
+              lineEnd: targetBlock.endLine
+            });
+            if (hydrated.length >= 10) {
+              return hydrated;
+            }
+          }
+        }
+        if (hydrated.length >= 10) {
+          return hydrated;
+        }
+      }
+    }
+
+    const lines = content.split(/\r?\n/);
+    const matchedLineIndex = lines.findIndex((line) => {
+      const lower = line.toLowerCase();
+      return focusTokens.some((token) => lower.includes(token));
+    });
+    if (matchedLineIndex >= 0) {
+      const window = makeLineWindowSnippet(content, matchedLineIndex + 1, codeFile ? 6 : 3);
+      const key = `${hit.path}:window:${window.lineStart}:${window.lineEnd}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        hydrated.push({
+          path: hit.path,
+          reason: "matched-focus-token",
+          snippet: window.snippet,
+          kind: codeFile ? "line_window" : "resource_snippet",
+          codeFile,
+          moduleMatched,
+          lineStart: window.lineStart,
+          lineEnd: window.lineEnd
+        });
+      }
+    } else if (!codeFile && hydrated.length < 8) {
+      const window = makeLineWindowSnippet(content, 1, 8);
+      const key = `${hit.path}:window:${window.lineStart}:${window.lineEnd}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        hydrated.push({
+          path: hit.path,
+          reason: "resource-top-snippet",
+          snippet: window.snippet,
+          kind: "resource_snippet",
+          codeFile: false,
+          moduleMatched,
+          lineStart: window.lineStart,
+          lineEnd: window.lineEnd
+        });
+      }
+    }
+
+    if (hydrated.length >= 10) {
+      break;
+    }
+  }
+
+  return hydrated.slice(0, 10);
+}
+
 function classifyQuestionIntentFallback(question: string): {
   strategy: AskStrategyType;
   confidence: number;
   reason: string;
   targetSymbols: string[];
 } {
+  const moduleCandidates = extractModuleCandidates(question);
   const methodFocused =
     /함수|메서드|method|호출|콜트리|이후|흐름|save[A-Z]|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/i.test(
       question
     );
+  const moduleFlowFocused =
+    moduleCandidates.length > 0 &&
+    /(내부|모듈|흐름|로직|탑다운|큰 그림|실행|처리|service|controller|domain)/i.test(question);
   const architectureFocused =
     /아키텍처|구조|전체|system|architecture|module|패키지/i.test(question);
   const eaiFocused = /eai|인터페이스|전문|service id|f1[a-z0-9]+/i.test(question);
@@ -2480,6 +2896,14 @@ function classifyQuestionIntentFallback(question: string): {
       confidence: 0.62,
       reason: "fallback: method/call-flow keywords detected",
       targetSymbols: extractMethodCandidates(question)
+    };
+  }
+  if (moduleFlowFocused) {
+    return {
+      strategy: "module_flow_topdown",
+      confidence: 0.7,
+      reason: "fallback: module-scoped flow/top-down question detected",
+      targetSymbols: [...extractClassCandidates(question), ...extractMethodCandidates(question)].slice(0, 8)
     };
   }
   if (eaiFocused) {
@@ -2517,10 +2941,12 @@ function classifyQuestionIntentFallback(question: string): {
 function strategyToIntent(strategy: AskStrategyType): {
   methodFocused: boolean;
   architectureFocused: boolean;
+  moduleFlowFocused: boolean;
 } {
   return {
     methodFocused: strategy === "method_trace",
-    architectureFocused: strategy === "architecture_overview"
+    architectureFocused: strategy === "architecture_overview",
+    moduleFlowFocused: strategy === "module_flow_topdown"
   };
 }
 
@@ -2708,9 +3134,12 @@ async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): P
   return files.filter((file) => path.extname(file).toLowerCase() === ".md");
 }
 
-function selectAskMemoryFiles(paths: string[], intent?: { methodFocused: boolean; architectureFocused: boolean }): string[] {
+function selectAskMemoryFiles(
+  paths: string[],
+  intent?: { methodFocused: boolean; architectureFocused: boolean; moduleFlowFocused: boolean }
+): string[] {
   const normalized = paths.map((item) => toForwardSlash(item));
-  const preferredOrder = intent?.methodFocused
+  const preferredOrder = intent?.methodFocused || intent?.moduleFlowFocused
     ? [
         "structure-index/latest.md",
         "project-analysis/latest.md",
@@ -3451,16 +3880,30 @@ function hasCodeFileEvidence(hits: ProjectSearchHit[]): boolean {
   return hits.some((hit) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(hit.path));
 }
 
+function extractHydratedCalleeNames(hydratedEvidence: AskHydratedEvidenceItem[]): string[] {
+  return hydratedEvidence
+    .map((item) => {
+      const match = item.reason.match(/^callee:([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)$/);
+      return match?.[2];
+    })
+    .filter((item): item is string => Boolean(item));
+}
+
 function qualityGateForAsk(options: {
   output: z.infer<typeof ProjectAskOutputSchema>;
   question: string;
   hits: ProjectSearchHit[];
+  strategy?: AskStrategyType;
+  hydratedEvidence?: AskHydratedEvidenceItem[];
+  moduleCandidates?: string[];
 }): {
   passed: boolean;
   failures: string[];
 } {
   const failures: string[] = [];
   const output = options.output;
+  const hydratedEvidence = options.hydratedEvidence ?? [];
+  const moduleCandidates = options.moduleCandidates ?? [];
   if (output.answer.trim().length < 80) {
     failures.push("answer-too-short");
   }
@@ -3476,6 +3919,30 @@ function qualityGateForAsk(options: {
   );
   if (logicQuestion && !hasCodeFileEvidence(options.hits)) {
     failures.push("missing-code-evidence");
+  }
+  if (logicQuestion && options.hydratedEvidence && hydratedEvidence.filter((item) => item.codeFile).length === 0) {
+    failures.push("missing-code-body-evidence");
+  }
+  if (
+    moduleCandidates.length > 0 &&
+    options.hydratedEvidence &&
+    hydratedEvidence.filter((item) => item.moduleMatched && item.codeFile).length === 0
+  ) {
+    failures.push("missing-module-scoped-code-evidence");
+  }
+  if (
+    options.strategy === "module_flow_topdown" &&
+    !/(controller|service|entry|진입|호출|downstream|eai|mapper|dao)/i.test(output.answer)
+  ) {
+    failures.push("missing-topdown-structure");
+  }
+  const calleeNames = extractHydratedCalleeNames(hydratedEvidence);
+  if (
+    options.strategy === "module_flow_topdown" &&
+    calleeNames.length > 0 &&
+    !calleeNames.some((name) => output.answer.includes(name))
+  ) {
+    failures.push("missing-service-callee-detail");
   }
 
   return {
@@ -3503,14 +3970,15 @@ async function decideAskStrategy(options: {
     systemPrompt: [
       "You are a query-strategy classifier for a code analysis assistant.",
       "Return ONLY one JSON object.",
-      "Pick exactly one strategy from: method_trace, architecture_overview, eai_interface, config_resource, general.",
-      "Prefer method_trace when a specific function/class flow is requested."
+      "Pick exactly one strategy from: method_trace, module_flow_topdown, architecture_overview, eai_interface, config_resource, general.",
+      "Prefer method_trace when a specific function/class flow is requested.",
+      "Prefer module_flow_topdown when a module-scoped execution flow is requested (e.g. 'dcp-insurance 내부에서 ... 탑다운')."
     ].join("\n"),
     userPrompt: JSON.stringify(
       {
         task: "Classify the question to one strategy.",
         outputSchema: {
-          strategy: "method_trace|architecture_overview|eai_interface|config_resource|general",
+          strategy: "method_trace|module_flow_topdown|architecture_overview|eai_interface|config_resource|general",
           confidence: "0..1",
           reason: "string",
           targetSymbols: ["string"]
@@ -3520,6 +3988,7 @@ async function decideAskStrategy(options: {
           name: options.project.name,
           description: options.project.description
         },
+        explicitModuleCandidates: extractModuleCandidates(options.question),
         structureHint: options.structure
           ? {
               packageCount: options.structure.stats.packageCount,
@@ -3590,14 +4059,17 @@ export async function askServerProject(options: {
     const llmCallBudget = -1;
     let llmCallCount = 0;
     let strategyUsedFallback = false;
+    const explicitModuleCandidates = extractModuleCandidates(question);
     let strategyDecision: {
       strategy: AskStrategyType;
       confidence: number;
       reason: string;
       targetSymbols: string[];
+      moduleCandidates: string[];
       llmUsed: boolean;
     } = {
       ...classifyQuestionIntentFallback(question),
+      moduleCandidates: explicitModuleCandidates,
       llmUsed: false
     };
 
@@ -3647,6 +4119,7 @@ export async function askServerProject(options: {
         confidence: decided.confidence,
         reason: decided.reason,
         targetSymbols: decided.targetSymbols,
+        moduleCandidates: explicitModuleCandidates,
         llmUsed: decided.llmUsed
       };
       llmCallCount += decided.llmCalls;
@@ -3660,6 +4133,7 @@ export async function askServerProject(options: {
         metadata: {
           strategy: strategyDecision.strategy,
           confidence: strategyDecision.confidence,
+          moduleCandidates: strategyDecision.moduleCandidates,
           llmUsed: strategyDecision.llmUsed,
           llmCallCount
         }
@@ -3667,6 +4141,7 @@ export async function askServerProject(options: {
     } catch (error) {
       strategyDecision = {
         ...classifyQuestionIntentFallback(question),
+        moduleCandidates: explicitModuleCandidates,
         llmUsed: false
       };
       await appendProjectDebugEvent({
@@ -3761,6 +4236,7 @@ export async function askServerProject(options: {
             strategyConfidence: strategyDecision.confidence,
             strategyLlmUsed: strategyDecision.llmUsed,
             strategyReason: strategyDecision.reason,
+            scopeModules: strategyDecision.moduleCandidates,
             deterministicUsed: true,
             deterministicSymbol: deterministic.symbol,
             memoryFiles: unique([
@@ -3846,6 +4322,7 @@ export async function askServerProject(options: {
           strategyConfidence: strategyDecision.confidence,
           strategyLlmUsed: strategyDecision.llmUsed,
           strategyReason: strategyDecision.reason,
+          scopeModules: strategyDecision.moduleCandidates,
           deterministicUsed: true,
           deterministicSymbol: "none",
           memoryFiles: unique([...structureMemoryFiles, queryReportFiles.latestPath, queryReportFiles.snapshotPath])
@@ -3917,7 +4394,8 @@ export async function askServerProject(options: {
     const expandedQueries = buildAskQueryCandidates({
       question,
       strategy: strategyDecision.strategy,
-      targetSymbols: strategyDecision.targetSymbols
+      targetSymbols: strategyDecision.targetSymbols,
+      moduleCandidates: strategyDecision.moduleCandidates
     });
     const searchResults: ProjectSearchResult[] = [];
     for (const [index, expandedQuery] of expandedQueries.entries()) {
@@ -3979,10 +4457,48 @@ export async function askServerProject(options: {
         }
       }
     }
+    const askFocusTokens = buildAskFocusTokens(question);
     const mergedHits = Array.from(mergedHitsMap.values())
-      .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)))
+      .sort((a, b) => {
+        const aScore = scoreAskHitRelevance({
+          hit: a,
+          question,
+          strategy: strategyDecision.strategy,
+          moduleCandidates: strategyDecision.moduleCandidates,
+          focusTokens: askFocusTokens
+        });
+        const bScore = scoreAskHitRelevance({
+          hit: b,
+          question,
+          strategy: strategyDecision.strategy,
+          moduleCandidates: strategyDecision.moduleCandidates,
+          focusTokens: askFocusTokens
+        });
+        return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
+      })
       .slice(0, options.limit ?? 14);
     const mergedCodeHits = mergedHits.filter((hit) => CODE_FILE_EXTENSIONS.has(path.extname(hit.path).toLowerCase()));
+    const hydratedEvidence = await hydrateAskEvidence({
+      project,
+      question,
+      strategy: strategyDecision.strategy,
+      targetSymbols: strategyDecision.targetSymbols,
+      moduleCandidates: strategyDecision.moduleCandidates,
+      hits: intent.methodFocused && mergedCodeHits.length > 0 ? mergedCodeHits : mergedHits,
+      structure: structureSnapshot
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "info",
+      message: "hydrated ask evidence prepared",
+      metadata: {
+        evidenceCount: hydratedEvidence.length,
+        codeEvidenceCount: hydratedEvidence.filter((item) => item.codeFile).length,
+        moduleEvidenceCount: hydratedEvidence.filter((item) => item.moduleMatched).length
+      }
+    });
 
     const bestSearch =
       [...searchResults].sort((a, b) => {
@@ -4026,7 +4542,10 @@ export async function askServerProject(options: {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       attempts = attempt;
       const priorFailures = qualityFailures.slice(-8);
-      const sourceHits = intent.methodFocused && mergedCodeHits.length > 0 ? mergedCodeHits : mergedHits;
+      const sourceHits =
+        (intent.methodFocused || intent.moduleFlowFocused) && mergedCodeHits.length > 0
+          ? [...mergedCodeHits, ...mergedHits.filter((hit) => !mergedCodeHits.includes(hit)).slice(0, 2)]
+          : mergedHits;
       const llmMergedHits = sourceHits.map((hit) => ({
         path: hit.path,
         score: hit.score,
@@ -4044,7 +4563,8 @@ export async function askServerProject(options: {
           memoryFiles: memoryPreview.length,
           memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
           retrievalHits: llmMergedHits.length,
-          retrievalChars: JSON.stringify(llmMergedHits).length
+          retrievalChars: JSON.stringify(llmMergedHits).length,
+          hydratedEvidenceCount: hydratedEvidence.length
         }
       });
       await appendProjectDebugEvent({
@@ -4064,7 +4584,8 @@ export async function askServerProject(options: {
           "Return ONLY one JSON object.",
           "Use only provided evidence, never fabricate.",
           "For logic questions, prefer code-level evidence over XML-only evidence.",
-          "If confidence is low, explicitly say uncertainty and missing coverage."
+          "If confidence is low, explicitly say uncertainty and missing coverage.",
+          "If hydratedEvidence contains callee:* method blocks, use at least one of them in the answer when explaining the internal flow."
         ].join("\n"),
         userPrompt: JSON.stringify(
           {
@@ -4080,7 +4601,9 @@ export async function askServerProject(options: {
               attempt,
               priorFailures,
               lowConfidenceMode,
-              requireCodeEvidence: /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(question)
+              requireCodeEvidence: /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(question),
+              requireModuleEvidence: strategyDecision.moduleCandidates.length > 0,
+              moduleCandidates: strategyDecision.moduleCandidates
             },
             projectAnalysis: {
               summary: analysis.summary,
@@ -4097,10 +4620,13 @@ export async function askServerProject(options: {
               fallbackUsed: bestSearch.fallbackUsed,
               mergedHits: llmMergedHits
             },
+            hydratedEvidence,
             memory: memoryPreview,
             instruction:
               intent.methodFocused
                 ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
+                : intent.moduleFlowFocused
+                ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. 확정 근거와 추정 범위를 분리하세요."
                 : lowConfidenceMode
                 ? "검색 confidence가 낮으므로 누락 가능성을 명확히 경고하고, 확정/추정 범위를 분리하세요."
                 : "근거 중심으로 구체적으로 답변하세요."
@@ -4132,7 +4658,10 @@ export async function askServerProject(options: {
       const gate = qualityGateForAsk({
         output: bestOutput,
         question,
-        hits: mergedHits
+        hits: mergedHits,
+        strategy: strategyDecision.strategy,
+        hydratedEvidence,
+        moduleCandidates: strategyDecision.moduleCandidates
       });
       if (gate.passed) {
         passed = true;
@@ -4151,6 +4680,9 @@ export async function askServerProject(options: {
       `- question: ${question}`,
       `- strategy: ${strategyDecision.strategy}`,
       `- strategyConfidence: ${strategyDecision.confidence.toFixed(2)}`,
+      `- moduleCandidates: ${
+        strategyDecision.moduleCandidates.length > 0 ? strategyDecision.moduleCandidates.join(", ") : "(none)"
+      }`,
       `- confidence: ${bestOutput.confidence.toFixed(2)}`,
       `- qualityGatePassed: ${passed}`,
       `- attempts: ${attempts}`,
@@ -4206,6 +4738,8 @@ export async function askServerProject(options: {
         strategyConfidence: strategyDecision.confidence,
         strategyLlmUsed: strategyDecision.llmUsed,
         strategyReason: strategyDecision.reason,
+        scopeModules: strategyDecision.moduleCandidates,
+        hydratedEvidenceCount: hydratedEvidence.length,
         memoryFiles: [
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],
@@ -4227,7 +4761,9 @@ export async function askServerProject(options: {
         attempts: response.attempts,
         hitCount: response.retrieval.hitCount,
         llmCallCount: response.diagnostics.llmCallCount,
-        strategy: response.diagnostics.strategyType
+        strategy: response.diagnostics.strategyType,
+        moduleCandidates: response.diagnostics.scopeModules,
+        hydratedEvidenceCount: response.diagnostics.hydratedEvidenceCount
       }
     });
 

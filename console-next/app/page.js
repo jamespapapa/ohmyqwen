@@ -508,7 +508,7 @@ export default function HomePage() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [askQuestion, setAskQuestion] = useState("");
-  const [askMaxAttempts, setAskMaxAttempts] = useState(1);
+  const [askMaxAttempts, setAskMaxAttempts] = useState(3);
   const [askDeterministicOnly, setAskDeterministicOnly] = useState(false);
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
@@ -1680,6 +1680,12 @@ export default function HomePage() {
                     ? ` · strategy=${askResult.diagnostics.strategyType}(${Number(
                         askResult.diagnostics?.strategyConfidence || 0
                       ).toFixed(2)})`
+                    : ""}
+                  {(askResult.diagnostics?.scopeModules || []).length > 0
+                    ? ` · modules=${askResult.diagnostics.scopeModules.join(",")}`
+                    : ""}
+                  {Number(askResult.diagnostics?.hydratedEvidenceCount || 0) > 0
+                    ? ` · hydrated=${askResult.diagnostics.hydratedEvidenceCount}`
                     : ""}
                   {askResult.diagnostics?.deterministicUsed
                     ? ` · deterministic=${askResult.diagnostics?.deterministicSymbol || "true"}`
