@@ -80,6 +80,18 @@ function matchPresetPath(urlPath: string): string | undefined {
 function resolveBrowsePath(raw: string | null): string {
   const value = raw?.trim();
   if (!value) {
+    const configuredRoot = process.env.OHMYQWEN_FS_PICKER_ROOT?.trim();
+    if (configuredRoot) {
+      return path.isAbsolute(configuredRoot)
+        ? path.resolve(configuredRoot)
+        : path.resolve(process.cwd(), configuredRoot);
+    }
+
+    const home = process.env.HOME ?? "";
+    if (home) {
+      return path.resolve(home, "Desktop", "work");
+    }
+
     return process.cwd();
   }
 

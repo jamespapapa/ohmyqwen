@@ -777,7 +777,7 @@ export default function HomePage() {
 
   async function onOpenPicker() {
     setPickerOpen(true);
-    await loadPicker(workspaceDir || pickerData?.path || "");
+    await loadPicker(pickerData?.path || "");
   }
 
   function parseLines(value) {
