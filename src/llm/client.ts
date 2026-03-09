@@ -25,6 +25,7 @@ export interface StructuredGenerationResult<T> {
   output: T;
   trace: LlmCallTrace;
   usedFallback: boolean;
+  liveCallCount: number;
   error?: string;
 }
 
@@ -1804,6 +1805,13 @@ export class OpenAICompatibleLlmClient implements LlmClient {
   private readonly basicAuthToken?: string;
   private readonly model: string;
   private readonly endpointKind: "auto" | "openai" | "opencode";
+  private readonly timeoutMs: number;
+  private readonly maxTokens: number;
+  private readonly contextWindowTokens: number;
+  private readonly contextUsageRatio: number;
+  private readonly retrySameTask: number;
+  private readonly retryChangedTask: number;
+  private liveCallCounter = 0;
 
   public constructor(config?: {
     baseUrl?: string;
@@ -1813,6 +1821,11 @@ export class OpenAICompatibleLlmClient implements LlmClient {
     basicAuthUser?: string;
     basicAuthPassword?: string;
     endpointKind?: "auto" | "openai" | "opencode";
+    maxTokens?: number;
+    contextWindowTokens?: number;
+    contextUsageRatio?: number;
+    retrySameTask?: number;
+    retryChangedTask?: number;
   }) {
     this.baseUrl = config?.baseUrl?.trim() || process.env.OHMYQWEN_LLM_BASE_URL?.trim();
     this.apiKey = config?.apiKey?.trim() || process.env.OHMYQWEN_LLM_API_KEY?.trim();
@@ -1829,6 +1842,53 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       config?.endpointKind ||
       (process.env.OHMYQWEN_LLM_ENDPOINT_KIND as "auto" | "openai" | "opencode" | undefined) ||
       "auto";
+    this.timeoutMs = Math.max(
+      3_000,
+      Number.parseInt(process.env.OHMYQWEN_LLM_TIMEOUT_MS ?? "60000", 10) || 60000
+    );
+    const envMaxTokens = Number.parseInt(process.env.OHMYQWEN_LLM_MAX_TOKENS ?? "1200", 10) || 1200;
+    this.maxTokens = Math.max(
+      256,
+      Math.min(
+        8192,
+        config?.maxTokens ?? envMaxTokens
+      )
+    );
+    const envContextWindow =
+      Number.parseInt(process.env.OHMYQWEN_LLM_CONTEXT_WINDOW_TOKENS ?? "32768", 10) || 32768;
+    this.contextWindowTokens = Math.max(
+      this.maxTokens + 512,
+      Math.min(
+        2_000_000,
+        config?.contextWindowTokens ?? envContextWindow
+      )
+    );
+    this.contextUsageRatio = Math.max(
+      0.2,
+      Math.min(
+        0.9,
+        Number(
+          config?.contextUsageRatio ??
+            Number.parseFloat(process.env.OHMYQWEN_LLM_CONTEXT_USAGE_RATIO ?? "0.5")
+        ) || 0.5
+      )
+    );
+    const envRetrySame = Number.parseInt(process.env.OHMYQWEN_LLM_RETRY_SAME_TASK ?? "1", 10) || 1;
+    this.retrySameTask = Math.max(
+      1,
+      Math.min(
+        20,
+        config?.retrySameTask ?? envRetrySame
+      )
+    );
+    const envRetryChanged = Number.parseInt(process.env.OHMYQWEN_LLM_RETRY_CHANGED_TASK ?? "1", 10) || 1;
+    this.retryChangedTask = Math.max(
+      1,
+      Math.min(
+        30,
+        config?.retryChangedTask ?? envRetryChanged
+      )
+    );
   }
 
   private get endpoint(): string {
@@ -1865,17 +1925,143 @@ export class OpenAICompatibleLlmClient implements LlmClient {
     return headers;
   }
 
-  private async callOpenAiChat(systemPrompt: string, userPrompt: string): Promise<LlmCallTrace> {
-    const response = await fetch(this.endpoint, {
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`LLM request timeout after ${this.timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private estimateTokens(text: string): number {
+    if (!text) {
+      return 0;
+    }
+    return Math.max(1, Math.ceil(text.length / 4));
+  }
+
+  private trimToTokens(text: string, budget: number): string {
+    if (budget <= 0 || !text.trim()) {
+      return "";
+    }
+    if (this.estimateTokens(text) <= budget) {
+      return text;
+    }
+
+    let low = 0;
+    let high = text.length;
+    let best = "";
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidate = `${text.slice(0, mid).trimEnd()}...`;
+      if (this.estimateTokens(candidate) <= budget) {
+        best = candidate;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best || "...";
+  }
+
+  private trimMiddleToTokens(text: string, budget: number): string {
+    if (budget <= 0 || !text.trim()) {
+      return "";
+    }
+    if (this.estimateTokens(text) <= budget) {
+      return text;
+    }
+    const headBudget = Math.max(20, Math.floor(budget * 0.55));
+    const tailBudget = Math.max(20, budget - headBudget - 8);
+    const head = this.trimToTokens(text, headBudget);
+    const reversed = text.split("").reverse().join("");
+    const tailReversed = this.trimToTokens(reversed, tailBudget);
+    const tail = tailReversed.split("").reverse().join("");
+    return `${head}\n...\n${tail}`.trim();
+  }
+
+  private applyPromptBudget(systemPrompt: string, userPrompt: string, usageRatioOverride?: number): {
+    systemPrompt: string;
+    userPrompt: string;
+    truncated: boolean;
+    inputBudget: number;
+  } {
+    const usageRatio = Math.max(0.2, Math.min(0.9, usageRatioOverride ?? this.contextUsageRatio));
+    const inputBudget = Math.max(
+      512,
+      Math.floor(this.contextWindowTokens * usageRatio) - this.maxTokens
+    );
+    const total = this.estimateTokens(systemPrompt) + this.estimateTokens(userPrompt);
+    if (total <= inputBudget) {
+      return { systemPrompt, userPrompt, truncated: false, inputBudget };
+    }
+
+    const systemBudget = Math.max(80, Math.floor(inputBudget * 0.2));
+    const trimmedSystem = this.trimToTokens(systemPrompt, systemBudget);
+    const left = Math.max(128, inputBudget - this.estimateTokens(trimmedSystem));
+    const trimmedUser = this.trimMiddleToTokens(userPrompt, left);
+
+    return {
+      systemPrompt: trimmedSystem,
+      userPrompt: trimmedUser,
+      truncated: true,
+      inputBudget
+    };
+  }
+
+  private isContextOverflowError(message: string): boolean {
+    const lower = message.toLowerCase();
+    return (
+      lower.includes("maximum context length") ||
+      lower.includes("context length") ||
+      lower.includes("too many tokens") ||
+      lower.includes("prompt is too long") ||
+      lower.includes("token limit")
+    );
+  }
+
+  private async callWithSameTaskRetries(fn: () => Promise<LlmCallTrace>): Promise<LlmCallTrace> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.retrySameTask; attempt += 1) {
+      try {
+        return await fn();
+      } catch (error) {
+        lastError = error;
+        if (attempt >= this.retrySameTask) {
+          break;
+        }
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError ?? "unknown llm error"));
+  }
+
+  private async callOpenAiChat(
+    systemPrompt: string,
+    userPrompt: string,
+    usageRatioOverride?: number
+  ): Promise<LlmCallTrace> {
+    const boundedPrompt = this.applyPromptBudget(systemPrompt, userPrompt, usageRatioOverride);
+    this.liveCallCounter += 1;
+    const response = await this.fetchWithTimeout(this.endpoint, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({
         model: this.model,
         temperature: 0.1,
-        max_tokens: 4096,
+        max_tokens: this.maxTokens,
         messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
+          { role: "system", content: boundedPrompt.systemPrompt },
+          { role: "user", content: boundedPrompt.userPrompt }
         ]
       })
     });
@@ -1904,14 +2090,20 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       mode: "live",
       model: this.model,
       endpoint: this.endpoint,
-      systemPrompt,
-      userPrompt,
+      systemPrompt: boundedPrompt.systemPrompt,
+      userPrompt: boundedPrompt.userPrompt,
       rawResponse
     };
   }
 
-  private async callOpenCodeChat(systemPrompt: string, userPrompt: string): Promise<LlmCallTrace> {
-    const createSession = await fetch(`${this.rootEndpoint}/session`, {
+  private async callOpenCodeChat(
+    systemPrompt: string,
+    userPrompt: string,
+    usageRatioOverride?: number
+  ): Promise<LlmCallTrace> {
+    const boundedPrompt = this.applyPromptBudget(systemPrompt, userPrompt, usageRatioOverride);
+    this.liveCallCounter += 1;
+    const createSession = await this.fetchWithTimeout(`${this.rootEndpoint}/session`, {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({})
@@ -1930,19 +2122,22 @@ export class OpenAICompatibleLlmClient implements LlmClient {
 
     const combinedPrompt = [
       "SYSTEM INSTRUCTION:",
-      systemPrompt,
+      boundedPrompt.systemPrompt,
       "",
       "USER REQUEST:",
-      userPrompt
+      boundedPrompt.userPrompt
     ].join("\n");
 
-    const messageResponse = await fetch(`${this.rootEndpoint}/session/${sessionId}/message`, {
+    const messageResponse = await this.fetchWithTimeout(
+      `${this.rootEndpoint}/session/${sessionId}/message`,
+      {
       method: "POST",
       headers: this.buildHeaders(),
       body: JSON.stringify({
         parts: [{ type: "text", text: combinedPrompt }]
       })
-    });
+      }
+    );
 
     if (!messageResponse.ok) {
       const message = await messageResponse.text();
@@ -1968,8 +2163,8 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       mode: "live",
       model: this.model,
       endpoint: `${this.rootEndpoint}/session/{sessionId}/message`,
-      systemPrompt,
-      userPrompt,
+      systemPrompt: boundedPrompt.systemPrompt,
+      userPrompt: boundedPrompt.userPrompt,
       rawResponse
     };
   }
@@ -1987,15 +2182,35 @@ export class OpenAICompatibleLlmClient implements LlmClient {
     }
 
     if (this.endpointKind === "opencode") {
-      return this.callOpenCodeChat(systemPrompt, userPrompt);
+      return this.callWithSameTaskRetries(() => this.callOpenCodeChat(systemPrompt, userPrompt));
     }
 
     if (this.endpointKind === "openai") {
-      return this.callOpenAiChat(systemPrompt, userPrompt);
+      return this.callWithSameTaskRetries(async () => {
+        try {
+          return await this.callOpenAiChat(systemPrompt, userPrompt);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!this.isContextOverflowError(message)) {
+            throw error;
+          }
+          return this.callOpenAiChat(systemPrompt, userPrompt, Math.min(0.35, this.contextUsageRatio));
+        }
+      });
     }
 
     try {
-      return await this.callOpenAiChat(systemPrompt, userPrompt);
+      return await this.callWithSameTaskRetries(async () => {
+        try {
+          return await this.callOpenAiChat(systemPrompt, userPrompt);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!this.isContextOverflowError(message)) {
+            throw error;
+          }
+          return this.callOpenAiChat(systemPrompt, userPrompt, Math.min(0.35, this.contextUsageRatio));
+        }
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
@@ -2003,7 +2218,7 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         message.includes("Unexpected token '<'") ||
         message.includes("OpenCode")
       ) {
-        return this.callOpenCodeChat(systemPrompt, userPrompt);
+        return this.callWithSameTaskRetries(() => this.callOpenCodeChat(systemPrompt, userPrompt));
       }
 
       throw error;
@@ -2073,19 +2288,23 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       const output = PlanOutputSchema.parse(coercePlanOutputShape(parsed));
       return { output, trace };
     } catch (error) {
-      const retriedTrace = await this.retryForValidJson({
-        phase: "PLAN",
-        systemPrompt,
-        userPrompt,
-        invalidRaw: trace.rawResponse
-      });
-      if (retriedTrace) {
+      let invalidRaw = trace.rawResponse;
+      for (let attempt = 1; attempt <= this.retryChangedTask; attempt += 1) {
+        const retriedTrace = await this.retryForValidJson({
+          phase: "PLAN",
+          systemPrompt,
+          userPrompt,
+          invalidRaw
+        });
+        if (!retriedTrace) {
+          break;
+        }
         try {
           const parsed = extractJsonObject(retriedTrace.rawResponse);
           const output = PlanOutputSchema.parse(coercePlanOutputShape(parsed));
           return { output, trace: retriedTrace };
         } catch {
-          // continue to enriched error below
+          invalidRaw = retriedTrace.rawResponse;
         }
       }
 
@@ -2151,14 +2370,18 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       };
     }
 
-    const retriedTrace = await this.retryForValidJson({
-      phase: "IMPLEMENT",
-      systemPrompt,
-      userPrompt,
-      invalidRaw: trace.rawResponse
-    });
+    let invalidRaw = trace.rawResponse;
+    for (let attempt = 1; attempt <= this.retryChangedTask; attempt += 1) {
+      const retriedTrace = await this.retryForValidJson({
+        phase: "IMPLEMENT",
+        systemPrompt,
+        userPrompt,
+        invalidRaw
+      });
 
-    if (retriedTrace) {
+      if (!retriedTrace) {
+        break;
+      }
       try {
         const parsed = extractJsonObject(retriedTrace.rawResponse);
         const output = ImplementOutputSchema.parse(coerceImplementOutputShape(parsed));
@@ -2168,11 +2391,10 @@ export class OpenAICompatibleLlmClient implements LlmClient {
             trace: retriedTrace
           };
         }
-
-        // Retried output is still likely truncated/weak; continue to deterministic fallback.
       } catch (error) {
         firstError = firstError ?? error;
       }
+      invalidRaw = retriedTrace.rawResponse;
     }
 
     const preview = trace.rawResponse.slice(0, 240).replace(/\s+/g, " ");
@@ -2195,12 +2417,14 @@ export class OpenAICompatibleLlmClient implements LlmClient {
     fallback: T;
     parse?: (value: unknown) => T;
   }): Promise<StructuredGenerationResult<T>> {
+    const callCountBefore = this.liveCallCounter;
     const trace = await this.callChat(options.systemPrompt, options.userPrompt);
     if (trace.mode === "fallback") {
       return {
         output: options.fallback,
         trace,
         usedFallback: true,
+        liveCallCount: this.liveCallCounter - callCountBefore,
         error: "llm-fallback-mode"
       };
     }
@@ -2210,26 +2434,32 @@ export class OpenAICompatibleLlmClient implements LlmClient {
       return {
         output: options.parse ? options.parse(parsed) : (parsed as T),
         trace,
-        usedFallback: false
+        usedFallback: false,
+        liveCallCount: this.liveCallCounter - callCountBefore
       };
     } catch (error) {
-      const retriedTrace = await this.retryForValidJson({
-        phase: "PLAN",
-        systemPrompt: options.systemPrompt,
-        userPrompt: options.userPrompt,
-        invalidRaw: trace.rawResponse
-      });
+      let invalidRaw = trace.rawResponse;
+      for (let attempt = 1; attempt <= this.retryChangedTask; attempt += 1) {
+        const retriedTrace = await this.retryForValidJson({
+          phase: "PLAN",
+          systemPrompt: options.systemPrompt,
+          userPrompt: options.userPrompt,
+          invalidRaw
+        });
 
-      if (retriedTrace) {
+        if (!retriedTrace) {
+          break;
+        }
         try {
           const parsed = extractJsonObject(retriedTrace.rawResponse);
           return {
             output: options.parse ? options.parse(parsed) : (parsed as T),
             trace: retriedTrace,
-            usedFallback: false
+            usedFallback: false,
+            liveCallCount: this.liveCallCounter - callCountBefore
           };
         } catch {
-          // continue to fallback below
+          invalidRaw = retriedTrace.rawResponse;
         }
       }
 
@@ -2237,6 +2467,7 @@ export class OpenAICompatibleLlmClient implements LlmClient {
         output: options.fallback,
         trace,
         usedFallback: true,
+        liveCallCount: this.liveCallCounter - callCountBefore,
         error: error instanceof Error ? error.message : String(error)
       };
     }

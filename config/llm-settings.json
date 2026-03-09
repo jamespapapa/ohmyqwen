@@ -1,0 +1,16 @@
+{
+  "defaultModelId": "qwen3-235b-a22b",
+  "continuationUsageRatio": 0.5,
+  "models": [
+    {
+      "id": "qwen3-235b-a22b",
+      "label": "Qwen3 235B A22B",
+      "contextWindowTokens": 32768,
+      "maxOutputTokens": 4096
+    }
+  ],
+  "retryPolicy": {
+    "sameTaskRetries": 3,
+    "changedTaskRetries": 10
+  }
+}

@@ -5,6 +5,7 @@ import { AnalyzeInputSchema, RunModeSchema } from "../core/types.js";
 import {
   analyzeServerProject,
   askServerProject,
+  getServerLlmSettings,
   getServerProject,
   listServerProjectPresets,
   listServerProjects,
@@ -17,12 +18,25 @@ import {
   upsertServerProjectPreset,
   warmupServerProjectIndex
 } from "./projects.js";
+import {
+  deriveStageTokenCapsFromModel,
+  loadLlmRuntimeSettings,
+  resolveLlmModelProfile
+} from "../llm/settings.js";
 import { getRunArtifacts, getRunRecord, listRunEvents, startBackgroundRun } from "./store.js";
 
 function json(res: ServerResponse, code: number, payload: unknown): void {
   res.statusCode = code;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(`${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function routeTrace(message: string, payload?: Record<string, unknown>): void {
+  if (process.env.OHMYQWEN_SERVER_TRACE !== "1") {
+    return;
+  }
+  const suffix = payload ? ` ${JSON.stringify(payload)}` : "";
+  process.stdout.write(`[route-trace] ${new Date().toISOString()} ${message}${suffix}\n`);
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -92,6 +106,19 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
       json(res, 200, {
         presets
       });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  if (method === "GET" && pathname === "/api/llm/models") {
+    try {
+      const settings = await getServerLlmSettings();
+      json(res, 200, settings);
       return true;
     } catch (error) {
       json(res, 400, {
@@ -194,6 +221,9 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
         defaultDryRun?: boolean;
+        llm?: {
+          modelId?: string;
+        };
         retrieval?: {
           providerPriority?: Array<"qmd" | "lexical" | "semantic" | "hybrid">;
           topK?: Partial<Record<"qmd" | "lexical" | "semantic" | "hybrid" | "final", number>>;
@@ -238,6 +268,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         presetId: payload.presetId,
         defaultMode: payload.defaultMode ? RunModeSchema.parse(payload.defaultMode) : undefined,
         defaultDryRun: payload.defaultDryRun,
+        llm: payload.llm,
         retrieval: payload.retrieval as never
       });
 
@@ -371,6 +402,8 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
 
   const projectIndexId = matchProjectPath(pathname, "index");
   if (projectIndexId && method === "POST") {
+    const startedAt = Date.now();
+    routeTrace("project/index:start", { projectId: projectIndexId });
     try {
       const payload = (await readJsonBody(req)) as {
         maxFiles?: number;
@@ -379,9 +412,19 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         projectId: projectIndexId,
         maxFiles: payload.maxFiles
       });
+      routeTrace("project/index:success", {
+        projectId: projectIndexId,
+        fileCount: result.fileCount,
+        tookMs: Date.now() - startedAt
+      });
       json(res, 200, result);
       return true;
     } catch (error) {
+      routeTrace("project/index:failure", {
+        projectId: projectIndexId,
+        error: error instanceof Error ? error.message : String(error),
+        tookMs: Date.now() - startedAt
+      });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -391,6 +434,8 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
 
   const projectSearchId = matchProjectPath(pathname, "search");
   if (projectSearchId && method === "POST") {
+    const startedAt = Date.now();
+    routeTrace("project/search:start", { projectId: projectSearchId });
     try {
       const payload = (await readJsonBody(req)) as {
         query?: string;
@@ -406,9 +451,20 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         queryMode: payload.queryMode,
         maxFiles: payload.maxFiles
       });
+      routeTrace("project/search:success", {
+        projectId: projectSearchId,
+        provider: result.provider,
+        hitCount: result.hits.length,
+        tookMs: Date.now() - startedAt
+      });
       json(res, 200, result);
       return true;
     } catch (error) {
+      routeTrace("project/search:failure", {
+        projectId: projectSearchId,
+        error: error instanceof Error ? error.message : String(error),
+        tookMs: Date.now() - startedAt
+      });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -418,6 +474,8 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
 
   const projectAnalyzeId = matchProjectPath(pathname, "analyze");
   if (projectAnalyzeId && method === "POST") {
+    const startedAt = Date.now();
+    routeTrace("project/analyze:start", { projectId: projectAnalyzeId });
     try {
       const payload = (await readJsonBody(req)) as {
         maxFiles?: number;
@@ -426,9 +484,19 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         projectId: projectAnalyzeId,
         maxFiles: payload.maxFiles
       });
+      routeTrace("project/analyze:success", {
+        projectId: projectAnalyzeId,
+        confidence: result.confidence,
+        tookMs: Date.now() - startedAt
+      });
       json(res, 200, result);
       return true;
     } catch (error) {
+      routeTrace("project/analyze:failure", {
+        projectId: projectAnalyzeId,
+        error: error instanceof Error ? error.message : String(error),
+        tookMs: Date.now() - startedAt
+      });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -438,21 +506,39 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
 
   const projectAskId = matchProjectPath(pathname, "ask");
   if (projectAskId && method === "POST") {
+    const startedAt = Date.now();
+    routeTrace("project/ask:start", { projectId: projectAskId });
     try {
       const payload = (await readJsonBody(req)) as {
         question?: string;
         maxAttempts?: number;
         limit?: number;
+        maxLlmCalls?: number;
+        deterministicOnly?: boolean;
       };
       const result = await askServerProject({
         projectId: projectAskId,
         question: payload.question ?? "",
         maxAttempts: payload.maxAttempts,
-        limit: payload.limit
+        limit: payload.limit,
+        maxLlmCalls: payload.maxLlmCalls,
+        deterministicOnly: payload.deterministicOnly
+      });
+      routeTrace("project/ask:success", {
+        projectId: projectAskId,
+        confidence: result.confidence,
+        attempts: result.attempts,
+        llmCalls: result.diagnostics.llmCallCount,
+        tookMs: Date.now() - startedAt
       });
       json(res, 200, result);
       return true;
     } catch (error) {
+      routeTrace("project/ask:failure", {
+        projectId: projectAskId,
+        error: error instanceof Error ? error.message : String(error),
+        tookMs: Date.now() - startedAt
+      });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });
@@ -505,6 +591,8 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
 
   const projectRunId = matchProjectPath(pathname, "runs");
   if (projectRunId && method === "POST") {
+    const startedAt = Date.now();
+    routeTrace("project/run:start", { projectId: projectRunId });
     try {
       const payload = (await readJsonBody(req)) as {
         task?: string;
@@ -566,9 +654,21 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         return true;
       }
 
+      const llmSettings = await loadLlmRuntimeSettings();
+      const selectedModel = resolveLlmModelProfile(llmSettings, project.llm?.modelId);
+      const derivedStageCaps = deriveStageTokenCapsFromModel({
+        model: selectedModel,
+        usageRatio: llmSettings.continuationUsageRatio
+      });
+
       const mergedRetrieval = {
         ...(project.retrieval ?? {}),
         ...(payload.retrieval ?? {}),
+        stageTokenCaps: {
+          ...derivedStageCaps,
+          ...(project.retrieval?.stageTokenCaps ?? {}),
+          ...(payload.retrieval?.stageTokenCaps ?? {})
+        },
         qmd: {
           ...(project.retrieval?.qmd ?? {}),
           ...(payload.retrieval?.qmd ?? {})
@@ -580,8 +680,22 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         mode: payload.mode ? RunModeSchema.parse(payload.mode) : project.defaultMode,
         input: payload.input as never,
         retrieval: mergedRetrieval as never,
+        llm: {
+          model: selectedModel.id,
+          maxTokens: selectedModel.maxOutputTokens,
+          contextWindowTokens: selectedModel.contextWindowTokens,
+          contextUsageRatio: llmSettings.continuationUsageRatio,
+          retrySameTask: llmSettings.retryPolicy.sameTaskRetries,
+          retryChangedTask: llmSettings.retryPolicy.changedTaskRetries
+        },
         dryRun: payload.dryRun ?? project.defaultDryRun,
         workspaceDir: project.workspaceDir
+      });
+
+      routeTrace("project/run:accepted", {
+        projectId: projectRunId,
+        runId: run.runId,
+        tookMs: Date.now() - startedAt
       });
 
       json(res, 202, {
@@ -593,6 +707,11 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
       });
       return true;
     } catch (error) {
+      routeTrace("project/run:failure", {
+        projectId: projectRunId,
+        error: error instanceof Error ? error.message : String(error),
+        tookMs: Date.now() - startedAt
+      });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });

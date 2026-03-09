@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -6,6 +6,11 @@ import { inspectContext } from "../context/packer.js";
 import { RetrievalConfigOverrideSchema, RunModeSchema } from "../core/types.js";
 import { OpenAICompatibleLlmClient } from "../llm/client.js";
 import { resolveRetrievalConfig } from "../retrieval/config.js";
+import {
+  deriveStageTokenCapsFromModel,
+  loadLlmRuntimeSettings,
+  resolveLlmModelProfile
+} from "../llm/settings.js";
 import {
   getProjectPresetById,
   listProjectPresets,
@@ -31,6 +36,11 @@ const ServerProjectSchema = z.object({
   defaultMode: RunModeSchema.default("feature"),
   defaultDryRun: z.boolean().default(false),
   retrieval: RetrievalConfigOverrideSchema.optional(),
+  llm: z
+    .object({
+      modelId: z.string().min(1).optional()
+    })
+    .optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   lastIndexedAt: z.string().optional(),
@@ -51,7 +61,12 @@ const UpsertServerProjectInputSchema = z.object({
   presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.optional(),
   defaultDryRun: z.boolean().optional(),
-  retrieval: RetrievalConfigOverrideSchema.optional()
+  retrieval: RetrievalConfigOverrideSchema.optional(),
+  llm: z
+    .object({
+      modelId: z.string().min(1).optional()
+    })
+    .optional()
 });
 
 export type ServerProject = z.infer<typeof ServerProjectSchema>;
@@ -93,6 +108,8 @@ export interface ProjectSearchResult {
     qmdErrors?: string[];
     qmdIndexMethod?: "add" | "update" | "cached";
     qmdQueryMode?: "query_then_search" | "search_only" | "query_only";
+    qmdQuery?: string;
+    qmdQueriesTried?: string[];
     qmdCommand?: string;
     fileCount?: number;
   };
@@ -127,6 +144,18 @@ export interface ProjectAnalysisResult {
       usagePaths: string[];
     }>;
   };
+  structureCatalog?: {
+    generatedAt: string;
+    fileCount: number;
+    packageCount: number;
+    classCount: number;
+    methodCount: number;
+    topPackages: Array<{
+      name: string;
+      fileCount: number;
+      methodCount: number;
+    }>;
+  };
   summary: string;
   architecture: string[];
   keyModules: Array<{
@@ -142,8 +171,10 @@ export interface ProjectAnalysisResult {
     warmup: ProjectWarmupResult;
     lowConfidenceSignals: string[];
     usedFallback: boolean;
+    llmCallCount: number;
     profileApplied: boolean;
     eaiCatalogCount: number;
+    structureIndexCount: number;
   };
 }
 
@@ -166,8 +197,83 @@ export interface ProjectAskResponse {
     lowConfidenceMode: boolean;
     qualityGateFailures: string[];
     usedFallback: boolean;
+    llmCallCount: number;
+    llmCallBudget: number;
+    strategyType?: AskStrategyType;
+    strategyConfidence?: number;
+    strategyLlmUsed?: boolean;
+    strategyReason?: string;
+    deterministicUsed?: boolean;
+    deterministicSymbol?: string;
     memoryFiles: string[];
   };
+}
+
+export interface ServerLlmModelOption {
+  id: string;
+  label: string;
+  contextWindowTokens: number;
+  maxOutputTokens: number;
+}
+
+export interface ServerLlmSettingsResult {
+  defaultModelId: string;
+  continuationUsageRatio: number;
+  retryPolicy: {
+    sameTaskRetries: number;
+    changedTaskRetries: number;
+  };
+  models: ServerLlmModelOption[];
+}
+
+type AskStrategyType =
+  | "method_trace"
+  | "architecture_overview"
+  | "eai_interface"
+  | "config_resource"
+  | "general";
+
+interface StructureSymbolRef {
+  name: string;
+  line: number;
+  className?: string;
+}
+
+interface StructureFileEntry {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  hash: string;
+  packageName?: string;
+  classes: StructureSymbolRef[];
+  methods: StructureSymbolRef[];
+  functions: StructureSymbolRef[];
+  calls: string[];
+  summary: string;
+}
+
+interface StructureIndexPackageSummary {
+  name: string;
+  fileCount: number;
+  classCount: number;
+  methodCount: number;
+}
+
+interface StructureIndexSnapshot {
+  version: 1;
+  generatedAt: string;
+  workspaceDir: string;
+  stats: {
+    fileCount: number;
+    packageCount: number;
+    classCount: number;
+    methodCount: number;
+    changedFiles: number;
+    reusedFiles: number;
+  };
+  topPackages: StructureIndexPackageSummary[];
+  topMethods: Array<{ name: string; count: number }>;
+  entries: Record<string, StructureFileEntry>;
 }
 
 interface ServerProjectStore {
@@ -225,14 +331,74 @@ const SEARCHABLE_EXTENSIONS = new Set([
   ".toml",
   ".ini"
 ]);
+const STRUCTURE_PARSE_EXTENSIONS = new Set([
+  ".java",
+  ".kt",
+  ".kts",
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".py",
+  ".go",
+  ".rs"
+]);
+const JAVA_LIKE_EXTENSIONS = new Set([".java", ".kt", ".kts"]);
+const JAVASCRIPT_LIKE_EXTENSIONS = new Set([".js", ".jsx", ".ts", ".tsx"]);
+const PYTHON_LIKE_EXTENSIONS = new Set([".py"]);
+const GO_LIKE_EXTENSIONS = new Set([".go"]);
+const RUST_LIKE_EXTENSIONS = new Set([".rs"]);
 
 const MAX_FILE_SIZE_BYTES = 512 * 1024;
 const MAX_DETAIL_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_ASK_MAX_ATTEMPTS = 3;
+const DEFAULT_PROJECT_MAX_FILES = 20_000;
+const ANALYSIS_CACHE_MAX_AGE_MS = Number.parseInt(
+  process.env.OHMYQWEN_ANALYSIS_CACHE_MAX_AGE_MS ?? "1800000",
+  10
+);
 const ANALYSIS_MEMORY_DIR = "project-analysis";
 const PROFILE_MEMORY_DIR = "project-profile";
 const EAI_MEMORY_DIR = "eai-dictionary";
 const QUERY_MEMORY_DIR = "query-reports";
+const STRUCTURE_MEMORY_DIR = "structure-index";
+const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
+const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
+  100,
+  Number.parseInt(process.env.OHMYQWEN_STRUCTURE_INDEX_PROGRESS_INTERVAL ?? "500", 10) || 500
+);
+const STRUCTURE_INDEX_SLOW_FILE_MS = Math.max(
+  50,
+  Number.parseInt(process.env.OHMYQWEN_STRUCTURE_INDEX_SLOW_FILE_MS ?? "250", 10) || 250
+);
+const STRUCTURE_LARGE_FILE_BYTES = Math.max(
+  64 * 1024,
+  Number.parseInt(process.env.OHMYQWEN_STRUCTURE_LARGE_FILE_BYTES ?? "100000", 10) || 100000
+);
+const STRUCTURE_INDEX_YIELD_INTERVAL = Math.max(
+  25,
+  Number.parseInt(process.env.OHMYQWEN_STRUCTURE_INDEX_YIELD_INTERVAL ?? "100", 10) || 100
+);
+const EAI_PROGRESS_INTERVAL = Math.max(
+  25,
+  Number.parseInt(process.env.OHMYQWEN_EAI_PROGRESS_INTERVAL ?? "100", 10) || 100
+);
+const CODE_FILE_EXTENSIONS = new Set([".java", ".kt", ".kts", ".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".rs"]);
+const CALL_KEYWORDS = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "catch",
+  "new",
+  "return",
+  "throw",
+  "else",
+  "super",
+  "this",
+  "case",
+  "synchronized"
+]);
 
 let cachedStore: ServerProjectStore | null = null;
 
@@ -253,6 +419,12 @@ async function appendProjectDebugEvent(event: ProjectDebugEvent): Promise<void> 
   const filePath = debugLogPath();
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, "utf8");
+  if (process.env.OHMYQWEN_SERVER_TRACE === "1") {
+    const metadata = event.metadata ? ` ${JSON.stringify(event.metadata)}` : "";
+    process.stdout.write(
+      `[project-trace] ${event.timestamp} project=${event.projectId} ${event.stage}/${event.status} ${event.message}${metadata}\n`
+    );
+  }
 }
 
 async function loadStore(): Promise<ServerProjectStore> {
@@ -330,7 +502,8 @@ async function ensureWorkspaceDir(workspaceDir: string): Promise<string> {
 function toProject(value: ServerProject): ServerProject {
   return {
     ...value,
-    retrieval: value.retrieval ? { ...value.retrieval } : undefined
+    retrieval: value.retrieval ? { ...value.retrieval } : undefined,
+    llm: value.llm ? { ...value.llm } : undefined
   };
 }
 
@@ -357,6 +530,37 @@ function resolveMemoryHome(workspaceDir: string): string {
     : path.resolve(projectHome, envMemoryHome);
 }
 
+async function resolveProjectLlmContext(project: ServerProject): Promise<{
+  settings: Awaited<ReturnType<typeof loadLlmRuntimeSettings>>;
+  model: ReturnType<typeof resolveLlmModelProfile>;
+  stageTokenCaps: { PLAN: number; IMPLEMENT: number; VERIFY: number };
+}> {
+  const settings = await loadLlmRuntimeSettings();
+  const model = resolveLlmModelProfile(settings, project.llm?.modelId);
+  const stageTokenCaps = deriveStageTokenCapsFromModel({
+    model,
+    usageRatio: settings.continuationUsageRatio
+  });
+  return {
+    settings,
+    model,
+    stageTokenCaps
+  };
+}
+
+function mergeRetrievalWithModelCaps(
+  retrieval: ServerProject["retrieval"] | undefined,
+  stageTokenCaps: { PLAN: number; IMPLEMENT: number; VERIFY: number }
+): ServerProject["retrieval"] {
+  return {
+    ...(retrieval ?? {}),
+    stageTokenCaps: {
+      ...stageTokenCaps,
+      ...(retrieval?.stageTokenCaps ?? {})
+    }
+  };
+}
+
 function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
 }
@@ -372,9 +576,7 @@ interface EaiDictionaryEntry {
 function toSearchTokens(query: string): string[] {
   return Array.from(
     new Set(
-      query
-        .toLowerCase()
-        .split(/\s+/)
+      (query.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? [])
         .map((entry) => entry.trim())
         .filter((entry) => entry.length >= 2)
     )
@@ -385,9 +587,109 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
+function isRetrievalNoisePath(relativePath: string): boolean {
+  const normalized = toForwardSlash(relativePath).toLowerCase();
+  return RETRIEVAL_NOISE_PATH_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function compactQueryForSearch(query: string): string {
+  const stopwords = new Set([
+    "어떻게",
+    "어디",
+    "확인",
+    "확인해줘",
+    "해줘",
+    "이루어지는지",
+    "please",
+    "check",
+    "how",
+    "where",
+    "what",
+    "the",
+    "and",
+    "or"
+  ]);
+
+  const tokens = toSearchTokens(query)
+    .filter((token) => !stopwords.has(token))
+    .slice(0, 5);
+  return tokens.join(" ");
+}
+
+function buildAskQueryCandidates(options: {
+  question: string;
+  strategy: AskStrategyType;
+  targetSymbols?: string[];
+}): string[] {
+  const question = options.question;
+  const compact = compactQueryForSearch(question);
+  const hasInsuranceClaim = /(보험금|청구|claim|benefit)/i.test(question);
+  const hasLogicIntent =
+    /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
+  const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
+
+  const candidates = [
+    question,
+    compact,
+    targetSymbols.length > 0 ? `${targetSymbols.join(" ")} ${compact}` : ""
+  ];
+
+  if (options.strategy === "method_trace" || hasLogicIntent) {
+    candidates.push(`${compact} controller service domain mapper mybatis`);
+  } else if (options.strategy === "eai_interface") {
+    candidates.push(`${compact} eai interface service xml`);
+  } else if (options.strategy === "config_resource") {
+    candidates.push(`${compact} xml config applicationcontext`);
+  } else if (options.strategy === "architecture_overview") {
+    candidates.push(`${compact} architecture module package service`);
+  }
+
+  if (hasInsuranceClaim) {
+    candidates.push(`${compact} 보험금 청구 dcp-insurance`);
+  }
+
+  return unique(candidates.filter(Boolean));
+}
+
 function isSearchableFile(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return SEARCHABLE_EXTENSIONS.has(ext);
+}
+
+function isStructureParseTarget(filePath: string): boolean {
+  if (isStructureAssetNoisePath(filePath)) {
+    return false;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  return STRUCTURE_PARSE_EXTENSIONS.has(ext);
+}
+
+function isStructureAssetNoisePath(filePath: string): boolean {
+  const normalized = toForwardSlash(filePath).toLowerCase();
+  const ext = path.extname(normalized);
+  if (!JAVASCRIPT_LIKE_EXTENSIONS.has(ext)) {
+    return false;
+  }
+
+  const baseName = path.basename(normalized);
+  if (baseName.endsWith(".min.js")) {
+    return true;
+  }
+
+  return (
+    normalized.startsWith("resources/") ||
+    normalized.includes("/resources/") ||
+    normalized.includes("/webapp/js/ext-lib/") ||
+    normalized.includes("/vendor/") ||
+    normalized.includes("/third_party/") ||
+    normalized.includes("/third-party/")
+  );
+}
+
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
 }
 
 async function collectProjectFiles(workspaceDir: string, maxFiles = 10_000): Promise<string[]> {
@@ -437,7 +739,12 @@ async function collectProjectFiles(workspaceDir: string, maxFiles = 10_000): Pro
         continue;
       }
 
-      results.push(path.relative(workspaceDir, fullPath));
+      const relative = path.relative(workspaceDir, fullPath);
+      if (isRetrievalNoisePath(relative)) {
+        continue;
+      }
+
+      results.push(relative);
     }
   }
 
@@ -472,6 +779,19 @@ function makeSnippet(content: string, token: string): string | undefined {
   }
 
   return lines[index]?.trim().slice(0, 180);
+}
+
+function summarizeContentLine(content: string): string {
+  return (
+    content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => Boolean(line) && !line.startsWith("//") && !line.startsWith("*") && !line.startsWith("/*"))
+      .slice(0, 3)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .slice(0, 260) || "(empty file)"
+  );
 }
 
 function normalizeHitConfidence(hit: ProjectSearchHit): number {
@@ -524,9 +844,18 @@ async function lexicalSearch(options: {
     return [];
   }
 
+  const logicIntent = /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|mapper|mybatis)/i.test(
+    options.query
+  );
+  const insuranceClaimIntent = /(보험금|청구|claim|benefit)/i.test(options.query);
+
   const hits: ProjectSearchHit[] = [];
 
   for (const relativePath of options.files) {
+    if (isRetrievalNoisePath(relativePath)) {
+      continue;
+    }
+
     const normalizedPath = relativePath.toLowerCase();
     let score = 0;
     const pathMatches: string[] = [];
@@ -541,6 +870,19 @@ async function lexicalSearch(options: {
 
     const absolutePath = path.resolve(options.workspaceDir, relativePath);
     const content = await readTextFileSafe(absolutePath);
+    const ext = path.extname(relativePath).toLowerCase();
+    const isCodeFile = /\.(java|kt|kts|js|jsx|ts|tsx|py|go|rs)$/i.test(ext);
+    if (logicIntent) {
+      if (isCodeFile) {
+        score += 2.5;
+      } else if (ext === ".xml") {
+        score -= 0.75;
+      }
+    }
+    if (insuranceClaimIntent && normalizedPath.includes("dcp-insurance/")) {
+      score += 3.5;
+    }
+
     if (content) {
       const lowered = content.toLowerCase();
       for (const token of tokens) {
@@ -586,6 +928,24 @@ async function lexicalSearch(options: {
 export async function listServerProjects(): Promise<ServerProject[]> {
   const store = await loadStore();
   return store.projects.map((project) => toProject(project));
+}
+
+export async function getServerLlmSettings(): Promise<ServerLlmSettingsResult> {
+  const settings = await loadLlmRuntimeSettings();
+  return {
+    defaultModelId: settings.defaultModelId,
+    continuationUsageRatio: settings.continuationUsageRatio,
+    retryPolicy: {
+      sameTaskRetries: settings.retryPolicy.sameTaskRetries,
+      changedTaskRetries: settings.retryPolicy.changedTaskRetries
+    },
+    models: settings.models.map((model) => ({
+      id: model.id,
+      label: model.label ?? model.id,
+      contextWindowTokens: model.contextWindowTokens,
+      maxOutputTokens: model.maxOutputTokens
+    }))
+  };
 }
 
 export async function getServerProject(id: string): Promise<ServerProject | undefined> {
@@ -649,10 +1009,18 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
   const parsed = UpsertServerProjectInputSchema.parse(input);
   const resolvedWorkspace = await ensureWorkspaceDir(parsed.workspaceDir);
   const normalizedPresetId = parsed.presetId?.trim() || undefined;
+  const normalizedModelId = parsed.llm?.modelId?.trim() || undefined;
   if (normalizedPresetId) {
     const preset = await getProjectPresetById(normalizedPresetId);
     if (!preset) {
       throw new Error(`preset not found: ${normalizedPresetId}`);
+    }
+  }
+
+  if (normalizedModelId) {
+    const settings = await loadLlmRuntimeSettings();
+    if (!settings.models.some((model) => model.id === normalizedModelId)) {
+      throw new Error(`llm model not found: ${normalizedModelId}`);
     }
   }
 
@@ -674,6 +1042,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
       defaultMode: parsed.defaultMode ?? existing.defaultMode,
       defaultDryRun: parsed.defaultDryRun ?? existing.defaultDryRun,
       retrieval: parsed.retrieval ?? existing.retrieval,
+      llm: normalizedModelId ? { modelId: normalizedModelId } : (parsed.llm ?? existing.llm),
       updatedAt: now
     };
 
@@ -691,6 +1060,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
     defaultMode: parsed.defaultMode ?? "feature",
     defaultDryRun: parsed.defaultDryRun ?? false,
     retrieval: parsed.retrieval,
+    llm: normalizedModelId ? { modelId: normalizedModelId } : undefined,
     createdAt: now,
     updatedAt: now
   });
@@ -892,6 +1262,19 @@ const ProjectAskOutputSchema = z.object({
   confidence: z.number().min(0).max(1),
   evidence: z.array(z.string()).default([]),
   caveats: z.array(z.string()).default([])
+});
+
+const AskStrategyDecisionSchema = z.object({
+  strategy: z.enum([
+    "method_trace",
+    "architecture_overview",
+    "eai_interface",
+    "config_resource",
+    "general"
+  ]),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().min(1).default(""),
+  targetSymbols: z.array(z.string()).default([])
 });
 
 function buildFileExtensionStats(files: string[]): Array<{ ext: string; count: number }> {
@@ -1193,6 +1576,12 @@ async function buildEaiDictionary(options: {
   files: string[];
   servicePathIncludes?: string[];
   maxEntries?: number;
+  onProgress?: (progress: {
+    phase: "searchable-content" | "entry-build";
+    processed: number;
+    total: number;
+    currentFile?: string;
+  }) => Promise<void> | void;
 }): Promise<EaiDictionaryEntry[]> {
   const includes = (options.servicePathIncludes ?? ["resources/eai/"]).map((entry) =>
     toForwardSlash(entry).toLowerCase()
@@ -1216,24 +1605,57 @@ async function buildEaiDictionary(options: {
   }
 
   const searchableContents: Array<{ path: string; content: string }> = [];
-  for (const file of options.files.slice(0, 8_000)) {
+  const searchableSourceFiles = options.files.slice(0, 8_000);
+  for (let index = 0; index < searchableSourceFiles.length; index += 1) {
+    const file = searchableSourceFiles[index] as string;
     const normalized = toForwardSlash(file);
     const absolutePath = path.resolve(options.workspaceDir, normalized);
     const content = await readTextFileSafe(absolutePath);
     if (!content) {
+      if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          phase: "searchable-content",
+          processed: index + 1,
+          total: searchableSourceFiles.length,
+          currentFile: normalized
+        });
+      }
       continue;
     }
     searchableContents.push({
       path: normalized,
       content: content.toLowerCase()
     });
+    if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
+      await options.onProgress({
+        phase: "searchable-content",
+        processed: index + 1,
+        total: searchableSourceFiles.length,
+        currentFile: normalized
+      });
+    }
   }
+  await options.onProgress?.({
+    phase: "searchable-content",
+    processed: searchableSourceFiles.length,
+    total: searchableSourceFiles.length,
+    currentFile: "searchable-content-finished"
+  });
 
   const entries: EaiDictionaryEntry[] = [];
-  for (const relativePath of eaiServiceFiles) {
+  for (let index = 0; index < eaiServiceFiles.length; index += 1) {
+    const relativePath = eaiServiceFiles[index] as string;
     const absolutePath = path.resolve(options.workspaceDir, relativePath);
     const content = await readTextFileSafe(absolutePath);
     if (!content) {
+      if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          phase: "entry-build",
+          processed: index + 1,
+          total: eaiServiceFiles.length,
+          currentFile: relativePath
+        });
+      }
       continue;
     }
 
@@ -1272,7 +1694,21 @@ async function buildEaiDictionary(options: {
       sourcePath: relativePath,
       usagePaths
     });
+    if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
+      await options.onProgress({
+        phase: "entry-build",
+        processed: index + 1,
+        total: eaiServiceFiles.length,
+        currentFile: relativePath
+      });
+    }
   }
+  await options.onProgress?.({
+    phase: "entry-build",
+    processed: eaiServiceFiles.length,
+    total: eaiServiceFiles.length,
+    currentFile: "entry-build-finished"
+  });
 
   return entries
     .sort((a, b) =>
@@ -1358,9 +1794,956 @@ async function writeMemoryJson(options: {
   return targetPath;
 }
 
+function analysisSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ANALYSIS_MEMORY_DIR, "latest.json");
+}
+
+async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysisResult | undefined> {
+  const snapshotPath = analysisSnapshotPath(memoryRoot);
+  try {
+    const raw = await fs.readFile(snapshotPath, "utf8");
+    const parsed = JSON.parse(raw) as ProjectAnalysisResult;
+    const analyzedAt = new Date(parsed.analyzedAt).getTime();
+    if (!Number.isFinite(analyzedAt)) {
+      return undefined;
+    }
+    const ageMs = Date.now() - analyzedAt;
+    if (ageMs > Math.max(30_000, ANALYSIS_CACHE_MAX_AGE_MS)) {
+      return undefined;
+    }
+    return {
+      ...parsed,
+      diagnostics: {
+        ...parsed.diagnostics,
+        llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
+        structureIndexCount: Number(parsed.diagnostics?.structureIndexCount || 0)
+      }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function structureSnapshotPath(workspaceDir: string): string {
+  return path.resolve(workspaceDir, ".ohmyqwen", "cache", "structure-index.v1.json");
+}
+
+async function loadStructureSnapshot(workspaceDir: string): Promise<StructureIndexSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(structureSnapshotPath(workspaceDir), "utf8");
+    const parsed = JSON.parse(raw) as StructureIndexSnapshot;
+    if (parsed?.version !== 1 || typeof parsed.entries !== "object") {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function hashContent(content: string): string {
+  return createHash("sha1").update(content).digest("hex");
+}
+
+function toLineNumber(text: string, index: number): number {
+  return text.slice(0, index).split("\n").length;
+}
+
+function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntry, "path" | "size" | "mtimeMs" | "hash"> {
+  const lines = content.split(/\r?\n/);
+  const classes: StructureSymbolRef[] = [];
+  const methods: StructureSymbolRef[] = [];
+  const calls = new Set<string>();
+  let packageName: string | undefined;
+  let primaryClass: string | undefined;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.length > 2000) {
+      continue;
+    }
+
+    if (!packageName) {
+      const packageMatch = line.match(/^\s*package\s+([A-Za-z0-9_.]+)\s*;/);
+      if (packageMatch?.[1]) {
+        packageName = packageMatch[1].trim();
+      }
+    }
+
+    const classMatch = line.match(/\b(class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
+    if (classMatch?.[2]) {
+      const name = classMatch[2].trim();
+      classes.push({
+        name,
+        line: index + 1
+      });
+      primaryClass ??= name;
+    }
+
+    const methodMatch = line.match(
+      /^\s*(?:public|protected|private|static|final|native|synchronized|abstract|default|\s)+(?:<[^>]+>\s*)?(?:[A-Za-z_][A-Za-z0-9_<>\[\],.?& ]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}()]*\)\s*(?:throws [^{]+)?\{/
+    );
+    if (methodMatch?.[1] && !CALL_KEYWORDS.has(methodMatch[1])) {
+      methods.push({
+        name: methodMatch[1].trim(),
+        line: index + 1,
+        className: primaryClass
+      });
+    }
+
+    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const target = match[2]?.trim();
+      const owner = match[1]?.trim();
+      if (!target || CALL_KEYWORDS.has(target)) {
+        continue;
+      }
+      calls.add(target);
+      if (owner) {
+        calls.add(`${owner}.${target}`);
+      }
+    }
+
+    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const target = match[1]?.trim();
+      if (!target || CALL_KEYWORDS.has(target)) {
+        continue;
+      }
+      calls.add(target);
+    }
+  }
+
+  return {
+    packageName,
+    classes: classes.slice(0, 80),
+    methods: methods.slice(0, 240),
+    functions: [],
+    calls: Array.from(calls).slice(0, 300),
+    summary: summarizeContentLine(content)
+  };
+}
+
+function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFileEntry, "path" | "size" | "mtimeMs" | "hash"> {
+  const lines = content.split(/\r?\n/);
+  const classes: StructureSymbolRef[] = [];
+  const methods: StructureSymbolRef[] = [];
+  const functions: StructureSymbolRef[] = [];
+  const calls = new Set<string>();
+  let primaryClass: string | undefined;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.length > 2000) {
+      continue;
+    }
+
+    const classMatch = line.match(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
+    if (classMatch?.[1]) {
+      const name = classMatch[1].trim();
+      classes.push({
+        name,
+        line: index + 1
+      });
+      primaryClass ??= name;
+    }
+
+    const functionMatch = line.match(
+      /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/
+    );
+    if (functionMatch?.[1] && !CALL_KEYWORDS.has(functionMatch[1])) {
+      functions.push({
+        name: functionMatch[1].trim(),
+        line: index + 1
+      });
+    }
+
+    const prototypeMethodMatch = line.match(
+      /^\s*[A-Za-z_$][A-Za-z0-9_$.]*\.prototype\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*function\b/
+    );
+    if (prototypeMethodMatch?.[1] && !CALL_KEYWORDS.has(prototypeMethodMatch[1])) {
+      methods.push({
+        name: prototypeMethodMatch[1].trim(),
+        line: index + 1,
+        className: primaryClass
+      });
+    }
+
+    const assignedFunctionMatch = line.match(
+      /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?function\b/
+    );
+    if (assignedFunctionMatch?.[1] && !CALL_KEYWORDS.has(assignedFunctionMatch[1])) {
+      functions.push({
+        name: assignedFunctionMatch[1].trim(),
+        line: index + 1
+      });
+    }
+
+    const arrowFunctionMatch = line.match(
+      /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*=>/
+    );
+    if (arrowFunctionMatch?.[1] && !CALL_KEYWORDS.has(arrowFunctionMatch[1])) {
+      functions.push({
+        name: arrowFunctionMatch[1].trim(),
+        line: index + 1
+      });
+    }
+
+    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const target = match[2]?.trim();
+      const owner = match[1]?.trim();
+      if (!target || CALL_KEYWORDS.has(target)) {
+        continue;
+      }
+      calls.add(target);
+      if (owner) {
+        calls.add(`${owner}.${target}`);
+      }
+    }
+
+    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const target = match[1]?.trim();
+      if (!target || CALL_KEYWORDS.has(target)) {
+        continue;
+      }
+      calls.add(target);
+    }
+  }
+
+  return {
+    packageName: undefined,
+    classes: classes.slice(0, 80),
+    methods: methods.slice(0, 240),
+    functions: functions.slice(0, 120),
+    calls: Array.from(calls).slice(0, 300),
+    summary: summarizeContentLine(content)
+  };
+}
+
+function parseStructureFromGenericCodeFile(content: string): Omit<StructureFileEntry, "path" | "size" | "mtimeMs" | "hash"> {
+  const lines = content.split(/\r?\n/);
+  const functions: StructureSymbolRef[] = [];
+  const calls = new Set<string>();
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.length > 2000) {
+      continue;
+    }
+
+    const functionMatch = line.match(/^\s*(?:def|fn)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[\(<]/);
+    if (functionMatch?.[1] && !CALL_KEYWORDS.has(functionMatch[1])) {
+      functions.push({
+        name: functionMatch[1].trim(),
+        line: index + 1
+      });
+    }
+
+    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const target = match[1]?.trim();
+      if (!target || CALL_KEYWORDS.has(target)) {
+        continue;
+      }
+      calls.add(target);
+    }
+  }
+
+  return {
+    packageName: undefined,
+    classes: [],
+    methods: [],
+    functions: functions.slice(0, 120),
+    calls: Array.from(calls).slice(0, 300),
+    summary: summarizeContentLine(content)
+  };
+}
+
+function parseStructureFromFile(relativePath: string, content: string): Omit<StructureFileEntry, "path" | "size" | "mtimeMs" | "hash"> {
+  if (!isStructureParseTarget(relativePath)) {
+    return {
+      packageName: undefined,
+      classes: [],
+      methods: [],
+      functions: [],
+      calls: [],
+      summary: summarizeContentLine(content)
+    };
+  }
+
+  const ext = path.extname(relativePath).toLowerCase();
+  if (JAVA_LIKE_EXTENSIONS.has(ext)) {
+    return parseStructureFromJavaLikeFile(content);
+  }
+  if (JAVASCRIPT_LIKE_EXTENSIONS.has(ext)) {
+    return parseStructureFromJavascriptLikeFile(content);
+  }
+  if (PYTHON_LIKE_EXTENSIONS.has(ext) || GO_LIKE_EXTENSIONS.has(ext) || RUST_LIKE_EXTENSIONS.has(ext)) {
+    return parseStructureFromGenericCodeFile(content);
+  }
+
+  return {
+    packageName: undefined,
+    classes: [],
+    methods: [],
+    functions: [],
+    calls: [],
+    summary: summarizeContentLine(content)
+  };
+}
+
+async function buildProjectStructureIndex(options: {
+  workspaceDir: string;
+  files: string[];
+  memoryRoot?: string;
+  onProgress?: (progress: {
+    processed: number;
+    total: number;
+    changedFiles: number;
+    reusedFiles: number;
+    currentFile?: string;
+  }) => Promise<void> | void;
+  onSlowFile?: (event: {
+    path: string;
+    durationMs: number;
+    sizeBytes: number;
+    parseTarget: boolean;
+  }) => Promise<void> | void;
+}): Promise<{ snapshot: StructureIndexSnapshot; memoryFiles: string[] }> {
+  const previous = await loadStructureSnapshot(options.workspaceDir);
+  const previousEntries = previous?.entries ?? {};
+
+  const nextEntries: Record<string, StructureFileEntry> = {};
+  let changedFiles = 0;
+  let reusedFiles = 0;
+  let processed = 0;
+
+  for (const relativePath of options.files) {
+    const fileStartedAt = Date.now();
+    if (isRetrievalNoisePath(relativePath)) {
+      continue;
+    }
+
+    const absolutePath = path.resolve(options.workspaceDir, relativePath);
+    let stat;
+    try {
+      stat = await fs.stat(absolutePath);
+    } catch {
+      continue;
+    }
+
+    if (!stat.isFile() || stat.size > MAX_FILE_SIZE_BYTES) {
+      processed += 1;
+      if (options.onProgress && processed % STRUCTURE_INDEX_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          processed,
+          total: options.files.length,
+          changedFiles,
+          reusedFiles,
+          currentFile: relativePath
+        });
+      }
+      if (processed % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+      continue;
+    }
+
+    if (
+      options.onSlowFile &&
+      isStructureParseTarget(relativePath) &&
+      stat.size >= STRUCTURE_LARGE_FILE_BYTES
+    ) {
+      await options.onSlowFile({
+        path: relativePath,
+        durationMs: -1,
+        sizeBytes: stat.size,
+        parseTarget: true
+      });
+    }
+
+    const cached = previousEntries[relativePath];
+    if (
+      cached &&
+      cached.size === stat.size &&
+      Math.floor(cached.mtimeMs) === Math.floor(stat.mtimeMs)
+    ) {
+      nextEntries[relativePath] = cached;
+      reusedFiles += 1;
+      processed += 1;
+      if (options.onProgress && processed % STRUCTURE_INDEX_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          processed,
+          total: options.files.length,
+          changedFiles,
+          reusedFiles,
+          currentFile: relativePath
+        });
+      }
+      const cachedDurationMs = Date.now() - fileStartedAt;
+      if (processed % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+      if (options.onSlowFile && cachedDurationMs >= STRUCTURE_INDEX_SLOW_FILE_MS) {
+        await options.onSlowFile({
+          path: relativePath,
+          durationMs: cachedDurationMs,
+          sizeBytes: stat.size,
+          parseTarget: isStructureParseTarget(relativePath)
+        });
+      }
+      continue;
+    }
+
+    const content = await readTextFileSafe(absolutePath);
+    if (content == null) {
+      processed += 1;
+      if (options.onProgress && processed % STRUCTURE_INDEX_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          processed,
+          total: options.files.length,
+          changedFiles,
+          reusedFiles,
+          currentFile: relativePath
+        });
+      }
+      if (processed % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+      continue;
+    }
+
+    const hash = hashContent(content);
+    if (
+      cached &&
+      cached.hash === hash &&
+      cached.size === stat.size &&
+      Math.floor(cached.mtimeMs) === Math.floor(stat.mtimeMs)
+    ) {
+      nextEntries[relativePath] = cached;
+      reusedFiles += 1;
+      processed += 1;
+      if (options.onProgress && processed % STRUCTURE_INDEX_PROGRESS_INTERVAL === 0) {
+        await options.onProgress({
+          processed,
+          total: options.files.length,
+          changedFiles,
+          reusedFiles,
+          currentFile: relativePath
+        });
+      }
+      const reusedDurationMs = Date.now() - fileStartedAt;
+      if (processed % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+        await yieldToEventLoop();
+      }
+      if (options.onSlowFile && reusedDurationMs >= STRUCTURE_INDEX_SLOW_FILE_MS) {
+        await options.onSlowFile({
+          path: relativePath,
+          durationMs: reusedDurationMs,
+          sizeBytes: stat.size,
+          parseTarget: isStructureParseTarget(relativePath)
+        });
+      }
+      continue;
+    }
+
+    const parsed = parseStructureFromFile(relativePath, content);
+    nextEntries[relativePath] = {
+      path: relativePath,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      hash,
+      ...parsed
+    };
+    changedFiles += 1;
+    processed += 1;
+    if (options.onProgress && processed % STRUCTURE_INDEX_PROGRESS_INTERVAL === 0) {
+      await options.onProgress({
+        processed,
+        total: options.files.length,
+        changedFiles,
+        reusedFiles,
+        currentFile: relativePath
+      });
+    }
+    const parsedDurationMs = Date.now() - fileStartedAt;
+    if (processed % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+    }
+    if (options.onSlowFile && parsedDurationMs >= STRUCTURE_INDEX_SLOW_FILE_MS) {
+      await options.onSlowFile({
+        path: relativePath,
+        durationMs: parsedDurationMs,
+        sizeBytes: stat.size,
+        parseTarget: isStructureParseTarget(relativePath)
+      });
+    }
+  }
+
+  if (options.onProgress) {
+    await options.onProgress({
+      processed,
+      total: options.files.length,
+      changedFiles,
+      reusedFiles
+    });
+  }
+
+  await options.onProgress?.({
+    processed,
+    total: options.files.length,
+    changedFiles,
+    reusedFiles,
+    currentFile: "aggregation-start"
+  });
+
+  const packageMap = new Map<string, StructureIndexPackageSummary>();
+  const methodCounter = new Map<string, number>();
+  let classCount = 0;
+  let methodCount = 0;
+
+  let aggregateIndex = 0;
+  for (const entry of Object.values(nextEntries)) {
+    const packageName = entry.packageName || "(default)";
+    const current = packageMap.get(packageName) ?? {
+      name: packageName,
+      fileCount: 0,
+      classCount: 0,
+      methodCount: 0
+    };
+    current.fileCount += 1;
+    current.classCount += entry.classes.length;
+    current.methodCount += entry.methods.length + entry.functions.length;
+    classCount += entry.classes.length;
+    methodCount += entry.methods.length + entry.functions.length;
+    packageMap.set(packageName, current);
+
+    for (const method of [...entry.methods, ...entry.functions]) {
+      const key = method.className ? `${method.className}.${method.name}` : method.name;
+      methodCounter.set(key, (methodCounter.get(key) ?? 0) + 1);
+    }
+
+    aggregateIndex += 1;
+    if (aggregateIndex % STRUCTURE_INDEX_YIELD_INTERVAL === 0) {
+      await yieldToEventLoop();
+    }
+  }
+
+  const topPackages = Array.from(packageMap.values())
+    .sort((a, b) =>
+      b.methodCount !== a.methodCount ? b.methodCount - a.methodCount : a.name.localeCompare(b.name)
+    )
+    .slice(0, 30);
+  const topMethods = Array.from(methodCounter.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.name.localeCompare(b.name)))
+    .slice(0, 60);
+
+  const snapshot: StructureIndexSnapshot = {
+    version: 1,
+    generatedAt: nowIso(),
+    workspaceDir: options.workspaceDir,
+    stats: {
+      fileCount: Object.keys(nextEntries).length,
+      packageCount: packageMap.size,
+      classCount,
+      methodCount,
+      changedFiles,
+      reusedFiles
+    },
+    topPackages,
+    topMethods,
+    entries: nextEntries
+  };
+
+  await options.onProgress?.({
+    processed,
+    total: options.files.length,
+    changedFiles,
+    reusedFiles,
+    currentFile: "cache-write-start"
+  });
+
+  const cachePath = structureSnapshotPath(options.workspaceDir);
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
+  await fs.writeFile(cachePath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+
+  const memoryFiles: string[] = [];
+  if (options.memoryRoot) {
+    await options.onProgress?.({
+      processed,
+      total: options.files.length,
+      changedFiles,
+      reusedFiles,
+      currentFile: "memory-doc-write-start"
+    });
+    const lines: string[] = [];
+    lines.push("# Project Structure Index");
+    lines.push("");
+    lines.push(`- generatedAt: ${snapshot.generatedAt}`);
+    lines.push(`- fileCount: ${snapshot.stats.fileCount}`);
+    lines.push(`- packageCount: ${snapshot.stats.packageCount}`);
+    lines.push(`- classCount: ${snapshot.stats.classCount}`);
+    lines.push(`- methodCount: ${snapshot.stats.methodCount}`);
+    lines.push(`- changedFiles: ${snapshot.stats.changedFiles}`);
+    lines.push(`- reusedFiles: ${snapshot.stats.reusedFiles}`);
+    lines.push("");
+    lines.push("## Top Packages");
+    for (const pack of snapshot.topPackages.slice(0, 20)) {
+      lines.push(`- ${pack.name} | files=${pack.fileCount} | methods=${pack.methodCount}`);
+    }
+    lines.push("");
+    lines.push("## Top Methods");
+    for (const method of snapshot.topMethods.slice(0, 25)) {
+      lines.push(`- ${method.name} | count=${method.count}`);
+    }
+    lines.push("");
+
+    const structureDocs = await writeMemoryDocs({
+      memoryRoot: options.memoryRoot,
+      groupDir: STRUCTURE_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: `${lines.join("\n")}\n`
+    });
+    const structureJson = await writeMemoryJson({
+      memoryRoot: options.memoryRoot,
+      groupDir: STRUCTURE_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: snapshot
+    });
+    memoryFiles.push(structureDocs.latestPath, structureDocs.snapshotPath, structureJson);
+  }
+
+  return { snapshot, memoryFiles };
+}
+
+function extractMethodCandidates(question: string): string[] {
+  const tokens = question.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
+  return unique(
+    tokens.filter((token) => /^[a-z]/.test(token) && /[A-Z]/.test(token))
+  ).slice(0, 8);
+}
+
+function extractClassCandidates(question: string): string[] {
+  const tokens = question.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
+  return unique(
+    tokens.filter(
+      (token) =>
+        /^[A-Z]/.test(token) &&
+        /(Service|Controller|Dao|Mapper|Repository|Util|Handler|Manager)$/.test(token)
+    )
+  ).slice(0, 8);
+}
+
+function extractOrderedMethodCalls(snippet: string): string[] {
+  const output: string[] = [];
+  const seen = new Set<string>();
+  const pattern = /\b(?:this\.)?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  for (const match of snippet.matchAll(pattern)) {
+    const name = match[1]?.trim();
+    if (!name || CALL_KEYWORDS.has(name)) {
+      continue;
+    }
+    if (seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    output.push(name);
+  }
+  return output;
+}
+
+function summarizeMethodSignature(snippet: string): string {
+  const firstLine =
+    snippet
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.includes("(") && line.includes(")")) ?? "";
+  return firstLine.slice(0, 220);
+}
+
+function classifyQuestionIntentFallback(question: string): {
+  strategy: AskStrategyType;
+  confidence: number;
+  reason: string;
+  targetSymbols: string[];
+} {
+  const methodFocused =
+    /함수|메서드|method|호출|콜트리|이후|흐름|save[A-Z]|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/i.test(
+      question
+    );
+  const architectureFocused =
+    /아키텍처|구조|전체|system|architecture|module|패키지/i.test(question);
+  const eaiFocused = /eai|인터페이스|전문|service id|f1[a-z0-9]+/i.test(question);
+  const configFocused = /xml|yml|yaml|config|설정|권한|menu|applicationcontext/i.test(question);
+
+  if (methodFocused) {
+    return {
+      strategy: "method_trace",
+      confidence: 0.62,
+      reason: "fallback: method/call-flow keywords detected",
+      targetSymbols: extractMethodCandidates(question)
+    };
+  }
+  if (eaiFocused) {
+    return {
+      strategy: "eai_interface",
+      confidence: 0.57,
+      reason: "fallback: eai/interface keywords detected",
+      targetSymbols: []
+    };
+  }
+  if (configFocused) {
+    return {
+      strategy: "config_resource",
+      confidence: 0.54,
+      reason: "fallback: config/resource keywords detected",
+      targetSymbols: []
+    };
+  }
+  if (architectureFocused) {
+    return {
+      strategy: "architecture_overview",
+      confidence: 0.56,
+      reason: "fallback: architecture keywords detected",
+      targetSymbols: []
+    };
+  }
+  return {
+    strategy: "general",
+    confidence: 0.45,
+    reason: "fallback: generic question",
+    targetSymbols: []
+  };
+}
+
+function strategyToIntent(strategy: AskStrategyType): {
+  methodFocused: boolean;
+  architectureFocused: boolean;
+} {
+  return {
+    methodFocused: strategy === "method_trace",
+    architectureFocused: strategy === "architecture_overview"
+  };
+}
+
+function findMethodBlock(content: string, methodName: string): { startLine: number; endLine: number; snippet: string } | undefined {
+  const methodPattern = new RegExp(`\\b${methodName}\\s*\\([^;{}]*\\)\\s*(?:throws [^{]+)?\\{`, "m");
+  const match = methodPattern.exec(content);
+  if (!match || typeof match.index !== "number") {
+    return undefined;
+  }
+
+  const startIndex = match.index;
+  let bodyStart = content.indexOf("{", startIndex);
+  if (bodyStart < 0) {
+    return undefined;
+  }
+
+  let depth = 0;
+  let endIndex = -1;
+  for (let index = bodyStart; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        endIndex = index;
+        break;
+      }
+    }
+  }
+
+  if (endIndex < 0) {
+    return undefined;
+  }
+
+  const startLine = toLineNumber(content, startIndex);
+  const endLine = toLineNumber(content, endIndex);
+  const snippet = content.slice(startIndex, Math.min(content.length, endIndex + 1)).trim();
+  return {
+    startLine,
+    endLine,
+    snippet: snippet.slice(0, 24_000)
+  };
+}
+
+async function buildDeterministicMethodAnswer(options: {
+  project: ServerProject;
+  question: string;
+  structure: StructureIndexSnapshot;
+}): Promise<
+  | {
+      answer: string;
+      confidence: number;
+      evidence: string[];
+      caveats: string[];
+      symbol: string;
+      hit: ProjectSearchHit;
+    }
+  | undefined
+> {
+  const methodCandidates = extractMethodCandidates(options.question);
+  if (methodCandidates.length === 0) {
+    return undefined;
+  }
+  const classCandidates = extractClassCandidates(options.question).map((value) => value.toLowerCase());
+
+  const lowerMethodCandidates = methodCandidates.map((value) => value.toLowerCase());
+  let best:
+    | { entry: StructureFileEntry; symbol: StructureSymbolRef; methodName: string; className?: string; score: number }
+    | undefined;
+
+  for (const entry of Object.values(options.structure.entries)) {
+    for (const method of [...entry.methods, ...entry.functions]) {
+      const lowerMethod = method.name.toLowerCase();
+      if (!lowerMethodCandidates.includes(lowerMethod)) {
+        continue;
+      }
+      const methodClass = method.className?.toLowerCase() ?? "";
+      const entryClassNames = entry.classes.map((item) => item.name.toLowerCase());
+      const classMatched =
+        classCandidates.length === 0 ||
+        classCandidates.some((candidate) => methodClass === candidate || entryClassNames.includes(candidate));
+      const score = (classMatched ? 3 : 0) + (entry.path.toLowerCase().includes("dcp-insurance") ? 2 : 0);
+      if (!best || score > best.score) {
+        best = {
+          entry,
+          symbol: method,
+          methodName: method.name,
+          className: method.className ?? entry.classes[0]?.name,
+          score
+        };
+      }
+    }
+  }
+
+  if (!best) {
+    return undefined;
+  }
+
+  const absolutePath = path.resolve(options.project.workspaceDir, best.entry.path);
+  const content = await readTextFileSafe(absolutePath);
+  if (!content) {
+    return undefined;
+  }
+  const methodBlock = findMethodBlock(content, best.methodName);
+  if (!methodBlock) {
+    return undefined;
+  }
+
+  const calls = extractOrderedMethodCalls(methodBlock.snippet).slice(0, 24);
+  const callFlowLines: string[] = [];
+  const nestedEvidence: string[] = [];
+  for (const callName of calls.slice(0, 10)) {
+    const resolved = findMethodBlock(content, callName);
+    if (!resolved || callName === best.methodName) {
+      callFlowLines.push(`- ${callName}: 외부/타컴포넌트 호출 또는 동일 파일 미정의`);
+      continue;
+    }
+    const nestedCalls = extractOrderedMethodCalls(resolved.snippet).slice(0, 6);
+    const signature = summarizeMethodSignature(resolved.snippet);
+    callFlowLines.push(
+      `- ${callName} (${resolved.startLine}~${resolved.endLine}): ${signature || "내부 메서드"}${
+        nestedCalls.length > 0 ? ` -> calls: ${nestedCalls.join(", ")}` : ""
+      }`
+    );
+    nestedEvidence.push(
+      `${best.entry.path}:${resolved.startLine}-${resolved.endLine} - callee ${callName} analyzed`
+    );
+  }
+
+  const symbol = `${best.className ? `${best.className}.` : ""}${best.methodName}`;
+  const stageHints = [
+    { key: "callF1FCZ0045", desc: "대외 EAI 제출 실행 단계" },
+    { key: "saveClamDocumentFile", desc: "첨부파일 DB 저장 단계" },
+    { key: "updateSubmitdate", desc: "제출일자 업데이트 단계" },
+    { key: "selectClamDocument", desc: "기존 청구문서 조회/분기 기준 수집 단계" },
+    { key: "moveConvertUploadFile", desc: "업로드 파일 변환/NAS 이동 단계" },
+    { key: "callMODC0010", desc: "이미지->PDF 변환 단계" }
+  ]
+    .filter((item) => calls.includes(item.key))
+    .map((item) => `- ${item.key}: ${item.desc}`);
+
+  const answerLines = [
+    `확정(코드 기준): \`${symbol}\` 메서드는 \`${best.entry.path}:${methodBlock.startLine}\`에서 시작합니다.`,
+    `질문하신 '이후 흐름' 기준으로, 본문(${methodBlock.startLine}~${methodBlock.endLine} line)에서 탐지된 호출 순서를 따라 후속 처리 단계를 정리했습니다.`,
+    "",
+    "### 이후 실행 흐름(정적 분석)",
+    ...(callFlowLines.length > 0 ? callFlowLines : ["- 호출 패턴 미검출"]),
+    "",
+    ...(stageHints.length > 0
+      ? ["### 업무 의미 힌트", ...stageHints, ""]
+      : []),
+    "",
+    "요약: 아래 스니펫은 실제 메서드 원문 일부이며, 질문하신 로직 파악의 1차 근거로 사용할 수 있습니다.",
+    "```java",
+    methodBlock.snippet.slice(0, 5200),
+    "```"
+  ];
+
+  return {
+    answer: answerLines.join("\n"),
+    confidence: 0.86,
+    evidence: [
+      `${best.entry.path}:${methodBlock.startLine} - method declaration: ${symbol}`,
+      `${best.entry.path}:${methodBlock.startLine}-${methodBlock.endLine} - method body inspected`,
+      calls.length > 0 ? `${best.entry.path} - detected calls: ${calls.slice(0, 8).join(", ")}` : "",
+      ...nestedEvidence.slice(0, 6)
+    ].filter(Boolean),
+    caveats: [
+      "호출 대상의 내부 구현(하위 메서드/DAO/EAI 전문)은 별도 추적이 필요합니다.",
+      "정적 분석 결과이며 런타임 분기 조건/외부 시스템 응답에 따라 실제 경로가 달라질 수 있습니다."
+    ],
+    symbol,
+    hit: {
+      path: best.entry.path,
+      score: 18,
+      source: "lexical",
+      reasons: [`deterministic-symbol-match:${symbol}`]
+    }
+  };
+}
+
 async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): Promise<string[]> {
   const files = await collectProjectFiles(memoryRoot, maxFiles);
   return files.filter((file) => path.extname(file).toLowerCase() === ".md");
+}
+
+function selectAskMemoryFiles(paths: string[], intent?: { methodFocused: boolean; architectureFocused: boolean }): string[] {
+  const normalized = paths.map((item) => toForwardSlash(item));
+  const preferredOrder = intent?.methodFocused
+    ? [
+        "structure-index/latest.md",
+        "project-analysis/latest.md",
+        "project-profile/latest.md",
+        "eai-dictionary/latest.md"
+      ]
+    : [
+        "project-analysis/latest.md",
+        "project-profile/latest.md",
+        "structure-index/latest.md",
+        "eai-dictionary/latest.md",
+        "eai-dictionary/maintenance-guide.md",
+        "query-reports/latest.md"
+      ];
+
+  const selected: string[] = [];
+  for (const preferred of preferredOrder) {
+    if (normalized.includes(preferred)) {
+      selected.push(preferred);
+    }
+  }
+
+  for (const candidate of normalized) {
+    if (selected.includes(candidate)) {
+      continue;
+    }
+    if (/\d{8}-\d{6}\.md$/i.test(path.basename(candidate))) {
+      continue;
+    }
+    selected.push(candidate);
+  }
+
+  return selected;
 }
 
 export async function warmupServerProjectIndex(options: {
@@ -1384,7 +2767,7 @@ export async function warmupServerProjectIndex(options: {
       throw new Error(`project not found: ${options.projectId}`);
     }
 
-    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
     if (files.length === 0) {
       const updatedProject = await patchProject(project.id, {
         lastIndexedAt: nowIso(),
@@ -1410,7 +2793,11 @@ export async function warmupServerProjectIndex(options: {
       };
     }
 
-    const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, project.retrieval);
+    const llmContext = await resolveProjectLlmContext(project);
+    const retrievalConfig = await resolveRetrievalConfig(
+      project.workspaceDir,
+      mergeRetrievalWithModelCaps(project.retrieval, llmContext.stageTokenCaps)
+    );
     const inspection = await inspectContext({
       cwd: project.workspaceDir,
       files,
@@ -1498,9 +2885,120 @@ export async function analyzeServerProject(options: {
       projectId: options.projectId,
       maxFiles: options.maxFiles
     });
-    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "collecting project files for analysis",
+      metadata: {
+        maxFiles: options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES
+      }
+    });
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "project files collected for analysis",
+      metadata: {
+        fileCount: files.length
+      }
+    });
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
     await fs.mkdir(memoryRoot, { recursive: true });
+    let structure: { snapshot: StructureIndexSnapshot; memoryFiles: string[] };
+    try {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "structure index build started",
+        metadata: {
+          fileCount: files.length
+        }
+      });
+      structure = await buildProjectStructureIndex({
+        workspaceDir: project.workspaceDir,
+        files,
+        memoryRoot,
+        onProgress: async (progress) => {
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "analyze",
+            status: "info",
+            message: `structure index build progress ${progress.processed}/${progress.total}`,
+            metadata: {
+              processed: progress.processed,
+              total: progress.total,
+              changedFiles: progress.changedFiles,
+              reusedFiles: progress.reusedFiles,
+              currentFile: progress.currentFile
+            }
+          });
+        },
+        onSlowFile: async (event) => {
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "analyze",
+            status: "info",
+            message:
+              event.durationMs < 0
+                ? "structure index large file start"
+                : `structure index slow file ${event.durationMs}ms`,
+            metadata: {
+              path: event.path,
+              durationMs: event.durationMs,
+              sizeBytes: event.sizeBytes,
+              parseTarget: event.parseTarget
+            }
+          });
+        }
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "structure index build finished",
+        metadata: {
+          fileCount: structure.snapshot.stats.fileCount,
+          changedFiles: structure.snapshot.stats.changedFiles,
+          reusedFiles: structure.snapshot.stats.reusedFiles
+        }
+      });
+    } catch (error) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: `structure index build skipped: ${error instanceof Error ? error.message : String(error)}`
+      });
+      structure = {
+        snapshot: {
+          version: 1,
+          generatedAt: nowIso(),
+          workspaceDir: project.workspaceDir,
+          stats: {
+            fileCount: 0,
+            packageCount: 0,
+            classCount: 0,
+            methodCount: 0,
+            changedFiles: 0,
+            reusedFiles: 0
+          },
+          topPackages: [],
+          topMethods: [],
+          entries: {}
+        },
+        memoryFiles: []
+      };
+    }
 
     const extStats = buildFileExtensionStats(files);
     const topDirs = buildTopDirectoryStats(files);
@@ -1547,10 +3045,32 @@ export async function analyzeServerProject(options: {
     let eaiManualOverridesApplied = 0;
 
     if (eaiEnabled) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "eai dictionary build started"
+      });
       const autoEaiEntries = await buildEaiDictionary({
         workspaceDir: project.workspaceDir,
         files,
-        servicePathIncludes: projectPreset?.eai?.servicePathIncludes
+        servicePathIncludes: projectPreset?.eai?.servicePathIncludes,
+        onProgress: async (progress) => {
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "analyze",
+            status: "info",
+            message: `eai dictionary progress ${progress.phase} ${progress.processed}/${progress.total}`,
+            metadata: {
+              phase: progress.phase,
+              processed: progress.processed,
+              total: progress.total,
+              currentFile: progress.currentFile
+            }
+          });
+        }
       });
       const overridePayload = await loadEaiOverrides({
         workspaceDir: project.workspaceDir,
@@ -1602,12 +3122,41 @@ export async function analyzeServerProject(options: {
       await fs.writeFile(maintenancePath, maintenanceMarkdown, "utf8");
 
       eaiMemoryFiles = [eaiDocs.latestPath, eaiDocs.snapshotPath, eaiJsonPath, maintenancePath];
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "eai dictionary build finished",
+        metadata: {
+          interfaceCount: eaiEntries.length,
+          manualOverridesApplied: eaiManualOverridesApplied
+        }
+      });
     }
 
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "seed retrieval search started"
+    });
     const seedSearch = await searchServerProject({
       projectId: options.projectId,
       query: "architecture module service controller repository flow entrypoint",
       limit: 14
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "seed retrieval search finished",
+      metadata: {
+        provider: seedSearch.provider,
+        hitCount: seedSearch.hits.length
+      }
     });
     const hitConfidence = seedSearch.hits.map((hit) => normalizeHitConfidence(hit));
     const topConfidence = hitConfidence[0] ?? 0;
@@ -1622,7 +3171,26 @@ export async function analyzeServerProject(options: {
       warmup
     });
 
-    const llm = new OpenAICompatibleLlmClient();
+    const llmContext = await resolveProjectLlmContext(project);
+    const llm = new OpenAICompatibleLlmClient({
+      model: llmContext.model.id,
+      maxTokens: llmContext.model.maxOutputTokens,
+      contextWindowTokens: llmContext.model.contextWindowTokens,
+      contextUsageRatio: llmContext.settings.continuationUsageRatio,
+      retrySameTask: llmContext.settings.retryPolicy.sameTaskRetries,
+      retryChangedTask: llmContext.settings.retryPolicy.changedTaskRetries
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "analysis llm generation started",
+      metadata: {
+        lowConfidenceMode,
+        seedProvider: seedSearch.provider
+      }
+    });
     const analysisPromptPayload = {
       project: {
         id: warmup.project.id,
@@ -1643,6 +3211,15 @@ export async function analyzeServerProject(options: {
         warmupFallbackUsed: warmup.fallbackUsed,
         topExtensions: extStats.slice(0, 12),
         topDirectories: topDirs.slice(0, 15)
+      },
+      structureIndex: {
+        generatedAt: structure.snapshot.generatedAt,
+        fileCount: structure.snapshot.stats.fileCount,
+        packageCount: structure.snapshot.stats.packageCount,
+        classCount: structure.snapshot.stats.classCount,
+        methodCount: structure.snapshot.stats.methodCount,
+        topPackages: structure.snapshot.topPackages.slice(0, 20),
+        topMethods: structure.snapshot.topMethods.slice(0, 20)
       },
       eaiDictionary: {
         enabled: eaiEnabled,
@@ -1698,6 +3275,17 @@ export async function analyzeServerProject(options: {
       fallback: deterministic,
       parse: (value) => ProjectAnalysisOutputSchema.parse(value)
     });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "analysis llm generation finished",
+      metadata: {
+        usedFallback: generation.usedFallback,
+        llmCallCount: generation.liveCallCount
+      }
+    });
 
     const analyzedAt = nowIso();
     const output = generation.output;
@@ -1724,6 +3312,8 @@ export async function analyzeServerProject(options: {
         `seedProvider=${seedSearch.provider}`,
         `seedTopConfidence=${topConfidence.toFixed(2)}`,
         `seedAverageConfidence=${avgConfidence.toFixed(2)}`,
+        `structureFiles=${structure.snapshot.stats.fileCount}`,
+        `structureMethods=${structure.snapshot.stats.methodCount}`,
         projectPreset ? `projectPreset=${projectPreset.name}` : "",
         `eaiCatalogCount=${eaiEntries.length}`
       ]).slice(0, 30)
@@ -1748,6 +3338,7 @@ export async function analyzeServerProject(options: {
         toForwardSlash(path.join(relativeToWorkspace, item))
       );
       const extraMemoryFiles = [
+        ...structure.memoryFiles,
         ...presetMemoryFiles,
         ...eaiMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
@@ -1768,6 +3359,7 @@ export async function analyzeServerProject(options: {
       memoryFiles: unique([
         analysisFiles.latestPath,
         analysisFiles.snapshotPath,
+        ...structure.memoryFiles,
         ...presetMemoryFiles,
         ...eaiMemoryFiles
       ]),
@@ -1797,15 +3389,35 @@ export async function analyzeServerProject(options: {
             source: "disabled",
             topInterfaces: []
           },
+      structureCatalog: {
+        generatedAt: structure.snapshot.generatedAt,
+        fileCount: structure.snapshot.stats.fileCount,
+        packageCount: structure.snapshot.stats.packageCount,
+        classCount: structure.snapshot.stats.classCount,
+        methodCount: structure.snapshot.stats.methodCount,
+        topPackages: structure.snapshot.topPackages.slice(0, 20).map((item) => ({
+          name: item.name,
+          fileCount: item.fileCount,
+          methodCount: item.methodCount
+        }))
+      },
       ...normalizedOutput,
       diagnostics: {
         warmup,
         lowConfidenceSignals,
         usedFallback: generation.usedFallback,
+        llmCallCount: generation.liveCallCount,
         profileApplied: Boolean(projectPreset),
-        eaiCatalogCount: eaiEntries.length
+        eaiCatalogCount: eaiEntries.length,
+        structureIndexCount: structure.snapshot.stats.fileCount
       }
     };
+
+    await fs.writeFile(
+      analysisSnapshotPath(memoryRoot),
+      `${JSON.stringify(result, null, 2)}\n`,
+      "utf8"
+    );
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),
@@ -1816,7 +3428,9 @@ export async function analyzeServerProject(options: {
       metadata: {
         confidence: result.confidence,
         memoryFiles: result.memoryFiles.length,
-        usedFallback: result.diagnostics.usedFallback
+        usedFallback: result.diagnostics.usedFallback,
+        llmCallCount: result.diagnostics.llmCallCount,
+        structureFiles: result.diagnostics.structureIndexCount
       }
     });
 
@@ -1870,11 +3484,75 @@ function qualityGateForAsk(options: {
   };
 }
 
+async function decideAskStrategy(options: {
+  llm: OpenAICompatibleLlmClient;
+  question: string;
+  project: ServerProject;
+  structure?: StructureIndexSnapshot;
+}): Promise<{
+  strategy: AskStrategyType;
+  confidence: number;
+  reason: string;
+  targetSymbols: string[];
+  llmUsed: boolean;
+  llmCalls: number;
+  usedFallback: boolean;
+}> {
+  const fallback = classifyQuestionIntentFallback(options.question);
+  const generation = await options.llm.generateStructured({
+    systemPrompt: [
+      "You are a query-strategy classifier for a code analysis assistant.",
+      "Return ONLY one JSON object.",
+      "Pick exactly one strategy from: method_trace, architecture_overview, eai_interface, config_resource, general.",
+      "Prefer method_trace when a specific function/class flow is requested."
+    ].join("\n"),
+    userPrompt: JSON.stringify(
+      {
+        task: "Classify the question to one strategy.",
+        outputSchema: {
+          strategy: "method_trace|architecture_overview|eai_interface|config_resource|general",
+          confidence: "0..1",
+          reason: "string",
+          targetSymbols: ["string"]
+        },
+        question: options.question,
+        project: {
+          name: options.project.name,
+          description: options.project.description
+        },
+        structureHint: options.structure
+          ? {
+              packageCount: options.structure.stats.packageCount,
+              topPackages: options.structure.topPackages.slice(0, 5).map((entry) => entry.name),
+              topMethods: options.structure.topMethods.slice(0, 8).map((entry) => entry.name)
+            }
+          : null
+      },
+      null,
+      2
+    ),
+    fallback,
+    parse: (value) => AskStrategyDecisionSchema.parse(value)
+  });
+
+  return {
+    strategy: generation.output.strategy,
+    confidence: generation.output.confidence,
+    reason: generation.output.reason,
+    targetSymbols: generation.output.targetSymbols.slice(0, 6),
+    llmUsed: generation.liveCallCount > 0,
+    llmCalls: generation.liveCallCount,
+    usedFallback: generation.usedFallback
+  };
+}
+
 export async function askServerProject(options: {
   projectId: string;
   question: string;
   maxAttempts?: number;
   limit?: number;
+  maxLlmCalls?: number;
+  deterministicOnly?: boolean;
 }): Promise<ProjectAskResponse> {
   await appendProjectDebugEvent({
     timestamp: nowIso(),
@@ -1883,7 +3561,8 @@ export async function askServerProject(options: {
     status: "start",
     message: "project ask started",
     metadata: {
-      question: options.question
+      question: options.question,
+      deterministicOnly: Boolean(options.deterministicOnly)
     }
   });
 
@@ -1898,25 +3577,398 @@ export async function askServerProject(options: {
       throw new Error("question is required");
     }
 
-    const analysis = await analyzeServerProject({
-      projectId: options.projectId
+    const llmContext = await resolveProjectLlmContext(project);
+    const llm = new OpenAICompatibleLlmClient({
+      model: llmContext.model.id,
+      maxTokens: llmContext.model.maxOutputTokens,
+      contextWindowTokens: llmContext.model.contextWindowTokens,
+      contextUsageRatio: llmContext.settings.continuationUsageRatio,
+      retrySameTask: llmContext.settings.retryPolicy.sameTaskRetries,
+      retryChangedTask: llmContext.settings.retryPolicy.changedTaskRetries
     });
+    const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? DEFAULT_ASK_MAX_ATTEMPTS, 5));
+    const llmCallBudget = -1;
+    let llmCallCount = 0;
+    let strategyUsedFallback = false;
+    let strategyDecision: {
+      strategy: AskStrategyType;
+      confidence: number;
+      reason: string;
+      targetSymbols: string[];
+      llmUsed: boolean;
+    } = {
+      ...classifyQuestionIntentFallback(question),
+      llmUsed: false
+    };
 
-    const expandedQueries = unique([
-      question,
-      `${question} service controller domain transaction`,
-      `${question} process proc impl logic`,
-      `${question} xml api endpoint`
-    ]);
-    const searchResults = await Promise.all(
-      expandedQueries.map((query) =>
-        searchServerProject({
+    const memoryRoot = resolveMemoryHome(project.workspaceDir);
+    await fs.mkdir(memoryRoot, { recursive: true });
+
+    const structureSnapshot = await loadStructureSnapshot(project.workspaceDir);
+    const structureMemoryFiles: string[] = [];
+    if (structureSnapshot) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "loaded cached structure index for deterministic precheck",
+        metadata: {
+          fileCount: structureSnapshot.stats.fileCount,
+          methodCount: structureSnapshot.stats.methodCount
+        }
+      });
+    } else {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "structure index not found; skipping heavy prebuild during ask"
+      });
+    }
+
+    try {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "ask strategy llm classification started"
+      });
+      const decided = await decideAskStrategy({
+        llm,
+        question,
+        project,
+        structure: structureSnapshot
+      });
+      strategyDecision = {
+        strategy: decided.strategy,
+        confidence: decided.confidence,
+        reason: decided.reason,
+        targetSymbols: decided.targetSymbols,
+        llmUsed: decided.llmUsed
+      };
+      llmCallCount += decided.llmCalls;
+      strategyUsedFallback = decided.usedFallback;
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "ask strategy decided",
+        metadata: {
+          strategy: strategyDecision.strategy,
+          confidence: strategyDecision.confidence,
+          llmUsed: strategyDecision.llmUsed,
+          llmCallCount
+        }
+      });
+    } catch (error) {
+      strategyDecision = {
+        ...classifyQuestionIntentFallback(question),
+        llmUsed: false
+      };
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `ask strategy fallback used: ${error instanceof Error ? error.message : String(error)}`,
+        metadata: {
+          strategy: strategyDecision.strategy
+        }
+      });
+    }
+
+    const intent = strategyToIntent(strategyDecision.strategy);
+
+    if (structureSnapshot) {
+      const deterministic = await buildDeterministicMethodAnswer({
+        project,
+        question,
+        structure: structureSnapshot
+      });
+      if (deterministic) {
+        const deterministicHits = [deterministic.hit];
+        const deterministicGate = qualityGateForAsk({
+          output: {
+            answer: deterministic.answer,
+            confidence: deterministic.confidence,
+            evidence: deterministic.evidence,
+            caveats: deterministic.caveats
+          },
+          question,
+          hits: deterministicHits
+        });
+
+        const deterministicReportLines: string[] = [
+          "# Query Report",
+          "",
+          `- projectId: ${project.id}`,
+          `- projectName: ${project.name}`,
+          `- askedAt: ${nowIso()}`,
+          `- question: ${question}`,
+          `- confidence: ${deterministic.confidence.toFixed(2)}`,
+          `- qualityGatePassed: ${deterministicGate.passed}`,
+          `- attempts: 0`,
+          "",
+          "## Answer",
+          deterministic.answer,
+          "",
+          "## Evidence",
+          ...deterministic.evidence.map((line) => `- ${line}`),
+          "",
+          "## Caveats",
+          ...deterministic.caveats.map((line) => `- ${line}`),
+          "",
+          "## Retrieval",
+          "- provider=lexical",
+          "- fallback=false",
+          "- hitCount=1",
+          "- topConfidence=0.90",
+          ""
+        ];
+        const queryReportFiles = await writeMemoryDocs({
+          memoryRoot,
+          groupDir: QUERY_MEMORY_DIR,
+          latestFileName: "latest.md",
+          content: `${deterministicReportLines.join("\n")}\n`
+        });
+
+        const response: ProjectAskResponse = {
+          project,
+          question,
+          answer: deterministic.answer,
+          confidence: deterministic.confidence,
+          qualityGatePassed: deterministicGate.passed,
+          attempts: 0,
+          evidence: deterministic.evidence,
+          caveats: deterministic.caveats,
+          retrieval: {
+            provider: "lexical",
+            fallbackUsed: false,
+            hitCount: 1,
+            topConfidence: 0.9
+          },
+          diagnostics: {
+            lowConfidenceMode: false,
+            qualityGateFailures: deterministicGate.failures,
+            usedFallback: false,
+            llmCallCount,
+            llmCallBudget,
+            strategyType: strategyDecision.strategy,
+            strategyConfidence: strategyDecision.confidence,
+            strategyLlmUsed: strategyDecision.llmUsed,
+            strategyReason: strategyDecision.reason,
+            deterministicUsed: true,
+            deterministicSymbol: deterministic.symbol,
+            memoryFiles: unique([
+              ...structureMemoryFiles,
+              queryReportFiles.latestPath,
+              queryReportFiles.snapshotPath
+            ])
+          }
+        };
+
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
           projectId: options.projectId,
-          query,
-          limit: options.limit ?? 14
-        })
-      )
-    );
+          stage: "ask",
+          status: "success",
+          message: "project ask completed with deterministic symbol analysis",
+          metadata: {
+            symbol: deterministic.symbol,
+            llmCallCount
+          }
+        });
+        return response;
+      }
+    }
+
+    if (options.deterministicOnly && structureSnapshot) {
+      const deterministicCaveats = structureSnapshot
+        ? ["LLM 보강 미사용"]
+        : ["LLM 보강 미사용", "구조 인덱스가 없어 심볼 매칭 범위가 제한되었습니다."];
+      const deterministicEvidence = structureSnapshot
+        ? ["deterministic symbol lookup: no exact match"]
+        : ["deterministic symbol lookup skipped: structure index missing"];
+      const reportLines = [
+        "# Query Report",
+        "",
+        `- projectId: ${project.id}`,
+        `- projectName: ${project.name}`,
+        `- askedAt: ${nowIso()}`,
+        `- question: ${question}`,
+        "- confidence: 0.35",
+        "- qualityGatePassed: false",
+        "- attempts: 0",
+        "",
+        "## Answer",
+        "deterministic-only 모드에서 질문을 처리했지만, 클래스/메서드 심볼을 정확히 매칭하지 못했습니다. LLM 보강을 켜고 재질문하거나, 클래스명/메서드명을 명시해주세요.",
+        "",
+        "## Evidence",
+        ...deterministicEvidence.map((line) => `- ${line}`),
+        "",
+        "## Caveats",
+        ...deterministicCaveats.map((line) => `- ${line}`),
+        ""
+      ];
+      const queryReportFiles = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: QUERY_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: `${reportLines.join("\n")}\n`
+      });
+      const response: ProjectAskResponse = {
+        project,
+        question,
+        answer:
+          "deterministic-only 모드에서는 정확한 심볼 매칭 질문(예: `AccBenefitClaimService.saveBenefitClaimDoc`) 위주로 응답합니다.",
+        confidence: 0.35,
+        qualityGatePassed: false,
+        attempts: 0,
+        evidence: deterministicEvidence,
+        caveats: deterministicCaveats,
+        retrieval: {
+          provider: "lexical",
+          fallbackUsed: false,
+          hitCount: 0,
+          topConfidence: 0
+        },
+        diagnostics: {
+          lowConfidenceMode: true,
+          qualityGateFailures: ["deterministic-no-symbol-match"],
+          usedFallback: false,
+          llmCallCount,
+          llmCallBudget,
+          strategyType: strategyDecision.strategy,
+          strategyConfidence: strategyDecision.confidence,
+          strategyLlmUsed: strategyDecision.llmUsed,
+          strategyReason: strategyDecision.reason,
+          deterministicUsed: true,
+          deterministicSymbol: "none",
+          memoryFiles: unique([...structureMemoryFiles, queryReportFiles.latestPath, queryReportFiles.snapshotPath])
+        }
+      };
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "success",
+        message: "deterministic-only ask completed without LLM",
+        metadata: {
+          llmCallCount
+        }
+      });
+      return response;
+    }
+
+    if (options.deterministicOnly && !structureSnapshot) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "deterministic-only requested but structure index missing; fallback to LLM-assisted path"
+      });
+    }
+
+    let analysis = await readAnalysisSnapshot(memoryRoot);
+    if (analysis) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "using cached analysis snapshot",
+        metadata: {
+          analyzedAt: analysis.analyzedAt
+        }
+      });
+    } else {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "analysis snapshot missing; running project analyze",
+        metadata: {
+          cacheMaxAgeMs: ANALYSIS_CACHE_MAX_AGE_MS
+        }
+      });
+      const analyzeStartedAt = Date.now();
+      analysis = await analyzeServerProject({
+        projectId: options.projectId
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "analysis snapshot created for ask",
+        metadata: {
+          analyzedAt: analysis.analyzedAt,
+          tookMs: Date.now() - analyzeStartedAt
+        }
+      });
+    }
+
+    const expandedQueries = buildAskQueryCandidates({
+      question,
+      strategy: strategyDecision.strategy,
+      targetSymbols: strategyDecision.targetSymbols
+    });
+    const searchResults: ProjectSearchResult[] = [];
+    for (const [index, expandedQuery] of expandedQueries.entries()) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `retrieval query ${index + 1}/${expandedQueries.length} started`,
+        metadata: {
+          query: expandedQuery
+        }
+      });
+      const result = await searchServerProject({
+        projectId: options.projectId,
+        query: expandedQuery,
+        limit: options.limit ?? 14
+      });
+      searchResults.push(result);
+
+      const topConfidence = result.hits[0] ? normalizeHitConfidence(result.hits[0]) : 0;
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `retrieval query ${index + 1}/${expandedQueries.length} finished`,
+        metadata: {
+          provider: result.provider,
+          fallbackUsed: result.fallbackUsed,
+          hitCount: result.hits.length,
+          topConfidence
+        }
+      });
+
+      if (result.hits.length >= 8 && topConfidence >= 0.72) {
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: "retrieval early-stop: enough high-confidence evidence collected",
+          metadata: {
+            query: expandedQuery,
+            hitCount: result.hits.length,
+            topConfidence
+          }
+        });
+        break;
+      }
+    }
 
     const mergedHitsMap = new Map<string, ProjectSearchHit>();
     for (const result of searchResults) {
@@ -1930,15 +3982,23 @@ export async function askServerProject(options: {
     const mergedHits = Array.from(mergedHitsMap.values())
       .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)))
       .slice(0, options.limit ?? 14);
+    const mergedCodeHits = mergedHits.filter((hit) => CODE_FILE_EXTENSIONS.has(path.extname(hit.path).toLowerCase()));
 
-    const bestSearch = searchResults[0]!;
+    const bestSearch =
+      [...searchResults].sort((a, b) => {
+        const aTop = a.hits[0]?.score ?? 0;
+        const bTop = b.hits[0]?.score ?? 0;
+        const aWeight = (a.provider === "qmd" ? 4 : 0) + (a.fallbackUsed ? 0 : 1);
+        const bWeight = (b.provider === "qmd" ? 4 : 0) + (b.fallbackUsed ? 0 : 1);
+        return bTop + bWeight - (aTop + aWeight);
+      })[0] ?? searchResults[0]!;
     const lowConfidenceMode =
       mergedHits.length === 0 || normalizeHitConfidence(mergedHits[0]) < 0.45;
 
-    const memoryRoot = resolveMemoryHome(project.workspaceDir);
     const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
+    const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent);
     const memoryPreview: Array<{ path: string; content: string }> = [];
-    for (const relativePath of memoryMarkdownFiles.slice(0, 12)) {
+    for (const relativePath of selectedMemoryFiles) {
       const absolutePath = path.resolve(memoryRoot, relativePath);
       const content = await readTextFileSafe(absolutePath);
       if (!content) {
@@ -1946,12 +4006,10 @@ export async function askServerProject(options: {
       }
       memoryPreview.push({
         path: relativePath,
-        content: content.slice(0, 2200)
+        content
       });
     }
 
-    const llm = new OpenAICompatibleLlmClient();
-    const maxAttempts = Math.max(1, Math.min(options.maxAttempts ?? DEFAULT_ASK_MAX_ATTEMPTS, 5));
     const qualityFailures: string[] = [];
 
     let bestOutput: z.infer<typeof ProjectAskOutputSchema> = {
@@ -1968,6 +4026,38 @@ export async function askServerProject(options: {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       attempts = attempt;
       const priorFailures = qualityFailures.slice(-8);
+      const sourceHits = intent.methodFocused && mergedCodeHits.length > 0 ? mergedCodeHits : mergedHits;
+      const llmMergedHits = sourceHits.map((hit) => ({
+        path: hit.path,
+        score: hit.score,
+        confidence: normalizeHitConfidence(hit),
+        reasons: (hit.reasons ?? []).slice(0, 3),
+        snippet: hit.snippet ?? ""
+      }));
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `ask prompt prepared (attempt ${attempt}/${maxAttempts})`,
+        metadata: {
+          memoryFiles: memoryPreview.length,
+          memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
+          retrievalHits: llmMergedHits.length,
+          retrievalChars: JSON.stringify(llmMergedHits).length
+        }
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `llm answer generation attempt ${attempt}/${maxAttempts} started`,
+        metadata: {
+          priorFailures
+        }
+      });
+      const attemptStartedAt = Date.now();
       const generation = await llm.generateStructured({
         systemPrompt: [
           "You are a strict project Q&A engine for implementation logic.",
@@ -1999,22 +4089,19 @@ export async function askServerProject(options: {
               confidence: analysis.confidence,
               risks: analysis.risks,
               projectPreset: analysis.projectPreset ?? null,
-              eaiCatalog: analysis.eaiCatalog ?? null
+              eaiCatalog: analysis.eaiCatalog ?? null,
+              structureCatalog: analysis.structureCatalog ?? null
             },
             retrieval: {
               provider: bestSearch.provider,
               fallbackUsed: bestSearch.fallbackUsed,
-              mergedHits: mergedHits.map((hit) => ({
-                path: hit.path,
-                score: hit.score,
-                confidence: normalizeHitConfidence(hit),
-                reasons: hit.reasons ?? [],
-                snippet: hit.snippet ?? ""
-              }))
+              mergedHits: llmMergedHits
             },
             memory: memoryPreview,
             instruction:
-              lowConfidenceMode
+              intent.methodFocused
+                ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
+                : lowConfidenceMode
                 ? "검색 confidence가 낮으므로 누락 가능성을 명확히 경고하고, 확정/추정 범위를 분리하세요."
                 : "근거 중심으로 구체적으로 답변하세요."
           },
@@ -2026,7 +4113,21 @@ export async function askServerProject(options: {
       });
 
       usedFallback ||= generation.usedFallback;
+      llmCallCount += generation.liveCallCount;
       bestOutput = generation.output;
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: `llm answer generation attempt ${attempt}/${maxAttempts} finished`,
+        metadata: {
+          confidence: generation.output.confidence,
+          usedFallback: generation.usedFallback,
+          liveCallCount: generation.liveCallCount,
+          tookMs: Date.now() - attemptStartedAt
+        }
+      });
 
       const gate = qualityGateForAsk({
         output: bestOutput,
@@ -2048,6 +4149,8 @@ export async function askServerProject(options: {
       `- projectName: ${project.name}`,
       `- askedAt: ${nowIso()}`,
       `- question: ${question}`,
+      `- strategy: ${strategyDecision.strategy}`,
+      `- strategyConfidence: ${strategyDecision.confidence.toFixed(2)}`,
       `- confidence: ${bestOutput.confidence.toFixed(2)}`,
       `- qualityGatePassed: ${passed}`,
       `- attempts: ${attempts}`,
@@ -2096,7 +4199,13 @@ export async function askServerProject(options: {
       diagnostics: {
         lowConfidenceMode,
         qualityGateFailures: unique(qualityFailures),
-        usedFallback,
+        usedFallback: usedFallback || strategyUsedFallback,
+        llmCallCount,
+        llmCallBudget,
+        strategyType: strategyDecision.strategy,
+        strategyConfidence: strategyDecision.confidence,
+        strategyLlmUsed: strategyDecision.llmUsed,
+        strategyReason: strategyDecision.reason,
         memoryFiles: [
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],
@@ -2116,7 +4225,9 @@ export async function askServerProject(options: {
         confidence: response.confidence,
         qualityGatePassed: response.qualityGatePassed,
         attempts: response.attempts,
-        hitCount: response.retrieval.hitCount
+        hitCount: response.retrieval.hitCount,
+        llmCallCount: response.diagnostics.llmCallCount,
+        strategy: response.diagnostics.strategyType
       }
     });
 
@@ -2182,8 +4293,12 @@ export async function searchServerProject(options: {
       }
     };
 
-    const retrievalConfig = await resolveRetrievalConfig(project.workspaceDir, retrievalOverrides);
-    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? 5_000);
+    const llmContext = await resolveProjectLlmContext(project);
+    const retrievalConfig = await resolveRetrievalConfig(
+      project.workspaceDir,
+      mergeRetrievalWithModelCaps(retrievalOverrides, llmContext.stageTokenCaps)
+    );
+    const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
       try {
@@ -2202,19 +4317,50 @@ export async function searchServerProject(options: {
       });
 
       const indexed = await ensureQmdIndexed(runtime);
-      const qmdQuery = buildQmdQueryFromSignals({
-        task: query
-      });
-      const qmdResult = await queryQmd({
-        runtime,
-        query: qmdQuery,
-        limit
-      });
+      const qmdQueries = unique(
+        [
+          buildQmdQueryFromSignals({
+            task: query
+          }),
+          compactQueryForSearch(query),
+          toSearchTokens(query).slice(0, 2).join(" ")
+        ].filter(Boolean)
+      );
+
+      let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
+        status: "empty",
+        hits: [],
+        errors: []
+      };
+      let usedQmdQuery = "";
+
+      for (const qmdQueryCandidate of qmdQueries) {
+        const candidate = qmdQueryCandidate.trim();
+        if (!candidate) {
+          continue;
+        }
+        const result = await queryQmd({
+          runtime,
+          query: candidate,
+          limit
+        });
+        qmdResult = {
+          ...result,
+          errors: unique([...qmdResult.errors, ...result.errors])
+        };
+        usedQmdQuery = candidate;
+        if (result.status === "ok") {
+          break;
+        }
+      }
 
       if (qmdResult.status === "ok") {
         const existingQmdHits: ProjectSearchHit[] = [];
         const missingQmdPaths: string[] = [];
         for (const hit of qmdResult.hits) {
+          if (isRetrievalNoisePath(hit.path)) {
+            continue;
+          }
           const exists = await fileExistsUnderWorkspace(project.workspaceDir, hit.path);
           if (!exists) {
             missingQmdPaths.push(hit.path);
@@ -2256,6 +4402,8 @@ export async function searchServerProject(options: {
               ],
               qmdIndexMethod: indexed.method,
               qmdQueryMode: retrievalConfig.qmd.queryMode,
+              qmdQuery: usedQmdQuery,
+              qmdQueriesTried: qmdQueries,
               qmdCommand: retrievalConfig.qmd.command,
               fileCount: files.length
             }
@@ -2291,6 +4439,8 @@ export async function searchServerProject(options: {
             ]),
             qmdIndexMethod: indexed.method,
             qmdQueryMode: retrievalConfig.qmd.queryMode,
+            qmdQuery: usedQmdQuery,
+            qmdQueriesTried: qmdQueries,
             qmdCommand: retrievalConfig.qmd.command,
             fileCount: files.length
           }
@@ -2304,7 +4454,8 @@ export async function searchServerProject(options: {
           metadata: {
             provider: "qmd",
             hitCount: response.hits.length,
-            mode: response.modeUsed
+            mode: response.modeUsed,
+            query: usedQmdQuery
           }
         });
         return response;
@@ -2328,6 +4479,8 @@ export async function searchServerProject(options: {
           qmdErrors: qmdResult.errors,
           qmdIndexMethod: indexed.method,
           qmdQueryMode: retrievalConfig.qmd.queryMode,
+          qmdQuery: usedQmdQuery,
+          qmdQueriesTried: qmdQueries,
           qmdCommand: retrievalConfig.qmd.command,
           fileCount: files.length
         }
@@ -2340,6 +4493,8 @@ export async function searchServerProject(options: {
         message: "qmd empty/failed; lexical fallback used",
         metadata: {
           qmdStatus: qmdResult.status,
+          qmdErrors: qmdResult.errors.slice(0, 3),
+          qmdQueriesTried: qmdQueries,
           hitCount: response.hits.length
         }
       });
@@ -2362,6 +4517,7 @@ export async function searchServerProject(options: {
           qmdStatus: "failed",
           qmdErrors: [error instanceof Error ? error.message : String(error)],
           qmdQueryMode: retrievalConfig.qmd.queryMode,
+          qmdQueriesTried: [],
           qmdCommand: retrievalConfig.qmd.command,
           fileCount: files.length
         }

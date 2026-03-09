@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { AnalyzeInput, AnalyzeInputSchema, RuntimeSnapshot, RunMode } from "../core/types.js";
+import { OpenAICompatibleLlmClient } from "../llm/client.js";
 import { RunLoopEvent, runLoop } from "../loop/runner.js";
 
 export type ServerRunStatus = "queued" | "running" | "waiting" | "finished" | "failed";
@@ -64,6 +65,14 @@ export interface StartRunPayload {
   contextTokenBudget?: number;
   retryPolicy?: AnalyzeInput["retryPolicy"];
   retrieval?: AnalyzeInput["retrieval"];
+  llm?: {
+    model?: string;
+    maxTokens?: number;
+    contextWindowTokens?: number;
+    contextUsageRatio?: number;
+    retrySameTask?: number;
+    retryChangedTask?: number;
+  };
   dryRun?: boolean;
   workspaceDir?: string;
 }
@@ -337,9 +346,20 @@ export async function startBackgroundRun(payload: StartRunPayload): Promise<Serv
     debugLog("run started", { runId, objective: analyzeInput.objective, workspaceDir });
 
     try {
+      const llmClient = payload.llm
+        ? new OpenAICompatibleLlmClient({
+            model: payload.llm.model,
+            maxTokens: payload.llm.maxTokens,
+            contextWindowTokens: payload.llm.contextWindowTokens,
+            contextUsageRatio: payload.llm.contextUsageRatio,
+            retrySameTask: payload.llm.retrySameTask,
+            retryChangedTask: payload.llm.retryChangedTask
+          })
+        : undefined;
       const result = await runLoop(analyzeInput, {
         runId,
         cwd: workspaceDir,
+        llmClient,
         onEvent: async (event) => {
           record.events.push(event);
           record.updatedAt = nowIso();

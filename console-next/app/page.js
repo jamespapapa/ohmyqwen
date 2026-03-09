@@ -484,6 +484,9 @@ export default function HomePage() {
   const [projectLoading, setProjectLoading] = useState(false);
   const [projectMessage, setProjectMessage] = useState("");
   const [projectError, setProjectError] = useState("");
+  const [llmSettings, setLlmSettings] = useState(null);
+  const [llmSettingsLoading, setLlmSettingsLoading] = useState(false);
+  const [selectedLlmModelId, setSelectedLlmModelId] = useState("");
   const [presetName, setPresetName] = useState("");
   const [presetSummary, setPresetSummary] = useState("");
   const [presetFactsText, setPresetFactsText] = useState("");
@@ -505,6 +508,8 @@ export default function HomePage() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [askQuestion, setAskQuestion] = useState("");
+  const [askMaxAttempts, setAskMaxAttempts] = useState(1);
+  const [askDeterministicOnly, setAskDeterministicOnly] = useState(false);
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
   const [debugEvents, setDebugEvents] = useState([]);
@@ -556,6 +561,22 @@ export default function HomePage() {
   );
   const actionProgress = useMemo(() => buildActionProgress(events), [events]);
   const verifyProgress = useMemo(() => buildVerifyProgress(events), [events]);
+  const latestDebugEvent = useMemo(
+    () => (debugEvents.length > 0 ? debugEvents[debugEvents.length - 1] : null),
+    [debugEvents]
+  );
+  const runBusy = Boolean(runId) && (run?.status === "running" || run?.status === "waiting");
+  const activeOps = useMemo(() => {
+    const items = [];
+    if (isStarting) items.push("Run 시작 준비");
+    if (indexing) items.push("QMD 색인");
+    if (analysisLoading) items.push("LLM 구조 분석");
+    if (searchLoading) items.push("프로젝트 검색");
+    if (askLoading) items.push("프로젝트 질문 분석");
+    if (runBusy) items.push(`Runtime 실행 (${live.currentStage || "ANALYZE"})`);
+    return items;
+  }, [analysisLoading, askLoading, indexing, isStarting, live.currentStage, runBusy, searchLoading]);
+  const projectBusy = analysisLoading || askLoading || searchLoading || indexing;
 
   async function loadPresets() {
     setPresetLoading(true);
@@ -567,6 +588,21 @@ export default function HomePage() {
       setPresetError(e instanceof Error ? e.message : String(e));
     } finally {
       setPresetLoading(false);
+    }
+  }
+
+  async function loadLlmSettings() {
+    setLlmSettingsLoading(true);
+    try {
+      const response = await getJson("/api/llm/models");
+      setLlmSettings(response);
+      if (!selectedLlmModelId && response?.defaultModelId) {
+        setSelectedLlmModelId(response.defaultModelId);
+      }
+    } catch {
+      setLlmSettings(null);
+    } finally {
+      setLlmSettingsLoading(false);
     }
   }
 
@@ -600,6 +636,7 @@ export default function HomePage() {
   useEffect(() => {
     void loadProjects();
     void loadPresets();
+    void loadLlmSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -611,6 +648,7 @@ export default function HomePage() {
     setProjectName(selectedProject.name || "");
     setWorkspaceDir(selectedProject.workspaceDir || "");
     setProjectDescription(selectedProject.description || "");
+    setSelectedLlmModelId(selectedProject.llm?.modelId || llmSettings?.defaultModelId || "");
     setSelectedPresetId(selectedProject.presetId || "");
     setProjectQueryMode(selectedProject.retrieval?.qmd?.queryMode || "query_then_search");
     setMode(selectedProject.defaultMode || "feature");
@@ -620,7 +658,30 @@ export default function HomePage() {
     setSelectedFileDetail(null);
     setSelectedFileError("");
     void loadDebugEvents(selectedProject.id);
-  }, [selectedProject]);
+  }, [selectedProject, llmSettings?.defaultModelId]);
+
+  useEffect(() => {
+    if (!selectedProjectId || !projectBusy) {
+      return;
+    }
+
+    let active = true;
+    const poll = async () => {
+      if (!active) {
+        return;
+      }
+      await loadDebugEvents(selectedProjectId, { silent: true });
+    };
+
+    void poll();
+    const timer = setInterval(() => {
+      void poll();
+    }, 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [selectedProjectId, projectBusy]);
 
   useEffect(() => {
     if (!selectedPreset) {
@@ -802,20 +863,25 @@ export default function HomePage() {
     }
   }
 
-  async function loadDebugEvents(projectId = selectedProjectId) {
+  async function loadDebugEvents(projectId = selectedProjectId, options = {}) {
+    const silent = Boolean(options.silent);
     if (!projectId) {
       setDebugEvents([]);
       return;
     }
 
-    setDebugLoading(true);
+    if (!silent) {
+      setDebugLoading(true);
+    }
     try {
       const response = await getJson(`/api/projects/${projectId}/debug?limit=80`);
       setDebugEvents(response.events || []);
     } catch {
       setDebugEvents([]);
     } finally {
-      setDebugLoading(false);
+      if (!silent) {
+        setDebugLoading(false);
+      }
     }
   }
 
@@ -841,6 +907,9 @@ export default function HomePage() {
         workspaceDir: workspaceDir.trim(),
         description: projectDescription.trim(),
         presetId: selectedPresetId || undefined,
+        llm: {
+          modelId: selectedLlmModelId || undefined
+        },
         defaultMode: mode,
         defaultDryRun: dryRun,
         retrieval: {
@@ -1021,19 +1090,28 @@ export default function HomePage() {
 
     setAskLoading(true);
     setProjectError("");
+    setProjectMessage("질의 분석/검색/응답 생성 진행 중...");
     setAskResult(null);
 
     try {
       const response = await getJson(`/api/projects/${selectedProjectId}/ask`, {
         method: "POST",
         body: JSON.stringify({
-          question: askQuestion.trim()
+          question: askQuestion.trim(),
+          maxAttempts: Math.max(0, Math.min(Number(askMaxAttempts) || 0, 5)),
+          deterministicOnly: askDeterministicOnly
         })
       });
       setAskResult(response);
+      setProjectMessage(
+        `답변 완료: confidence=${Number(response.confidence || 0).toFixed(2)}, llmCalls=${
+          response.diagnostics?.llmCallCount ?? "-"
+        }`
+      );
       await loadDebugEvents();
     } catch (e) {
       setProjectError(e instanceof Error ? e.message : String(e));
+      setProjectMessage("");
     } finally {
       setAskLoading(false);
     }
@@ -1095,6 +1173,35 @@ export default function HomePage() {
         <section className="hero">
           <h1>ohmyqwen Runtime Console</h1>
           <p>현재 단계와 수행 내용이 한국어로 실시간 표시됩니다.</p>
+        </section>
+
+        <section className={`ops-banner ${activeOps.length > 0 ? "active" : "idle"}`}>
+          <div className="ops-main">
+            <span className={`ops-dot ${activeOps.length > 0 ? "active" : "idle"}`} />
+            <strong>{activeOps.length > 0 ? "작업 진행 중" : "대기 중"}</strong>
+            {activeOps.length > 0 ? <span className="ops-count">{activeOps.length}개</span> : null}
+          </div>
+          {activeOps.length > 0 ? (
+            <div className="ops-chip-list">
+              {activeOps.map((op) => (
+                <span key={op} className="ops-chip">
+                  {op}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="ops-meta">현재 백그라운드 작업이 없습니다.</div>
+          )}
+          <div className="ops-meta">
+            {latestDebugEvent
+              ? `[${latestDebugEvent.stage}/${latestDebugEvent.status}] ${shortText(
+                  latestDebugEvent.message,
+                  140
+                )} · ${latestDebugEvent.timestamp}`
+              : runBusy
+                ? shortText(live.summary, 140)
+                : "최근 작업 로그 없음"}
+          </div>
         </section>
 
         <section className="grid">
@@ -1167,6 +1274,22 @@ export default function HomePage() {
             <div className="hint">
               프로젝트 저장 시 선택한 프리셋이 우선 적용됩니다. 미선택 시 규칙 기반 자동 매칭을 시도합니다.
             </div>
+
+            <div className="label" style={{ marginTop: 10 }}>LLM 모델</div>
+            <select
+              value={selectedLlmModelId}
+              onChange={(e) => setSelectedLlmModelId(e.target.value)}
+              disabled={llmSettingsLoading}
+            >
+              {(llmSettings?.models || []).length === 0 ? (
+                <option value="">(모델 정보 로딩 실패)</option>
+              ) : null}
+              {(llmSettings?.models || []).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label || model.id} · ctx={model.contextWindowTokens} · out={model.maxOutputTokens}
+                </option>
+              ))}
+            </select>
 
             <details className="preset-editor">
               <summary>프리셋 추가/수정</summary>
@@ -1436,7 +1559,8 @@ export default function HomePage() {
               <div className="search-result-box" style={{ marginTop: 10 }}>
                 <div className="label">프로젝트 구조/아키텍처 분석</div>
                 <div className="hint">
-                  confidence={Number(analysisResult.confidence || 0).toFixed(2)} · analyzedAt={analysisResult.analyzedAt}
+                  confidence={Number(analysisResult.confidence || 0).toFixed(2)} · analyzedAt={analysisResult.analyzedAt} · llmCalls=
+                  {analysisResult.diagnostics?.llmCallCount ?? "-"}
                 </div>
                 <div className="report-box" style={{ marginTop: 8 }}>
                   <div className="report-row">
@@ -1462,6 +1586,13 @@ export default function HomePage() {
                   <div className="report-row">
                     <span>EAI override</span>
                     <span>{analysisResult.eaiCatalog?.manualOverridesApplied ?? 0}</span>
+                  </div>
+                  <div className="report-row">
+                    <span>구조 인덱스</span>
+                    <span>
+                      files={analysisResult.structureCatalog?.fileCount ?? 0}, methods=
+                      {analysisResult.structureCatalog?.methodCount ?? 0}
+                    </span>
                   </div>
                 </div>
 
@@ -1503,12 +1634,36 @@ export default function HomePage() {
             ) : null}
 
             <div className="label" style={{ marginTop: 10 }}>프로젝트 Q&A</div>
+            {projectBusy && latestDebugEvent ? (
+              <div className="hint">
+                작업중: [{latestDebugEvent.stage}/{latestDebugEvent.status}]{" "}
+                {shortText(latestDebugEvent.message, 120)} · {latestDebugEvent.timestamp}
+              </div>
+            ) : null}
             <div className="ask-row">
               <input
                 value={askQuestion}
                 onChange={(e) => setAskQuestion(e.target.value)}
                 placeholder='예: 보험금 청구 로직이 어떻게 이루어지는지 확인해줘'
               />
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={askMaxAttempts}
+                onChange={(e) => setAskMaxAttempts(e.target.value)}
+                title="LLM 최대 재시도 횟수"
+                style={{ width: 80 }}
+              />
+              <label className="hint" style={{ whiteSpace: "nowrap" }}>
+                <input
+                  type="checkbox"
+                  checked={askDeterministicOnly}
+                  onChange={(e) => setAskDeterministicOnly(e.target.checked)}
+                  style={{ width: 14, marginRight: 4 }}
+                />
+                deterministic only(심볼질문 전용)
+              </label>
               <button type="button" onClick={onAskProject} disabled={!selectedProjectId || askLoading}>
                 {askLoading ? "응답 생성 중..." : "질문 실행"}
               </button>
@@ -1518,7 +1673,17 @@ export default function HomePage() {
               <div className="search-result-box">
                 <div className="hint">
                   answerConfidence={Number(askResult.confidence || 0).toFixed(2)} · qualityGate=
-                  {askResult.qualityGatePassed ? "passed" : "failed"} · attempts={askResult.attempts}
+                  {askResult.qualityGatePassed ? "passed" : "failed"} · attempts={askResult.attempts} · llmCalls=
+                  {askResult.diagnostics?.llmCallCount ?? "-"} /{" "}
+                  {(askResult.diagnostics?.llmCallBudget ?? 0) <= 0 ? "∞" : askResult.diagnostics?.llmCallBudget}
+                  {askResult.diagnostics?.strategyType
+                    ? ` · strategy=${askResult.diagnostics.strategyType}(${Number(
+                        askResult.diagnostics?.strategyConfidence || 0
+                      ).toFixed(2)})`
+                    : ""}
+                  {askResult.diagnostics?.deterministicUsed
+                    ? ` · deterministic=${askResult.diagnostics?.deterministicSymbol || "true"}`
+                    : ""}
                 </div>
                 <pre className="file-scroll-view" style={{ maxHeight: 240 }}>{askResult.answer}</pre>
                 <div className="label" style={{ marginTop: 8 }}>근거</div>

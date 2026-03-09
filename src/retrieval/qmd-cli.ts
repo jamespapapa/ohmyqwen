@@ -54,12 +54,18 @@ function unique(items: string[]): string[] {
 }
 
 function firstLine(text: string): string {
-  return (
-    text
-      .split("\n")
-      .map((line) => line.trim())
-      .find(Boolean) ?? text.trim()
-  );
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return text.trim();
+  }
+
+  const prioritized =
+    lines.find((line) => /sql|sqlite|error|failed|exception|readonly|timeout/i.test(line)) ?? lines[0];
+  return prioritized;
 }
 
 export function isSafeQmdCommand(command: string): boolean {
@@ -83,6 +89,19 @@ function normalizeOptionalPath(cwd: string, value?: string): string | undefined 
   }
 
   return path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+}
+
+function isReadonlySqliteError(text: string): boolean {
+  return /sqlite.*readonly|readonly database|SQLITE_READONLY|wrappers\.js:9/i.test(text);
+}
+
+async function hasUsableIndexFile(indexPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(indexPath);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveQmdRuntime(options: {
@@ -144,19 +163,35 @@ function extractJsonArray(text: string): unknown[] {
     return [];
   }
 
-  const start = normalized.indexOf("[");
-  const end = normalized.lastIndexOf("]");
-  if (start < 0 || end < start) {
+  const starts: number[] = [];
+  for (let index = 0; index < normalized.length; index += 1) {
+    if (normalized[index] === "[") {
+      starts.push(index);
+    }
+  }
+
+  if (starts.length === 0) {
     throw new Error("qmd JSON output parsing failed: array not found");
   }
 
-  const candidate = normalized.slice(start, end + 1);
-  const parsed = JSON.parse(candidate);
-  if (!Array.isArray(parsed)) {
-    throw new Error("qmd JSON output parsing failed: expected array");
+  for (let index = starts.length - 1; index >= 0; index -= 1) {
+    const start = starts[index]!;
+    const end = normalized.lastIndexOf("]");
+    if (end < start) {
+      continue;
+    }
+    const candidate = normalized.slice(start, end + 1);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // keep trying with earlier "[" positions
+    }
   }
 
-  return parsed;
+  throw new Error("qmd JSON output parsing failed: expected array");
 }
 
 async function runCommand(runtime: QmdCliRuntime, args: string[]): Promise<QmdCommandResult> {
@@ -264,7 +299,18 @@ export async function ensureQmdIndexed(runtime: QmdCliRuntime): Promise<{
     ]);
 
     if (addResult.code !== 0) {
-      throw new Error(firstLine(addResult.stderr || addResult.stdout || "qmd collection add failed"));
+      const raw = addResult.stderr || addResult.stdout || "qmd collection add failed";
+      if (isReadonlySqliteError(raw) && (await hasUsableIndexFile(runtime.indexPath))) {
+        syncCache.set(runtime.indexPath, {
+          signature,
+          syncedAt: Date.now()
+        });
+        return {
+          indexed: true,
+          method: "cached"
+        };
+      }
+      throw new Error(firstLine(raw));
     }
 
     syncCache.set(runtime.indexPath, {
@@ -279,7 +325,18 @@ export async function ensureQmdIndexed(runtime: QmdCliRuntime): Promise<{
 
   const updateResult = await runCommand(runtime, ["--index", runtime.indexName, "update"]);
   if (updateResult.code !== 0) {
-    throw new Error(firstLine(updateResult.stderr || updateResult.stdout || "qmd update failed"));
+    const raw = updateResult.stderr || updateResult.stdout || "qmd update failed";
+    if (isReadonlySqliteError(raw) && (await hasUsableIndexFile(runtime.indexPath))) {
+      syncCache.set(runtime.indexPath, {
+        signature,
+        syncedAt: Date.now()
+      });
+      return {
+        indexed: true,
+        method: "cached"
+      };
+    }
+    throw new Error(firstLine(raw));
   }
 
   syncCache.set(runtime.indexPath, {
@@ -397,8 +454,12 @@ export async function queryQmd(options: {
   for (const mode of modes) {
     try {
       const hits = await runQmdSearch(options.runtime, mode, trimmedQuery, options.limit);
+      if (hits.length === 0) {
+        errors.push(`${mode}:empty`);
+        continue;
+      }
       return {
-        status: hits.length > 0 ? "ok" : "empty",
+        status: "ok",
         mode,
         hits,
         errors
@@ -422,18 +483,41 @@ export function buildQmdQueryFromSignals(signals: {
   errorLogs?: string[];
   verifyFeedback?: string[];
 }): string {
-  const normalizedTask = String(signals.task || "").trim();
-  const tokens = unique(
-    [
-      ...normalizedTask.split(/\s+/),
-      ...(signals.targetFiles ?? []),
-      ...(signals.diffSummary ?? []),
-      ...(signals.errorLogs ?? []),
-      ...(signals.verifyFeedback ?? [])
-    ]
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-  );
+  const stopwords = new Set([
+    "어떻게",
+    "어디",
+    "확인",
+    "확인해줘",
+    "해줘",
+    "로직이",
+    "이루어지는지",
+    "please",
+    "check",
+    "how",
+    "where",
+    "what",
+    "the",
+    "a",
+    "an",
+    "to",
+    "and",
+    "or",
+    "for"
+  ]);
 
-  return tokens.join(" ").slice(0, 900).trim();
+  const raw = unique([
+    ...(String(signals.task || "").match(/[A-Za-z0-9가-힣._/-]+/g) ?? []),
+    ...(signals.targetFiles ?? []),
+    ...(signals.diffSummary ?? []),
+    ...(signals.errorLogs ?? []),
+    ...(signals.verifyFeedback ?? [])
+  ]);
+
+  const tokens = raw
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length >= 2)
+    .filter((entry) => !stopwords.has(entry.toLowerCase()))
+    .slice(0, 10);
+
+  return tokens.join(" ").slice(0, 300).trim();
 }

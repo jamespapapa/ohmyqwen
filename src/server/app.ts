@@ -3,6 +3,18 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { handleApiRoutes } from "./routes.js";
 
+function shouldTraceServer(): boolean {
+  return process.env.OHMYQWEN_SERVER_TRACE === "1";
+}
+
+function serverTrace(message: string, payload?: Record<string, unknown>): void {
+  if (!shouldTraceServer()) {
+    return;
+  }
+  const suffix = payload ? ` ${JSON.stringify(payload)}` : "";
+  process.stdout.write(`[server-trace] ${new Date().toISOString()} ${message}${suffix}\n`);
+}
+
 function sendText(res: ServerResponse, code: number, body: string, contentType: string): void {
   res.statusCode = code;
   res.setHeader("Content-Type", contentType);
@@ -56,6 +68,26 @@ export async function startServer(options?: { host?: string; port?: number }): P
   const port = options?.port ?? 4311;
 
   const server = createServer(async (req, res) => {
+    const startedAt = Date.now();
+    const method = req.method ?? "GET";
+    const urlPath = req.url ?? "/";
+    const traceId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    serverTrace("request:start", {
+      traceId,
+      method,
+      url: urlPath
+    });
+
+    res.once("finish", () => {
+      serverTrace("request:finish", {
+        traceId,
+        method,
+        url: urlPath,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt
+      });
+    });
+
     try {
       const handledApi = await handleApiRoutes(req, res);
       if (handledApi) {
