@@ -114,4 +114,76 @@ describe("ask quality gate", () => {
     expect(gate.passed).toBe(false);
     expect(gate.failures).toContain("missing-module-scoped-code-evidence");
   });
+
+  it("fails topdown answers when direct linked EAI evidence exists but answer omits the interface detail", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "Entry -> Controller -> Service -> downstream 흐름이며 saveBenefitClaimDoc 가 서비스 핵심 메서드로 실행된다.",
+        confidence: 0.74,
+        evidence: ["controller evidence", "service evidence"],
+        caveats: []
+      },
+      question: "dcp-insurance 내부에서 보험금 청구 로직을 탑다운으로 설명해줘.",
+      hitPaths: [
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java"
+      ],
+      strategy: "module_flow_topdown",
+      moduleCandidates: ["dcp-insurance"],
+      hydratedEvidence: [
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java",
+          reason: "callee:AccBenefitClaimService.saveBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      linkedEaiEvidence: [
+        {
+          interfaceId: "F1FCZ0045",
+          interfaceName: "홈페이지 사고보험금접수 명세 반영"
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-linked-eai-detail");
+  });
+
+  it("passes topdown answers when direct linked EAI evidence is explicitly named", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "Entry -> Controller -> Service -> downstream 흐름이며 saveBenefitClaimDoc 이후 callF1FCZ0045 를 통해 F1FCZ0045(홈페이지 사고보험금접수 명세 반영) 인터페이스를 호출한다.",
+        confidence: 0.79,
+        evidence: ["controller evidence", "service evidence"],
+        caveats: []
+      },
+      question: "dcp-insurance 내부에서 보험금 청구 로직을 탑다운으로 설명해줘.",
+      hitPaths: [
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java"
+      ],
+      strategy: "module_flow_topdown",
+      moduleCandidates: ["dcp-insurance"],
+      hydratedEvidence: [
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java",
+          reason: "callee:AccBenefitClaimService.saveBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      linkedEaiEvidence: [
+        {
+          interfaceId: "F1FCZ0045",
+          interfaceName: "홈페이지 사고보험금접수 명세 반영"
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(true);
+  });
+
 });

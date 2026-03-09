@@ -27,6 +27,12 @@ import {
 } from "../retrieval/qmd-cli.js";
 import { buildQmdQueryCandidates } from "../retrieval/qmd-planner.js";
 import { qualityGateForAskOutput } from "./ask-quality.js";
+import {
+  buildEaiDictionaryEntries,
+  rankEaiDictionaryEntriesForSummary,
+  type EaiDictionaryEntry
+} from "./eai-dictionary.js";
+import { buildLinkedEaiEvidence } from "./eai-links.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -143,6 +149,8 @@ export interface ProjectAnalysisResult {
       interfaceName: string;
       purpose: string;
       usagePaths: string[];
+      moduleUsagePaths: string[];
+      javaCallSiteMethods: string[];
     }>;
   };
   structureCatalog?: {
@@ -206,6 +214,7 @@ export interface ProjectAskResponse {
     strategyReason?: string;
     scopeModules?: string[];
     hydratedEvidenceCount?: number;
+    linkedEaiEvidenceCount?: number;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
     memoryFiles: string[];
@@ -578,14 +587,6 @@ function mergeRetrievalWithModelCaps(
 
 function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
-}
-
-interface EaiDictionaryEntry {
-  interfaceId: string;
-  interfaceName: string;
-  purpose: string;
-  sourcePath: string;
-  usagePaths: string[];
 }
 
 function toSearchTokens(query: string): string[] {
@@ -1539,9 +1540,17 @@ function applyEaiOverrides(options: {
       interfaceName: override.interfaceName?.trim() || existing?.interfaceName || override.interfaceId,
       purpose: override.purpose?.trim() || existing?.purpose || "manual-override",
       sourcePath: override.sourcePath?.trim() || existing?.sourcePath || "(manual)",
+      envPaths: existing?.envPaths ?? [],
       usagePaths: override.usagePaths?.length
         ? unique(override.usagePaths.map((item) => toForwardSlash(item)))
-        : existing?.usagePaths ?? []
+        : existing?.usagePaths ?? [],
+      moduleUsagePaths: existing?.moduleUsagePaths ?? [],
+      reqSystemIds: existing?.reqSystemIds ?? [],
+      respSystemId: existing?.respSystemId,
+      targetType: existing?.targetType,
+      parameterName: existing?.parameterName,
+      serviceId: existing?.serviceId,
+      javaCallSites: existing?.javaCallSites ?? []
     });
     appliedCount += 1;
   }
@@ -1610,140 +1619,7 @@ async function buildEaiDictionary(options: {
     currentFile?: string;
   }) => Promise<void> | void;
 }): Promise<EaiDictionaryEntry[]> {
-  const includes = (options.servicePathIncludes ?? ["resources/eai/"]).map((entry) =>
-    toForwardSlash(entry).toLowerCase()
-  );
-  const eaiServiceFiles = options.files
-    .map((file) => toForwardSlash(file))
-    .filter((file) => {
-      const lower = file.toLowerCase();
-      if (!/(^|\/).+_service\.xml$/i.test(file)) {
-        return false;
-      }
-      if (includes.length === 0) {
-        return true;
-      }
-      return includes.some((entry) => lower.includes(entry));
-    })
-    .slice(0, options.maxEntries ?? 800);
-
-  if (eaiServiceFiles.length === 0) {
-    return [];
-  }
-
-  const searchableContents: Array<{ path: string; content: string }> = [];
-  const searchableSourceFiles = options.files.slice(0, 8_000);
-  for (let index = 0; index < searchableSourceFiles.length; index += 1) {
-    const file = searchableSourceFiles[index] as string;
-    const normalized = toForwardSlash(file);
-    const absolutePath = path.resolve(options.workspaceDir, normalized);
-    const content = await readTextFileSafe(absolutePath);
-    if (!content) {
-      if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
-        await options.onProgress({
-          phase: "searchable-content",
-          processed: index + 1,
-          total: searchableSourceFiles.length,
-          currentFile: normalized
-        });
-      }
-      continue;
-    }
-    searchableContents.push({
-      path: normalized,
-      content: content.toLowerCase()
-    });
-    if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
-      await options.onProgress({
-        phase: "searchable-content",
-        processed: index + 1,
-        total: searchableSourceFiles.length,
-        currentFile: normalized
-      });
-    }
-  }
-  await options.onProgress?.({
-    phase: "searchable-content",
-    processed: searchableSourceFiles.length,
-    total: searchableSourceFiles.length,
-    currentFile: "searchable-content-finished"
-  });
-
-  const entries: EaiDictionaryEntry[] = [];
-  for (let index = 0; index < eaiServiceFiles.length; index += 1) {
-    const relativePath = eaiServiceFiles[index] as string;
-    const absolutePath = path.resolve(options.workspaceDir, relativePath);
-    const content = await readTextFileSafe(absolutePath);
-    if (!content) {
-      if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
-        await options.onProgress({
-          phase: "entry-build",
-          processed: index + 1,
-          total: eaiServiceFiles.length,
-          currentFile: relativePath
-        });
-      }
-      continue;
-    }
-
-    const baseName = path.basename(relativePath);
-    const interfaceId = baseName.replace(/_service\.xml$/i, "");
-    const interfaceName = parseXmlTag(content, "serviceName") ?? interfaceId;
-    const purpose = inferEaiPurpose(content);
-    const lowerTokens = unique([
-      interfaceId.toLowerCase(),
-      interfaceName.toLowerCase()
-    ]).filter((token) => token.length >= 3);
-
-    const usagePaths: string[] = [];
-    for (const candidate of searchableContents) {
-      if (candidate.path === relativePath) {
-        continue;
-      }
-      if (!candidate.path.endsWith(".java") && !candidate.path.endsWith(".xml") && !candidate.path.endsWith(".kt")) {
-        continue;
-      }
-
-      const matched = lowerTokens.some((token) => candidate.content.includes(token));
-      if (!matched) {
-        continue;
-      }
-      usagePaths.push(candidate.path);
-      if (usagePaths.length >= 8) {
-        break;
-      }
-    }
-
-    entries.push({
-      interfaceId,
-      interfaceName,
-      purpose,
-      sourcePath: relativePath,
-      usagePaths
-    });
-    if (options.onProgress && (index + 1) % EAI_PROGRESS_INTERVAL === 0) {
-      await options.onProgress({
-        phase: "entry-build",
-        processed: index + 1,
-        total: eaiServiceFiles.length,
-        currentFile: relativePath
-      });
-    }
-  }
-  await options.onProgress?.({
-    phase: "entry-build",
-    processed: eaiServiceFiles.length,
-    total: eaiServiceFiles.length,
-    currentFile: "entry-build-finished"
-  });
-
-  return entries
-    .sort((a, b) =>
-      a.interfaceId === b.interfaceId
-        ? a.sourcePath.localeCompare(b.sourcePath)
-        : a.interfaceId.localeCompare(b.interfaceId)
-    )
-    .slice(0, options.maxEntries ?? 800);
+  return buildEaiDictionaryEntries(options);
 }
 
 function buildEaiDictionaryMarkdown(input: {
@@ -1767,6 +1643,35 @@ function buildEaiDictionaryMarkdown(input: {
     lines.push(`### ${entry.interfaceId} - ${entry.interfaceName}`);
     lines.push(`- purpose: ${entry.purpose}`);
     lines.push(`- source: ${entry.sourcePath}`);
+    if (entry.envPaths.length > 0) {
+      lines.push(`- envPaths: ${entry.envPaths.slice(0, 6).join(", ")}`);
+    }
+    if (entry.reqSystemIds.length > 0) {
+      lines.push(`- reqSystemIds: ${entry.reqSystemIds.join(", ")}`);
+    }
+    if (entry.respSystemId) {
+      lines.push(`- respSystemId: ${entry.respSystemId}`);
+    }
+    if (entry.targetType) {
+      lines.push(`- targetType: ${entry.targetType}`);
+    }
+    if (entry.parameterName) {
+      lines.push(`- parameterName: ${entry.parameterName}`);
+    }
+    if (entry.moduleUsagePaths.length > 0) {
+      lines.push("- moduleUsages:");
+      for (const usage of entry.moduleUsagePaths.slice(0, 6)) {
+        lines.push(`  - ${usage}`);
+      }
+    }
+    if (entry.javaCallSites.length > 0) {
+      lines.push("- javaCallSites:");
+      for (const site of entry.javaCallSites.slice(0, 6)) {
+        lines.push(
+          `  - ${site.path}${site.className || site.methodName ? ` :: ${site.className ?? "?"}.${site.methodName ?? "?"}` : ""}${site.direct ? " [direct]" : " [indirect]"}`
+        );
+      }
+    }
     if (entry.usagePaths.length > 0) {
       lines.push("- usages:");
       for (const usage of entry.usagePaths.slice(0, 8)) {
@@ -1845,6 +1750,38 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
         structureIndexCount: Number(parsed.diagnostics?.structureIndexCount || 0)
       }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function eaiSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, EAI_MEMORY_DIR, "latest.json");
+}
+
+async function readEaiDictionarySnapshot(memoryRoot: string): Promise<{
+  generatedAt?: string;
+  asOfDate?: string;
+  interfaceCount: number;
+  manualOverridesApplied?: number;
+  entries: EaiDictionaryEntry[];
+} | undefined> {
+  try {
+    const raw = await fs.readFile(eaiSnapshotPath(memoryRoot), "utf8");
+    const parsed = JSON.parse(raw) as {
+      generatedAt?: string;
+      asOfDate?: string;
+      interfaceCount?: number;
+      manualOverridesApplied?: number;
+      entries?: EaiDictionaryEntry[];
+    };
+    return {
+      generatedAt: parsed.generatedAt,
+      asOfDate: parsed.asOfDate,
+      interfaceCount: Number(parsed.interfaceCount ?? parsed.entries?.length ?? 0),
+      manualOverridesApplied: parsed.manualOverridesApplied,
+      entries: Array.isArray(parsed.entries) ? parsed.entries : []
     };
   } catch {
     return undefined;
@@ -3805,11 +3742,17 @@ export async function analyzeServerProject(options: {
             interfaceCount: eaiEntries.length,
             manualOverridesApplied: eaiManualOverridesApplied,
             source: "preset-enabled",
-            topInterfaces: eaiEntries.slice(0, 20).map((entry) => ({
+            topInterfaces: rankEaiDictionaryEntriesForSummary(eaiEntries, 20).map((entry) => ({
               interfaceId: entry.interfaceId,
               interfaceName: entry.interfaceName,
               purpose: entry.purpose,
-              usagePaths: entry.usagePaths.slice(0, 5)
+              usagePaths: entry.usagePaths.slice(0, 5),
+              moduleUsagePaths: entry.moduleUsagePaths.slice(0, 4),
+              javaCallSiteMethods: unique(
+                entry.javaCallSites
+                  .map((site) => site.methodName ?? "")
+                  .filter(Boolean)
+              ).slice(0, 4)
             }))
           }
         : {
@@ -3883,6 +3826,7 @@ function qualityGateForAsk(options: {
   hits: ProjectSearchHit[];
   strategy?: AskStrategyType;
   hydratedEvidence?: AskHydratedEvidenceItem[];
+  linkedEaiEvidence?: Array<{ interfaceId: string; interfaceName: string }>;
   moduleCandidates?: string[];
 }): {
   passed: boolean;
@@ -3899,6 +3843,7 @@ function qualityGateForAsk(options: {
       codeFile: item.codeFile,
       moduleMatched: item.moduleMatched
     })),
+    linkedEaiEvidence: options.linkedEaiEvidence,
     moduleCandidates: options.moduleCandidates
   });
 }
@@ -4343,6 +4288,21 @@ export async function askServerProject(options: {
       });
     }
 
+    const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
+    if (eaiSnapshot) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "loaded cached eai dictionary for ask",
+        metadata: {
+          interfaceCount: eaiSnapshot.interfaceCount,
+          asOfDate: eaiSnapshot.asOfDate ?? null
+        }
+      });
+    }
+
     const expandedQueries = buildAskQueryCandidates({
       question,
       strategy: strategyDecision.strategy,
@@ -4452,6 +4412,30 @@ export async function askServerProject(options: {
       }
     });
 
+    const linkedEaiEvidence = buildLinkedEaiEvidence({
+      question,
+      moduleCandidates: strategyDecision.moduleCandidates,
+      hydratedEvidence,
+      hits: mergedHits.map((hit) => ({
+        path: hit.path,
+        reason: (hit.reasons ?? []).join(" | "),
+        snippet: hit.snippet ?? ""
+      })),
+      entries: eaiSnapshot?.entries ?? [],
+      limit: 6
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "info",
+      message: "linked eai evidence prepared",
+      metadata: {
+        count: linkedEaiEvidence.length,
+        topInterfaces: linkedEaiEvidence.slice(0, 3).map((item) => item.interfaceId)
+      }
+    });
+
     const bestSearch =
       [...searchResults].sort((a, b) => {
         const aTop = a.hits[0]?.score ?? 0;
@@ -4516,7 +4500,8 @@ export async function askServerProject(options: {
           memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
           retrievalHits: llmMergedHits.length,
           retrievalChars: JSON.stringify(llmMergedHits).length,
-          hydratedEvidenceCount: hydratedEvidence.length
+          hydratedEvidenceCount: hydratedEvidence.length,
+          linkedEaiEvidenceCount: linkedEaiEvidence.length
         }
       });
       await appendProjectDebugEvent({
@@ -4536,6 +4521,7 @@ export async function askServerProject(options: {
           "Return ONLY one JSON object.",
           "Use only provided evidence, never fabricate.",
           "For logic questions, prefer code-level evidence over XML-only evidence.",
+          "If linkedEaiEvidence is present, prefer those interfaces over unrelated XML-only candidates and cite the interfaceId explicitly.",
           "If confidence is low, explicitly say uncertainty and missing coverage.",
           "If hydratedEvidence contains callee:* method blocks, use at least one of them in the answer when explaining the internal flow."
         ].join("\n"),
@@ -4573,12 +4559,13 @@ export async function askServerProject(options: {
               mergedHits: llmMergedHits
             },
             hydratedEvidence,
+            linkedEaiEvidence,
             memory: memoryPreview,
             instruction:
               intent.methodFocused
                 ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
                 : intent.moduleFlowFocused
-                ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. 확정 근거와 추정 범위를 분리하세요."
+                ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. linkedEaiEvidence가 있으면 해당 interfaceId와 인터페이스명을 직접 연결해서 설명하세요. 확정 근거와 추정 범위를 분리하세요."
                 : lowConfidenceMode
                 ? "검색 confidence가 낮으므로 누락 가능성을 명확히 경고하고, 확정/추정 범위를 분리하세요."
                 : "근거 중심으로 구체적으로 답변하세요."
@@ -4613,6 +4600,7 @@ export async function askServerProject(options: {
         hits: mergedHits,
         strategy: strategyDecision.strategy,
         hydratedEvidence,
+        linkedEaiEvidence,
         moduleCandidates: strategyDecision.moduleCandidates
       });
       if (gate.passed) {
@@ -4656,6 +4644,14 @@ export async function askServerProject(options: {
     reportLines.push(`- fallback=${bestSearch.fallbackUsed}`);
     reportLines.push(`- hitCount=${mergedHits.length}`);
     reportLines.push(`- topConfidence=${(mergedHits[0] ? normalizeHitConfidence(mergedHits[0]) : 0).toFixed(2)}`);
+    if (linkedEaiEvidence.length > 0) {
+      reportLines.push("", "## Linked EAI Evidence");
+      for (const item of linkedEaiEvidence.slice(0, 6)) {
+        reportLines.push(
+          `- ${item.interfaceId} | ${item.interfaceName} | score=${item.score} | reasons=${item.reasons.join(", ") || "(none)"}`
+        );
+      }
+    }
     reportLines.push("");
 
     const queryReportFiles = await writeMemoryDocs({
@@ -4692,6 +4688,7 @@ export async function askServerProject(options: {
         strategyReason: strategyDecision.reason,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
+        linkedEaiEvidenceCount: linkedEaiEvidence.length,
         memoryFiles: [
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],

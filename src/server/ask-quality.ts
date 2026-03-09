@@ -20,6 +20,11 @@ export interface AskHydratedQualityEvidence {
   moduleMatched: boolean;
 }
 
+export interface AskLinkedEaiQualityEvidence {
+  interfaceId: string;
+  interfaceName: string;
+}
+
 function hasCodeFileEvidenceFromPaths(paths: string[]): boolean {
   return paths.some((entry) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(entry));
 }
@@ -39,6 +44,7 @@ export function qualityGateForAskOutput(options: {
   hitPaths: string[];
   strategy?: AskQualityStrategy;
   hydratedEvidence?: AskHydratedQualityEvidence[];
+  linkedEaiEvidence?: AskLinkedEaiQualityEvidence[];
   moduleCandidates?: string[];
 }): {
   passed: boolean;
@@ -46,6 +52,7 @@ export function qualityGateForAskOutput(options: {
 } {
   const failures: string[] = [];
   const hydratedEvidence = options.hydratedEvidence ?? [];
+  const linkedEaiEvidence = options.linkedEaiEvidence ?? [];
   const moduleCandidates = options.moduleCandidates ?? [];
 
   if (options.output.answer.trim().length < 80) {
@@ -84,6 +91,16 @@ export function qualityGateForAskOutput(options: {
     !calleeNames.some((name) => options.output.answer.includes(name))
   ) {
     failures.push("missing-service-callee-detail");
+  }
+
+  if (
+    (options.strategy === "module_flow_topdown" || options.strategy === "eai_interface") &&
+    linkedEaiEvidence.length > 0 &&
+    !linkedEaiEvidence.some(
+      (item) => options.output.answer.includes(item.interfaceId) || options.output.answer.includes(item.interfaceName)
+    )
+  ) {
+    failures.push("missing-linked-eai-detail");
   }
 
   return {
