@@ -95,7 +95,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   lifecycle: {
     chunkVersion: "v1",
-    retrievalVersion: "v4-qmd-codefirst",
+    retrievalVersion: "v5-qmd-multicorpus",
     autoReindexOnStale: true
   },
   qmd: {

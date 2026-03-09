@@ -1,10 +1,5 @@
-import {
-  ensureQmdIndexed,
-  queryQmd,
-  resolveQmdRuntime
-} from "../qmd-cli.js";
-import { buildQmdQueryCandidates } from "../qmd-planner.js";
-import { postprocessQmdHits, selectEffectiveQmdQueryMode } from "../qmd-strategy.js";
+import { runQmdMultiCorpusSearch } from "../qmd-search.js";
+import type { QmdSearchHit } from "../qmd-cli.js";
 import { RetrievalHit, RetrievalProvider, RetrievalProviderResult } from "../types.js";
 import { tokenizeQuery } from "../utils.js";
 
@@ -16,29 +11,8 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
-function buildQueryCandidates(context: Parameters<RetrievalProvider["run"]>[0]): string[] {
-  const queryTokens = tokenizeQuery(context.query);
-  const explicitPaths = context.query.targetFiles.map((file) => file.trim()).filter(Boolean);
-  const planned = buildQmdQueryCandidates({
-    task: context.query.task,
-    targetFiles: context.query.targetFiles,
-    diffSummary: context.query.diffSummary,
-    errorLogs: context.query.errorLogs,
-    verifyFeedback: context.query.verifyFeedback
-  });
-  const fallback = unique([
-    ...queryTokens.slice(0, 32),
-    ...explicitPaths.slice(0, 10)
-  ])
-    .join(" ")
-    .slice(0, 220)
-    .trim();
-
-  return unique([...planned, fallback]).filter(Boolean);
-}
-
 function toRetrievalHits(
-  hits: Awaited<ReturnType<typeof queryQmd>>["hits"]
+  hits: QmdSearchHit[]
 ): RetrievalHit[] {
   return hits.map((hit) => ({
     path: hit.path,
@@ -81,8 +55,9 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       };
     }
 
-    const queries = buildQueryCandidates(context);
-    if (queries.length === 0) {
+    const taskText = context.query.task.trim();
+    const queryTokens = tokenizeQuery(context.query);
+    if (!taskText && queryTokens.length === 0 && context.query.targetFiles.length === 0) {
       return {
         provider: this.name,
         status: "empty",
@@ -94,25 +69,59 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       };
     }
 
-    let runtime: ReturnType<typeof resolveQmdRuntime>;
-    const effectiveQueryMode = selectEffectiveQmdQueryMode({
-      configuredMode: context.config.qmd.queryMode,
-      query: context.query.task
-    });
     try {
-      runtime = resolveQmdRuntime({
+      const qmdResult = await runQmdMultiCorpusSearch({
         cwd: context.cwd,
-        command: context.config.qmd.command,
-        collectionName: context.config.qmd.collectionName,
-        indexName: context.config.qmd.indexName,
-        mask: context.config.qmd.mask,
-        queryMode: effectiveQueryMode,
-        configDir: context.config.qmd.configDir,
-        cacheHome: context.config.qmd.cacheHome,
-        indexPath: context.config.qmd.indexPath,
+        signals: {
+          task: context.query.task,
+          targetFiles: context.query.targetFiles,
+          diffSummary: context.query.diffSummary,
+          errorLogs: context.query.errorLogs,
+          verifyFeedback: context.query.verifyFeedback
+        },
+        config: context.config.qmd,
         timeoutMs: context.config.timeoutMs.qmd,
-        syncIntervalMs: context.config.qmd.syncIntervalMs
+        limit: context.config.topK.qmd
       });
+      const hits = toRetrievalHits(qmdResult.hits).slice(0, context.config.topK.qmd);
+
+      if (qmdResult.status === "failed") {
+        return {
+          provider: this.name,
+          status: "failed",
+          tookMs: Date.now() - startedAt,
+          hits: [],
+          error: qmdResult.errors.join(" | ") || "qmd query failed",
+          metadata: {
+            command: context.config.qmd.command,
+            query: qmdResult.corpusResults.find((entry) => entry.status === "ok")?.query ?? "",
+            queriesTried: qmdResult.queriesTried,
+            corporaTried: qmdResult.corporaTried,
+            corpusResults: qmdResult.corpusResults,
+            mode: qmdResult.mode,
+            queryMode: qmdResult.queryMode,
+            attemptedAt: nowIso()
+          }
+        };
+      }
+
+      return {
+        provider: this.name,
+        status: hits.length > 0 ? "ok" : "empty",
+        tookMs: Date.now() - startedAt,
+        hits,
+        metadata: {
+          command: context.config.qmd.command,
+          query: qmdResult.corpusResults.find((entry) => entry.status === "ok")?.query ?? "",
+          queriesTried: qmdResult.queriesTried,
+          corporaTried: qmdResult.corporaTried,
+          corpusResults: qmdResult.corpusResults,
+          mode: qmdResult.mode,
+          queryMode: qmdResult.queryMode,
+          errors: qmdResult.errors,
+          attemptedAt: nowIso()
+        }
+      };
     } catch (error) {
       return {
         provider: this.name,
@@ -122,106 +131,5 @@ export class QmdRetrievalProvider implements RetrievalProvider {
         error: error instanceof Error ? error.message : String(error)
       };
     }
-
-    let indexMethod: "add" | "update" | "cached" | undefined;
-    try {
-      const indexed = await ensureQmdIndexed(runtime);
-      indexMethod = indexed.method;
-    } catch (error) {
-      return {
-        provider: this.name,
-        status: "failed",
-        tookMs: Date.now() - startedAt,
-        hits: [],
-        error: `qmd indexing failed: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: {
-          command: runtime.command,
-          query: queries[0] ?? "",
-          queriesTried: queries,
-          queryMode: runtime.queryMode,
-          indexName: runtime.indexName,
-          indexPath: runtime.indexPath,
-          configPath: runtime.configPath,
-          attemptedAt: nowIso()
-        }
-      };
-    }
-
-    let usedQuery = "";
-    let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
-      status: "empty",
-      hits: [],
-      errors: []
-    };
-
-    for (const candidate of queries) {
-      const query = candidate.trim();
-      if (!query) {
-        continue;
-      }
-      const result = await queryQmd({
-        runtime,
-        query,
-        limit: context.config.topK.qmd
-      });
-      usedQuery = query;
-      qmdResult = {
-        ...result,
-        errors: unique([...qmdResult.errors, ...result.errors])
-      };
-      if (result.status === "ok" && result.hits.length > 0) {
-        break;
-      }
-    }
-
-    const hits = toRetrievalHits(
-      postprocessQmdHits({
-        hits: qmdResult.hits,
-        query: context.query.task,
-        limit: context.config.topK.qmd
-      })
-    ).slice(0, context.config.topK.qmd);
-
-    if (qmdResult.status === "failed") {
-      return {
-        provider: this.name,
-        status: "failed",
-        tookMs: Date.now() - startedAt,
-        hits: [],
-        error: qmdResult.errors.join(" | ") || "qmd query failed",
-        metadata: {
-          command: runtime.command,
-          query: usedQuery,
-          queriesTried: queries,
-          mode: qmdResult.mode,
-          queryMode: runtime.queryMode,
-          indexMethod,
-          indexName: runtime.indexName,
-          indexPath: runtime.indexPath,
-          collectionName: runtime.collectionName,
-          attemptedAt: nowIso()
-        }
-      };
-    }
-
-    return {
-      provider: this.name,
-      status: hits.length > 0 ? "ok" : "empty",
-      tookMs: Date.now() - startedAt,
-      hits,
-      metadata: {
-        command: runtime.command,
-        query: usedQuery,
-        queriesTried: queries,
-        mode: qmdResult.mode,
-        queryMode: runtime.queryMode,
-        indexMethod,
-        errors: qmdResult.errors,
-        indexName: runtime.indexName,
-        indexPath: runtime.indexPath,
-        collectionName: runtime.collectionName,
-        attemptedAt: nowIso()
-      }
-    };
   }
 }

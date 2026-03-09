@@ -235,6 +235,187 @@ exit 1
   });
 
 
+
+  it("fans out qmd search across frontend/backend corpora for frontend logic questions", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-corpora-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "ClaimPage.vue"), "<template><button>claim</button></template>", "utf8");
+    await writeFile(path.join(workspace, "ClaimController.java"), "class ClaimController {}", "utf8");
+
+    const logPath = path.join(workspace, "qmd-corpora.log");
+    const fakeQmdPath = path.join(workspace, "qmd");
+    await writeFile(
+      fakeQmdPath,
+      `#!/bin/sh
+echo "$@" >> "${logPath}"
+if [ "$3" = "collection" ]; then
+  exit 0
+fi
+if [ "$3" = "update" ]; then
+  exit 0
+fi
+if [ "$3" = "search" ]; then
+  collection=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "-c" ]; then
+      collection="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  if printf '%s' "$collection" | grep -q 'frontend-code'; then
+    cat <<'JSON'
+[
+  {
+    "docid": "#front-1",
+    "score": 0.61,
+    "file": "qmd://workspace-frontend-code/ClaimPage.vue",
+    "title": "ClaimPage",
+    "snippet": "button click submit"
+  }
+]
+JSON
+    exit 0
+  fi
+  if printf '%s' "$collection" | grep -q 'backend-code'; then
+    cat <<'JSON'
+[
+  {
+    "docid": "#back-1",
+    "score": 0.89,
+    "file": "qmd://workspace-backend-code/ClaimController.java",
+    "title": "ClaimController",
+    "snippet": "post /claims"
+  }
+]
+JSON
+    exit 0
+  fi
+  echo '[]'
+  exit 0
+fi
+echo "unsupported command" 1>&2
+exit 1
+`,
+      "utf8"
+    );
+    await chmod(fakeQmdPath, 0o755);
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.command = fakeQmdPath;
+    config.qmd.queryMode = "query_then_search";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["ClaimPage.vue", "ClaimController.java"],
+      task: "청구 버튼 클릭 후 프론트에서 어떤 검증을 하고 어떤 API를 호출하는지 분석해줘",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    const qmdProvider = inspection.retrieval.providerResults.find((result) => result.provider === "qmd");
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    expect(qmdProvider?.hits.map((hit) => hit.path)).toContain("ClaimPage.vue");
+    expect(qmdProvider?.hits.map((hit) => hit.path)).toContain("ClaimController.java");
+    expect(qmdProvider?.hits[0]?.path).toBe("ClaimPage.vue");
+    const qmdMetadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
+    expect(Array.isArray(qmdMetadata.corporaTried)).toBe(true);
+    expect((qmdMetadata.corporaTried as unknown[]).map(String)).toEqual(
+      expect.arrayContaining(["frontend-code", "backend-code"])
+    );
+
+    const logRaw = await readFile(logPath, "utf8");
+    expect(logRaw).toContain("workspace-frontend-code");
+    expect(logRaw).toContain("workspace-backend-code");
+  });
+
+
+  it("keeps qmd selected when one corpus fails but another corpus succeeds", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-corpora-degrade-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "ClaimPage.vue"), "<template><button>claim</button></template>", "utf8");
+
+    const logPath = path.join(workspace, "qmd-corpora-degrade.log");
+    const fakeQmdPath = path.join(workspace, "qmd");
+    await writeFile(
+      fakeQmdPath,
+      `#!/bin/sh
+echo "$@" >> "${logPath}"
+if [ "$3" = "collection" ]; then
+  exit 0
+fi
+if [ "$3" = "update" ]; then
+  exit 0
+fi
+if [ "$3" = "search" ]; then
+  collection=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "-c" ]; then
+      collection="$arg"
+      break
+    fi
+    prev="$arg"
+  done
+  if printf '%s' "$collection" | grep -q 'frontend-code'; then
+    cat <<'JSON'
+[
+  {
+    "docid": "#front-1",
+    "score": 0.74,
+    "file": "qmd://workspace-frontend-code/ClaimPage.vue",
+    "title": "ClaimPage",
+    "snippet": "button click submit"
+  }
+]
+JSON
+    exit 0
+  fi
+  if printf '%s' "$collection" | grep -q 'backend-code'; then
+    echo "backend timeout" 1>&2
+    exit 1
+  fi
+  echo '[]'
+  exit 0
+fi
+echo "unsupported command" 1>&2
+exit 1
+`,
+      "utf8"
+    );
+    await chmod(fakeQmdPath, 0o755);
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.command = fakeQmdPath;
+    config.qmd.queryMode = "query_then_search";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["ClaimPage.vue"],
+      task: "청구 버튼 클릭 후 프론트 검증 로직을 분석해줘",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    const qmdProvider = inspection.retrieval.providerResults.find((result) => result.provider === "qmd");
+    expect(qmdProvider?.status).toBe("ok");
+    expect(qmdProvider?.hits[0]?.path).toBe("ClaimPage.vue");
+    const qmdMetadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
+    expect(Array.isArray(qmdMetadata.corpusResults)).toBe(true);
+    expect((qmdMetadata.corpusResults as Array<Record<string, unknown>>).some((entry) => entry.id === "backend-code" && entry.status === "failed")).toBe(true);
+  });
+
   it("forces qmd search_only for long natural-language queries to avoid query timeouts", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-mode-"));
     tempDirs.push(workspace);

@@ -2,7 +2,7 @@ import path from "node:path";
 import type { QmdSearchHit } from "./qmd-cli.js";
 
 const NOISE_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
-const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".java", ".kt", ".kts", ".py", ".go", ".rs"]);
+const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".java", ".kt", ".kts", ".py", ".go", ".rs", ".vue", ".jsp", ".html"]);
 
 function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
@@ -70,44 +70,62 @@ export function selectEffectiveQmdQueryMode(options: {
   return options.configuredMode;
 }
 
+export function scoreQmdHit(options: {
+  hit: QmdSearchHit;
+  query: string;
+  corpusId?: string;
+  corpusWeight?: number;
+}): number {
+  const modules = extractModuleCandidates(options.query);
+  const queryTokens = extractQueryTokens(options.query).map((item) => item.toLowerCase());
+  const normalizedPath = toForwardSlash(options.hit.path).toLowerCase();
+  const ext = path.extname(normalizedPath);
+  let score = options.hit.score * 100;
+
+  if (CODE_EXTENSIONS.has(ext)) {
+    score += 80;
+  }
+  if (modules.some((moduleName) => normalizedPath.startsWith(`${moduleName}/`))) {
+    score += 180;
+  }
+  if (/controller|service|mapper|repository|dao|component|page|view/.test(normalizedPath)) {
+    score += 40;
+  }
+  if (options.corpusId === "frontend-code" && /\.(vue|jsp|html|tsx|jsx)$/.test(normalizedPath)) {
+    score += 110;
+  }
+  if (options.corpusId === "config-xml" && /\.(xml|yml|yaml|properties)$/.test(normalizedPath)) {
+    score += 65;
+  }
+  if (options.corpusId === "backend-code" && /\.(java|kt|kts|ts|js|py|go|rs)$/.test(normalizedPath)) {
+    score += 55;
+  }
+  for (const token of queryTokens.slice(0, 10)) {
+    if (token.length < 3) {
+      continue;
+    }
+    if (normalizedPath.includes(token.toLowerCase())) {
+      score += 18;
+    }
+  }
+
+  return score * (options.corpusWeight ?? 1);
+}
+
 export function postprocessQmdHits(options: {
   hits: QmdSearchHit[];
   query: string;
   limit: number;
 }): QmdSearchHit[] {
-  const modules = extractModuleCandidates(options.query);
-  const queryTokens = extractQueryTokens(options.query).map((item) => item.toLowerCase());
-
   return options.hits
     .filter((hit) => !isQmdNoisePath(hit.path))
-    .map((hit) => {
-      const normalizedPath = toForwardSlash(hit.path).toLowerCase();
-      const ext = path.extname(normalizedPath);
-      let score = hit.score * 100;
-
-      if (CODE_EXTENSIONS.has(ext)) {
-        score += 80;
-      }
-      if (modules.some((moduleName) => normalizedPath.startsWith(`${moduleName}/`))) {
-        score += 180;
-      }
-      if (/controller|service|mapper|repository|dao/.test(normalizedPath)) {
-        score += 40;
-      }
-      for (const token of queryTokens.slice(0, 10)) {
-        if (token.length < 3) {
-          continue;
-        }
-        if (normalizedPath.includes(token.toLowerCase())) {
-          score += 18;
-        }
-      }
-
-      return {
+    .map((hit) => ({
+      hit,
+      score: scoreQmdHit({
         hit,
-        score
-      };
-    })
+        query: options.query
+      })
+    }))
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.hit.path.localeCompare(b.hit.path)))
     .map((item) => item.hit)
     .slice(0, Math.max(1, options.limit));

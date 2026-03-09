@@ -21,12 +21,9 @@ import {
   upsertProjectPreset
 } from "./presets.js";
 import {
-  ensureQmdIndexed,
-  queryQmd,
-  resolveQmdRuntime
-} from "../retrieval/qmd-cli.js";
-import { buildQmdQueryCandidates } from "../retrieval/qmd-planner.js";
-import { postprocessQmdHits, selectEffectiveQmdQueryMode } from "../retrieval/qmd-strategy.js";
+  runQmdMultiCorpusSearch,
+  type QmdCorpusAttempt
+} from "../retrieval/qmd-search.js";
 import { qualityGateForAskOutput } from "./ask-quality.js";
 import {
   buildEaiDictionaryEntries,
@@ -119,6 +116,8 @@ export interface ProjectSearchResult {
     qmdQuery?: string;
     qmdQueriesTried?: string[];
     qmdCommand?: string;
+    qmdCorporaTried?: string[];
+    qmdCorpusResults?: QmdCorpusAttempt[];
     fileCount?: number;
   };
 }
@@ -341,6 +340,12 @@ const SEARCHABLE_EXTENSIONS = new Set([
   ".cjs",
   ".json",
   ".md",
+  ".vue",
+  ".jsp",
+  ".html",
+  ".css",
+  ".scss",
+  ".sass",
   ".java",
   ".kt",
   ".kts",
@@ -408,7 +413,21 @@ const EAI_PROGRESS_INTERVAL = Math.max(
   25,
   Number.parseInt(process.env.OHMYQWEN_EAI_PROGRESS_INTERVAL ?? "100", 10) || 100
 );
-const CODE_FILE_EXTENSIONS = new Set([".java", ".kt", ".kts", ".js", ".jsx", ".ts", ".tsx", ".py", ".go", ".rs"]);
+const CODE_FILE_EXTENSIONS = new Set([
+  ".java",
+  ".kt",
+  ".kts",
+  ".js",
+  ".jsx",
+  ".ts",
+  ".tsx",
+  ".py",
+  ".go",
+  ".rs",
+  ".vue",
+  ".jsp",
+  ".html"
+]);
 const CALL_KEYWORDS = new Set([
   "if",
   "for",
@@ -4787,113 +4806,115 @@ export async function searchServerProject(options: {
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
-      const effectiveQmdQueryMode = selectEffectiveQmdQueryMode({
-        configuredMode: retrievalConfig.qmd.queryMode,
-        query
-      });
       try {
-      const runtime = resolveQmdRuntime({
-        cwd: project.workspaceDir,
-        command: retrievalConfig.qmd.command,
-        collectionName: retrievalConfig.qmd.collectionName,
-        indexName: retrievalConfig.qmd.indexName,
-        mask: retrievalConfig.qmd.mask,
-        queryMode: effectiveQmdQueryMode,
-        configDir: retrievalConfig.qmd.configDir,
-        cacheHome: retrievalConfig.qmd.cacheHome,
-        indexPath: retrievalConfig.qmd.indexPath,
-        timeoutMs: retrievalConfig.timeoutMs.qmd,
-        syncIntervalMs: retrievalConfig.qmd.syncIntervalMs
-      });
-
-      const indexed = await ensureQmdIndexed(runtime);
-      const qmdQueries = buildQmdQueryCandidates({
-        task: query
-      });
-
-      let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
-        status: "empty",
-        hits: [],
-        errors: []
-      };
-      let usedQmdQuery = "";
-
-      for (const qmdQueryCandidate of qmdQueries) {
-        const candidate = qmdQueryCandidate.trim();
-        if (!candidate) {
-          continue;
-        }
-        const result = await queryQmd({
-          runtime,
-          query: candidate,
+        const qmdResult = await runQmdMultiCorpusSearch({
+          cwd: project.workspaceDir,
+          signals: {
+            task: query
+          },
+          config: retrievalConfig.qmd,
+          timeoutMs: retrievalConfig.timeoutMs.qmd,
           limit
         });
-        qmdResult = {
-          ...result,
-          errors: unique([...qmdResult.errors, ...result.errors])
-        };
-        usedQmdQuery = candidate;
-        if (result.status === "ok") {
-          break;
-        }
-      }
+        const qmdQueries = qmdResult.queriesTried;
+        const usedQmdQuery = qmdResult.corpusResults.find((entry) => entry.status === "ok")?.query ?? "";
+        const qmdIndexMethods = unique(
+          qmdResult.corpusResults.map((entry) => entry.indexMethod ?? "").filter(Boolean)
+        );
 
-      if (qmdResult.status === "ok") {
-        const existingQmdHits: ProjectSearchHit[] = [];
-        const missingQmdPaths: string[] = [];
-        const rankedQmdHits = postprocessQmdHits({
-          hits: qmdResult.hits,
-          query,
-          limit
-        });
-        for (const hit of rankedQmdHits) {
-          if (isRetrievalNoisePath(hit.path)) {
-            continue;
+        if (qmdResult.status === "ok") {
+          const existingQmdHits: ProjectSearchHit[] = [];
+          const missingQmdPaths: string[] = [];
+          for (const hit of qmdResult.hits) {
+            if (isRetrievalNoisePath(hit.path)) {
+              continue;
+            }
+            const exists = await fileExistsUnderWorkspace(project.workspaceDir, hit.path);
+            if (!exists) {
+              missingQmdPaths.push(hit.path);
+              continue;
+            }
+
+            existingQmdHits.push({
+              path: hit.path,
+              score: hit.score,
+              source: "qmd",
+              reasons: unique([
+                hit.docid ? `docid=${hit.docid}` : "",
+                hit.title ? `title=${hit.title}` : "",
+                hit.context ? `context=${hit.context}` : "",
+                hit.snippet ? `snippet=${hit.snippet.split("\n")[0]?.slice(0, 120)}` : ""
+              ]),
+              title: hit.title,
+              snippet: hit.snippet
+            });
           }
-          const exists = await fileExistsUnderWorkspace(project.workspaceDir, hit.path);
-          if (!exists) {
-            missingQmdPaths.push(hit.path);
-            continue;
+
+          if (existingQmdHits.length === 0) {
+            const lexicalHits = await lexicalSearch({
+              workspaceDir: project.workspaceDir,
+              files,
+              query,
+              limit
+            });
+            const response: ProjectSearchResult = {
+              project,
+              query,
+              provider: "lexical",
+              fallbackUsed: true,
+              hits: lexicalHits,
+              diagnostics: {
+                qmdStatus: "empty",
+                qmdErrors: [
+                  `qmd hits were stale and missing on disk: ${missingQmdPaths.slice(0, 5).join(", ")}`
+                ],
+                qmdIndexMethod: qmdIndexMethods[0] as "add" | "update" | "cached" | undefined,
+                qmdQueryMode: qmdResult.queryMode,
+                qmdQuery: usedQmdQuery,
+                qmdQueriesTried: qmdQueries,
+                qmdCommand: retrievalConfig.qmd.command,
+                qmdCorporaTried: qmdResult.corporaTried,
+                qmdCorpusResults: qmdResult.corpusResults,
+                fileCount: files.length
+              }
+            };
+            await appendProjectDebugEvent({
+              timestamp: nowIso(),
+              projectId: options.projectId,
+              stage: "search",
+              status: "info",
+              message: "qmd returned stale paths only; fallback to lexical",
+              metadata: {
+                staleCount: missingQmdPaths.length,
+                hitCount: response.hits.length,
+                corporaTried: qmdResult.corporaTried
+              }
+            });
+            return response;
           }
 
-          existingQmdHits.push({
-            path: hit.path,
-            score: hit.score,
-            source: "qmd",
-            reasons: unique([
-              hit.docid ? `docid=${hit.docid}` : "",
-              hit.title ? `title=${hit.title}` : "",
-              hit.context ? `context=${hit.context}` : "",
-              hit.snippet ? `snippet=${hit.snippet.split("\n")[0]?.slice(0, 120)}` : ""
-            ]),
-            title: hit.title,
-            snippet: hit.snippet
-          });
-        }
-
-        if (existingQmdHits.length === 0) {
-          const lexicalHits = await lexicalSearch({
-            workspaceDir: project.workspaceDir,
-            files,
-            query,
-            limit
-          });
           const response: ProjectSearchResult = {
             project,
             query,
-            provider: "lexical",
-            fallbackUsed: true,
-            hits: lexicalHits,
+            provider: "qmd",
+            fallbackUsed: false,
+            modeUsed: qmdResult.mode,
+            hits: existingQmdHits,
             diagnostics: {
-              qmdStatus: "empty",
-              qmdErrors: [
-                `qmd hits were stale and missing on disk: ${missingQmdPaths.slice(0, 5).join(", ")}`
-              ],
-              qmdIndexMethod: indexed.method,
-              qmdQueryMode: effectiveQmdQueryMode,
+              qmdStatus: qmdResult.status,
+              qmdErrors: unique([
+                ...qmdResult.errors,
+                missingQmdPaths.length > 0
+                  ? `stale-path-filtered=${missingQmdPaths.slice(0, 5).join(",")}`
+                  : ""
+              ]),
+              qmdIndexMethod: qmdIndexMethods[0] as "add" | "update" | "cached" | undefined,
+              qmdQueryMode: qmdResult.queryMode,
               qmdQuery: usedQmdQuery,
               qmdQueriesTried: qmdQueries,
               qmdCommand: retrievalConfig.qmd.command,
+              qmdCorporaTried: qmdResult.corporaTried,
+              qmdCorpusResults: qmdResult.corpusResults,
               fileCount: files.length
             }
           };
@@ -4901,35 +4922,78 @@ export async function searchServerProject(options: {
             timestamp: nowIso(),
             projectId: options.projectId,
             stage: "search",
-            status: "info",
-            message: "qmd returned stale paths only; fallback to lexical",
+            status: "success",
+            message: "qmd search succeeded",
             metadata: {
-              staleCount: missingQmdPaths.length,
-              hitCount: response.hits.length
+              provider: "qmd",
+              hitCount: response.hits.length,
+              mode: response.modeUsed,
+              query: usedQmdQuery,
+              corporaTried: qmdResult.corporaTried
             }
           });
           return response;
         }
 
+        const lexicalHits = await lexicalSearch({
+          workspaceDir: project.workspaceDir,
+          files,
+          query,
+          limit
+        });
+
         const response: ProjectSearchResult = {
           project,
           query,
-          provider: "qmd",
-          fallbackUsed: false,
-          modeUsed: qmdResult.mode,
-          hits: existingQmdHits,
+          provider: "lexical",
+          fallbackUsed: true,
+          hits: lexicalHits,
           diagnostics: {
             qmdStatus: qmdResult.status,
-            qmdErrors: unique([
-              ...qmdResult.errors,
-              missingQmdPaths.length > 0
-                ? `stale-path-filtered=${missingQmdPaths.slice(0, 5).join(",")}`
-                : ""
-            ]),
-            qmdIndexMethod: indexed.method,
-            qmdQueryMode: effectiveQmdQueryMode,
+            qmdErrors: qmdResult.errors,
+            qmdIndexMethod: qmdIndexMethods[0] as "add" | "update" | "cached" | undefined,
+            qmdQueryMode: qmdResult.queryMode,
             qmdQuery: usedQmdQuery,
             qmdQueriesTried: qmdQueries,
+            qmdCommand: retrievalConfig.qmd.command,
+            qmdCorporaTried: qmdResult.corporaTried,
+            qmdCorpusResults: qmdResult.corpusResults,
+            fileCount: files.length
+          }
+        };
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "search",
+          status: "info",
+          message: "qmd empty/failed; lexical fallback used",
+          metadata: {
+            qmdStatus: qmdResult.status,
+            qmdErrors: qmdResult.errors.slice(0, 3),
+            qmdQueriesTried: qmdQueries,
+            corporaTried: qmdResult.corporaTried,
+            hitCount: response.hits.length
+          }
+        });
+        return response;
+      } catch (error) {
+        const lexicalHits = await lexicalSearch({
+          workspaceDir: project.workspaceDir,
+          files,
+          query,
+          limit
+        });
+
+        const response: ProjectSearchResult = {
+          project,
+          query,
+          provider: "lexical",
+          fallbackUsed: true,
+          hits: lexicalHits,
+          diagnostics: {
+            qmdStatus: "failed",
+            qmdErrors: [error instanceof Error ? error.message : String(error)],
+            qmdQueriesTried: [],
             qmdCommand: retrievalConfig.qmd.command,
             fileCount: files.length
           }
@@ -4938,91 +5002,14 @@ export async function searchServerProject(options: {
           timestamp: nowIso(),
           projectId: options.projectId,
           stage: "search",
-          status: "success",
-          message: "qmd search succeeded",
+          status: "failure",
+          message: `qmd search error, lexical fallback used: ${error instanceof Error ? error.message : String(error)}`,
           metadata: {
-            provider: "qmd",
-            hitCount: response.hits.length,
-            mode: response.modeUsed,
-            query: usedQmdQuery
+            hitCount: response.hits.length
           }
         });
         return response;
       }
-
-      const lexicalHits = await lexicalSearch({
-        workspaceDir: project.workspaceDir,
-        files,
-        query,
-        limit
-      });
-
-      const response: ProjectSearchResult = {
-        project,
-        query,
-        provider: "lexical",
-        fallbackUsed: true,
-        hits: lexicalHits,
-        diagnostics: {
-          qmdStatus: qmdResult.status,
-          qmdErrors: qmdResult.errors,
-          qmdIndexMethod: indexed.method,
-          qmdQueryMode: effectiveQmdQueryMode,
-          qmdQuery: usedQmdQuery,
-          qmdQueriesTried: qmdQueries,
-          qmdCommand: retrievalConfig.qmd.command,
-          fileCount: files.length
-        }
-      };
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "search",
-        status: "info",
-        message: "qmd empty/failed; lexical fallback used",
-        metadata: {
-          qmdStatus: qmdResult.status,
-          qmdErrors: qmdResult.errors.slice(0, 3),
-          qmdQueriesTried: qmdQueries,
-          hitCount: response.hits.length
-        }
-      });
-      return response;
-    } catch (error) {
-      const lexicalHits = await lexicalSearch({
-        workspaceDir: project.workspaceDir,
-        files,
-        query,
-        limit
-      });
-
-      const response: ProjectSearchResult = {
-        project,
-        query,
-        provider: "lexical",
-        fallbackUsed: true,
-        hits: lexicalHits,
-        diagnostics: {
-          qmdStatus: "failed",
-          qmdErrors: [error instanceof Error ? error.message : String(error)],
-          qmdQueryMode: effectiveQmdQueryMode,
-          qmdQueriesTried: [],
-          qmdCommand: retrievalConfig.qmd.command,
-          fileCount: files.length
-        }
-      };
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "search",
-        status: "failure",
-        message: `qmd search error, lexical fallback used: ${error instanceof Error ? error.message : String(error)}`,
-        metadata: {
-          hitCount: response.hits.length
-        }
-      });
-      return response;
-    }
     }
 
     const lexicalHits = await lexicalSearch({
