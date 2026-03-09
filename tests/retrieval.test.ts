@@ -79,7 +79,7 @@ describe("retrieval chain", () => {
     expect(["degraded", "failed", "skipped"]).toContain(semantic?.status);
   });
 
-  it("uses qmd CLI adapter and falls back from query to search output", async () => {
+  it("uses qmd CLI adapter and accepts search-mode output", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-cli-"));
     tempDirs.push(workspace);
 
@@ -149,7 +149,6 @@ exit 1
 
     const logRaw = await readFile(logPath, "utf8");
     expect(logRaw).toContain("collection add");
-    expect(logRaw).toContain(" query ");
     expect(logRaw).toContain(" search ");
   });
 
@@ -224,13 +223,83 @@ exit 1
     const qmdMetadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
     expect(Array.isArray(qmdMetadata.queriesTried)).toBe(true);
     expect((qmdMetadata.queriesTried as unknown[]).length).toBeGreaterThanOrEqual(2);
-    expect(String(qmdMetadata.query ?? "")).toContain("saveBenefitClaimDoc");
+    expect(
+      (qmdMetadata.queriesTried as unknown[]).some((entry) => String(entry).includes("saveBenefitClaimDoc"))
+    ).toBe(true);
     const logRaw = await readFile(logPath, "utf8");
     const queryLines = logRaw
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.includes(" query "));
     expect(queryLines.length).toBeGreaterThanOrEqual(2);
+  });
+
+
+  it("forces qmd search_only for long natural-language queries to avoid query timeouts", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-mode-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "claim.ts"), "export const saveBenefitClaimDoc = 1;", "utf8");
+
+    const logPath = path.join(workspace, "qmd-mode.log");
+    const fakeQmdPath = path.join(workspace, "qmd");
+    await writeFile(
+      fakeQmdPath,
+      `#!/bin/sh
+echo "$@" >> "${logPath}"
+if [ "$3" = "collection" ]; then
+  exit 0
+fi
+if [ "$3" = "update" ]; then
+  exit 0
+fi
+if [ "$3" = "query" ]; then
+  echo "query should not be called for long NL queries" 1>&2
+  exit 1
+fi
+if [ "$3" = "search" ]; then
+  cat <<'JSON'
+[
+  {
+    "docid": "#claim-1",
+    "score": 9.4,
+    "file": "qmd://workspace/claim.ts",
+    "title": "claim",
+    "snippet": "export const saveBenefitClaimDoc = 1;"
+  }
+]
+JSON
+  exit 0
+fi
+echo "unsupported command" 1>&2
+exit 1
+`,
+      "utf8"
+    );
+    await chmod(fakeQmdPath, 0o755);
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.command = fakeQmdPath;
+    config.qmd.queryMode = "query_then_search";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["claim.ts"],
+      task: "dcp-insurance 내부에서 보험금 청구 로직이 어떻게 실행되는지, 큰 그림에서 탑다운 방식으로 파악해줘.",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    expect(inspection.fragments[0]?.path).toBe("claim.ts");
+
+    const logRaw = await readFile(logPath, "utf8");
+    expect(logRaw).toContain(" search ");
+    expect(logRaw).not.toContain(" query ");
   });
 
   it("injects verify feedback signal into ranking", async () => {

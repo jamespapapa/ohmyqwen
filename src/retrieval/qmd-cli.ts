@@ -123,7 +123,8 @@ export function resolveQmdRuntime(options: {
   }
 
   const cwdHash = createHash("sha1").update(path.resolve(options.cwd)).digest("hex").slice(0, 12);
-  const indexName = options.indexName?.trim() || `ohmyqwen-${cwdHash}`;
+  const maskHash = createHash("sha1").update(options.mask.trim()).digest("hex").slice(0, 6);
+  const indexName = options.indexName?.trim() || `ohmyqwen-${cwdHash}-${maskHash}`;
   const configDir =
     normalizeOptionalPath(options.cwd, options.configDir) ||
     path.resolve(options.cwd, ".ohmyqwen", "cache", "qmd", "config");

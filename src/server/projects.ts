@@ -26,6 +26,7 @@ import {
   resolveQmdRuntime
 } from "../retrieval/qmd-cli.js";
 import { buildQmdQueryCandidates } from "../retrieval/qmd-planner.js";
+import { postprocessQmdHits, selectEffectiveQmdQueryMode } from "../retrieval/qmd-strategy.js";
 import { qualityGateForAskOutput } from "./ask-quality.js";
 import {
   buildEaiDictionaryEntries,
@@ -4786,6 +4787,10 @@ export async function searchServerProject(options: {
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
+      const effectiveQmdQueryMode = selectEffectiveQmdQueryMode({
+        configuredMode: retrievalConfig.qmd.queryMode,
+        query
+      });
       try {
       const runtime = resolveQmdRuntime({
         cwd: project.workspaceDir,
@@ -4793,7 +4798,7 @@ export async function searchServerProject(options: {
         collectionName: retrievalConfig.qmd.collectionName,
         indexName: retrievalConfig.qmd.indexName,
         mask: retrievalConfig.qmd.mask,
-        queryMode: retrievalConfig.qmd.queryMode,
+        queryMode: effectiveQmdQueryMode,
         configDir: retrievalConfig.qmd.configDir,
         cacheHome: retrievalConfig.qmd.cacheHome,
         indexPath: retrievalConfig.qmd.indexPath,
@@ -4836,7 +4841,12 @@ export async function searchServerProject(options: {
       if (qmdResult.status === "ok") {
         const existingQmdHits: ProjectSearchHit[] = [];
         const missingQmdPaths: string[] = [];
-        for (const hit of qmdResult.hits) {
+        const rankedQmdHits = postprocessQmdHits({
+          hits: qmdResult.hits,
+          query,
+          limit
+        });
+        for (const hit of rankedQmdHits) {
           if (isRetrievalNoisePath(hit.path)) {
             continue;
           }
@@ -4880,7 +4890,7 @@ export async function searchServerProject(options: {
                 `qmd hits were stale and missing on disk: ${missingQmdPaths.slice(0, 5).join(", ")}`
               ],
               qmdIndexMethod: indexed.method,
-              qmdQueryMode: retrievalConfig.qmd.queryMode,
+              qmdQueryMode: effectiveQmdQueryMode,
               qmdQuery: usedQmdQuery,
               qmdQueriesTried: qmdQueries,
               qmdCommand: retrievalConfig.qmd.command,
@@ -4917,7 +4927,7 @@ export async function searchServerProject(options: {
                 : ""
             ]),
             qmdIndexMethod: indexed.method,
-            qmdQueryMode: retrievalConfig.qmd.queryMode,
+            qmdQueryMode: effectiveQmdQueryMode,
             qmdQuery: usedQmdQuery,
             qmdQueriesTried: qmdQueries,
             qmdCommand: retrievalConfig.qmd.command,
@@ -4957,7 +4967,7 @@ export async function searchServerProject(options: {
           qmdStatus: qmdResult.status,
           qmdErrors: qmdResult.errors,
           qmdIndexMethod: indexed.method,
-          qmdQueryMode: retrievalConfig.qmd.queryMode,
+          qmdQueryMode: effectiveQmdQueryMode,
           qmdQuery: usedQmdQuery,
           qmdQueriesTried: qmdQueries,
           qmdCommand: retrievalConfig.qmd.command,
@@ -4995,7 +5005,7 @@ export async function searchServerProject(options: {
         diagnostics: {
           qmdStatus: "failed",
           qmdErrors: [error instanceof Error ? error.message : String(error)],
-          qmdQueryMode: retrievalConfig.qmd.queryMode,
+          qmdQueryMode: effectiveQmdQueryMode,
           qmdQueriesTried: [],
           qmdCommand: retrievalConfig.qmd.command,
           fileCount: files.length

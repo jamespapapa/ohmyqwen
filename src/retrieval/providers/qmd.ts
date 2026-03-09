@@ -4,6 +4,7 @@ import {
   resolveQmdRuntime
 } from "../qmd-cli.js";
 import { buildQmdQueryCandidates } from "../qmd-planner.js";
+import { postprocessQmdHits, selectEffectiveQmdQueryMode } from "../qmd-strategy.js";
 import { RetrievalHit, RetrievalProvider, RetrievalProviderResult } from "../types.js";
 import { tokenizeQuery } from "../utils.js";
 
@@ -94,6 +95,10 @@ export class QmdRetrievalProvider implements RetrievalProvider {
     }
 
     let runtime: ReturnType<typeof resolveQmdRuntime>;
+    const effectiveQueryMode = selectEffectiveQmdQueryMode({
+      configuredMode: context.config.qmd.queryMode,
+      query: context.query.task
+    });
     try {
       runtime = resolveQmdRuntime({
         cwd: context.cwd,
@@ -101,7 +106,7 @@ export class QmdRetrievalProvider implements RetrievalProvider {
         collectionName: context.config.qmd.collectionName,
         indexName: context.config.qmd.indexName,
         mask: context.config.qmd.mask,
-        queryMode: context.config.qmd.queryMode,
+        queryMode: effectiveQueryMode,
         configDir: context.config.qmd.configDir,
         cacheHome: context.config.qmd.cacheHome,
         indexPath: context.config.qmd.indexPath,
@@ -169,7 +174,13 @@ export class QmdRetrievalProvider implements RetrievalProvider {
       }
     }
 
-    const hits = toRetrievalHits(qmdResult.hits).slice(0, context.config.topK.qmd);
+    const hits = toRetrievalHits(
+      postprocessQmdHits({
+        hits: qmdResult.hits,
+        query: context.query.task,
+        limit: context.config.topK.qmd
+      })
+    ).slice(0, context.config.topK.qmd);
 
     if (qmdResult.status === "failed") {
       return {

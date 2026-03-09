@@ -136,6 +136,48 @@ function expandDomainTerms(values: string[]): string[] {
   return unique(expanded);
 }
 
+function toPascalCase(parts: string[]): string {
+  return parts
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join("");
+}
+
+function buildCompositeSymbolHints(domainTerms: string[], symbols: string[]): string[] {
+  const hints = new Set<string>();
+  const lower = new Set(domainTerms.map((item) => item.toLowerCase()));
+
+  if (lower.has("benefit") && lower.has("claim")) {
+    hints.add("BenefitClaim");
+    hints.add("BenefitClaimController");
+    hints.add("BenefitClaimService");
+  }
+  if (lower.has("accident") && lower.has("benefit") && lower.has("claim")) {
+    hints.add("AccBenefitClaim");
+    hints.add("AccBenefitClaimController");
+    hints.add("AccBenefitClaimService");
+  }
+  if (lower.has("loan") && lower.has("request")) {
+    hints.add("LoanRequest");
+    hints.add("LoanRequestController");
+    hints.add("LoanRequestService");
+  }
+
+  const claimish = ["benefit", "claim", "controller", "service", "mapper"];
+  const composite = claimish.filter((item) => lower.has(item));
+  if (composite.length >= 2) {
+    hints.add(toPascalCase(composite.slice(0, 2)));
+  }
+
+  for (const symbol of symbols) {
+    if (/(Service|Controller|Mapper|Repository|Client)$/.test(symbol)) {
+      hints.add(symbol);
+    }
+  }
+
+  return Array.from(hints);
+}
+
 function buildCandidate(parts: Array<string | string[]>, extras: string[] = []): string {
   const flat = parts.flatMap((part) => (Array.isArray(part) ? part : [part]));
   return limitQuery(unique([...flat, ...extras]).join(" "));
@@ -155,6 +197,7 @@ export function buildQmdQueryCandidates(signals: QmdPlannerSignals): string[] {
   const pathTokens = unique((signals.targetFiles ?? []).flatMap((entry) => extractPathTokens(entry)));
   const domainTerms = expandDomainTerms(allValues);
   const compactTaskTokens = signalTokens.slice(0, 10);
+  const compositeSymbols = buildCompositeSymbolHints(domainTerms, symbols);
   const errorTerms = expandDomainTerms([...(signals.errorLogs ?? []), ...(signals.verifyFeedback ?? [])]);
   const logicTerms = unique(
     domainTerms.filter((entry) =>
@@ -162,14 +205,19 @@ export function buildQmdQueryCandidates(signals: QmdPlannerSignals): string[] {
     )
   );
 
+  const explicitPrimary = buildCandidate([modules, symbols.slice(0, 4), pathTokens.slice(0, 4)]);
+  const domainPrimary = buildCandidate([modules, compositeSymbols.slice(0, 4)], ["controller", "service"]);
+  const hybridPrimary = buildCandidate([modules, symbols.slice(0, 4), compositeSymbols.slice(0, 4)]);
+
   const candidates = unique(
     [
-      buildCandidate([modules, symbols.slice(0, 4), domainTerms.slice(0, 6)], ["controller", "service"]),
-      buildCandidate([modules, pathTokens.slice(0, 6), symbols.slice(0, 4), logicTerms.slice(0, 4)]),
-      buildCandidate([symbols.slice(0, 5), compactTaskTokens.slice(0, 8), logicTerms.slice(0, 4)]),
-      buildCandidate([modules, compactTaskTokens.slice(0, 8), ["controller", "service", "mapper"]]),
-      buildCandidate([pathTokens.slice(0, 8), errorTerms.slice(0, 4), symbols.slice(0, 4)]),
-      buildCandidate([compactTaskTokens.slice(0, 10), errorTerms.slice(0, 4), domainTerms.slice(0, 4)])
+      explicitPrimary,
+      domainPrimary,
+      hybridPrimary,
+      buildCandidate([modules, pathTokens.slice(0, 6), compositeSymbols.slice(0, 4), logicTerms.slice(0, 4)]),
+      buildCandidate([compositeSymbols.slice(0, 5), symbols.slice(0, 5), logicTerms.slice(0, 4)]),
+      buildCandidate([pathTokens.slice(0, 8), errorTerms.slice(0, 4), compositeSymbols.slice(0, 4), symbols.slice(0, 4)]),
+      buildCandidate([compactTaskTokens.slice(0, 8), compositeSymbols.slice(0, 4), errorTerms.slice(0, 4), domainTerms.slice(0, 4)])
     ].filter(Boolean)
   );
 

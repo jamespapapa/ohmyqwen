@@ -95,7 +95,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   lifecycle: {
     chunkVersion: "v1",
-    retrievalVersion: "v3-qmd-cli",
+    retrievalVersion: "v4-qmd-codefirst",
     autoReindexOnStale: true
   },
   qmd: {
@@ -103,7 +103,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
     command: "qmd",
     collectionName: "workspace",
     indexName: undefined,
-    mask: "**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh}",
+    mask: "**/*.{ts,tsx,js,jsx,mjs,cjs,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh,properties}",
     queryMode: "query_then_search",
     configDir: undefined,
     cacheHome: undefined,
