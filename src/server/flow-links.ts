@@ -1,4 +1,5 @@
 import type { FrontBackGraphLink, FrontBackGraphSnapshot } from "./front-back-graph.js";
+import type { DownstreamFlowTrace } from "./flow-trace.js";
 import {
   extractFlowCapabilityTagsFromTexts,
   extractQuestionCapabilityTags,
@@ -138,6 +139,14 @@ export function buildLinkedFlowEvidence(options: {
           score -= 16;
           reasons.push("benefit-claim-delete-penalty");
         }
+        if (/spotsave|spotload/.test(flowText)) {
+          score -= 10;
+          reasons.push("benefit-claim-draft-penalty");
+        }
+        if (/\/doc\/insert|insertbenefitclaimdoc/.test(flowText)) {
+          score += 14;
+          reasons.push("benefit-claim-doc-submit-match");
+        }
         if (/insert|save|submit|proc/.test(flowText)) {
           score += 8;
           reasons.push("benefit-claim-submit-preference");
@@ -169,6 +178,14 @@ export function buildLinkedFlowEvidence(options: {
     .sort((a, b) =>
       b._score !== a._score ? b._score - a._score : a.apiUrl.localeCompare(b.apiUrl)
     )
+    .filter((item, index, array) =>
+      array.findIndex(
+        (candidate) =>
+          candidate.apiUrl === item.apiUrl &&
+          candidate.backendControllerMethod === item.backendControllerMethod &&
+          candidate.screenCode === item.screenCode
+      ) === index
+    )
     .map(({ _score: _unusedScore, ...item }) => item)
     .slice(0, Math.max(1, options.limit ?? 6));
 }
@@ -176,6 +193,7 @@ export function buildLinkedFlowEvidence(options: {
 export function buildDeterministicFlowAnswer(options: {
   question: string;
   linkedFlowEvidence: LinkedFlowEvidence[];
+  downstreamTraces?: DownstreamFlowTrace[];
 }): DeterministicFlowAnswer {
   const primary = options.linkedFlowEvidence[0];
   if (!primary) {
@@ -190,13 +208,79 @@ export function buildDeterministicFlowAnswer(options: {
   const gatewayPhrase = primary.gatewayControllerMethod
     ? `${primary.gatewayControllerMethod}${primary.gatewayPath ? `(${primary.gatewayPath})` : ""}를 거쳐 `
     : "";
+  const questionIsClaim = /(보험금|청구|benefit|claim)/i.test(options.question);
+  const checkFlow = questionIsClaim
+    ? options.linkedFlowEvidence.find((item) => /\/claim\/check/i.test(item.apiUrl))
+    : undefined;
+  const insertFlow = questionIsClaim
+    ? options.linkedFlowEvidence.find((item) => /\/claim\/insert/i.test(item.apiUrl) && !/\/doc\/insert/i.test(item.apiUrl))
+    : undefined;
+  const docInsertFlow = questionIsClaim
+    ? options.linkedFlowEvidence.find((item) => /\/doc\/insert/i.test(item.apiUrl))
+    : undefined;
+  const orderedFlows: LinkedFlowEvidence[] = [];
+  const seenFlowKeys = new Set<string>();
+  for (const candidate of [checkFlow, insertFlow, docInsertFlow, primary]) {
+    if (!candidate) {
+      continue;
+    }
+    const key = `${candidate.apiUrl}|${candidate.backendControllerMethod}`;
+    if (seenFlowKeys.has(key)) {
+      continue;
+    }
+    seenFlowKeys.add(key);
+    orderedFlows.push(candidate);
+  }
+  const traceByPhase = new Map<string, DownstreamFlowTrace>();
+  for (const trace of options.downstreamTraces ?? []) {
+    if (!traceByPhase.has(trace.phase)) {
+      traceByPhase.set(trace.phase, trace);
+    }
+  }
+  const traceByService = new Map((options.downstreamTraces ?? []).map((trace) => [trace.serviceMethod, trace] as const));
+  const pickTraceSteps = (trace: DownstreamFlowTrace | undefined): string[] => {
+    if (!trace) {
+      return [];
+    }
+    if (trace.phase === "doc-insert") {
+      const priorityPatterns = [/getRedisInfo/i, /selectClamDocument/i, /callMODC/i, /callF/i, /saveClamDocumentFile/i, /updateSubmitdate/i];
+      const selected: string[] = [];
+      for (const pattern of priorityPatterns) {
+        const match = trace.steps.find((step) => pattern.test(step));
+        if (match && !selected.includes(match)) {
+          selected.push(match);
+        }
+      }
+      return selected.slice(0, 6);
+    }
+    return trace.steps.slice(0, 4);
+  };
+
+  const answerLines = orderedFlows.map((flow, index) => {
+    const stepPrefix = `${index + 1}) `;
+    const phaseTrace =
+      (/\/doc\/insert/i.test(flow.apiUrl) ? traceByPhase.get("doc-insert") : undefined) ??
+      (/\/claim\/insert/i.test(flow.apiUrl) && !/\/doc\/insert/i.test(flow.apiUrl) ? traceByPhase.get("claim-insert") : undefined) ??
+      (/\/claim\/check/i.test(flow.apiUrl) ? traceByPhase.get("check") : undefined) ??
+      flow.serviceHints.map((hint) => traceByService.get(hint)).find(Boolean);
+    const servicePhrase =
+      flow.serviceHints.length > 0
+        ? `${flow.serviceHints.slice(0, 3).join(", ")}`
+        : "서비스 레이어";
+    const selectedSteps = pickTraceSteps(phaseTrace);
+    const detailPhrase =
+      selectedSteps.length > 0
+        ? ` 하위에서는 ${selectedSteps.join(" -> ")} 흐름이 정적으로 확인된다.`
+        : "";
+    return `${stepPrefix}${flow.screenCode ?? flow.routePath ?? "프론트 화면"} -> ${flow.apiUrl} -> ${flow.gatewayControllerMethod ?? "gateway"} -> ${flow.backendControllerMethod}(${flow.backendPath}) -> ${servicePhrase}.${detailPhrase}`;
+  });
+
+  const mentionedEaiIds = unique((options.downstreamTraces ?? []).flatMap((trace) => trace.eaiInterfaces)).slice(0, 4);
   const answer = [
-    `${primary.screenCode ?? primary.routePath ?? "프론트 화면"}에서 시작해 ${primary.apiUrl} API를 호출한다.`,
-    `${gatewayPhrase}${primary.backendControllerMethod}(${primary.backendPath})로 연결되며,`,
-    primary.serviceHints.length > 0
-      ? `이후 서비스 레이어에서는 ${primary.serviceHints.slice(0, 3).join(", ")} 순으로 이어지는 정적 근거가 확인된다.`
-      : "이후 서비스 레이어로 이어지는 정적 근거가 확인된다.",
-    "현재 근거는 front -> API -> gateway/controller -> backend service 체인 중심이며, 그 이하 DAO/EAI 세부 호출 순서는 추가 코드 확인이 필요하다."
+    ...answerLines,
+    mentionedEaiIds.length > 0
+      ? `정적 근거로 확인된 주요 EAI는 ${mentionedEaiIds.join(", ")}이다.`
+      : "현재 근거는 front -> API -> gateway/controller -> backend service 체인 중심이며, 그 이하 DAO/EAI 세부 호출은 일부만 정적으로 복원됐다."
   ].join(" ");
 
   const evidence = [
@@ -204,12 +288,20 @@ export function buildDeterministicFlowAnswer(options: {
     `${primary.apiUrl}${primary.gatewayControllerMethod ? ` -> ${primary.gatewayControllerMethod}` : ""} -> ${primary.backendControllerMethod}`,
     `${primary.backendPath}${primary.serviceHints.length > 0 ? ` -> ${primary.serviceHints.slice(0, 3).join(", ")}` : ""}`
   ];
+  for (const trace of (options.downstreamTraces ?? []).slice(0, 3)) {
+    evidence.push(`${trace.serviceMethod} (${trace.filePath}) -> ${trace.steps.slice(0, 4).join(" -> ")}`);
+  }
 
   return {
     answer,
-    confidence: primary.serviceHints.length > 0 ? 0.8 : 0.73,
+    confidence: (options.downstreamTraces ?? []).length > 0 ? 0.86 : primary.serviceHints.length > 0 ? 0.8 : 0.73,
     evidence,
-    caveats: ["static-flow-evidence"]
+    caveats: [
+      "static-flow-evidence",
+      ...((options.downstreamTraces ?? []).some((trace) => trace.steps.length > 0)
+        ? ["downstream-static-trace"]
+        : [])
+    ]
   };
 }
 

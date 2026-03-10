@@ -282,4 +282,90 @@ describe("flow linking", () => {
     expect(linked[0]?.reasons).toEqual(expect.arrayContaining(["capability:benefit-claim", "benefit-claim-api-match"]));
   });
 
+  it("builds a multi-phase claim answer when insert/check/doc flows and downstream traces are available", () => {
+    const linked = [
+      {
+        screenCode: "MDP-MYINT020220M",
+        routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+        screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M.vue",
+        apiUrl: "/gw/api/insurance/accBenefit/claim/check",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/insurance/accBenefit/claim/check",
+        backendControllerMethod: "AccBenefitClaimController.benefitClaimCheck",
+        serviceHints: ["AccBenefitClaimService.checkApply"],
+        capabilityTags: ["benefit-claim", "claim-inquiry"],
+        confidence: 0.99,
+        reasons: ["benefit-claim-api-match"]
+      },
+      {
+        screenCode: "MDP-MYINT020220M",
+        routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+        screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M.vue",
+        apiUrl: "/gw/api/insurance/accBenefit/claim/insert",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/insurance/accBenefit/claim/insert",
+        backendControllerMethod: "AccBenefitClaimController.insertBenefitClaim",
+        serviceHints: ["AccBenefitClaimService.chkAccnNo", "AccBenefitClaimService.saveBenefitClaim"],
+        capabilityTags: ["benefit-claim", "claim-submit"],
+        confidence: 0.99,
+        reasons: ["benefit-claim-api-match"]
+      },
+      {
+        screenCode: "MDP-MYINT020220M",
+        routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+        screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M.vue",
+        apiUrl: "/gw/api/insurance/accBenefit/claim/doc/insert",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/insurance/accBenefit/claim/doc/insert",
+        backendControllerMethod: "AccBenefitClaimController.insertBenefitClaimDoc",
+        serviceHints: ["AccBenefitClaimService.saveBenefitClaimDoc"],
+        capabilityTags: ["benefit-claim", "claim-doc"],
+        confidence: 0.99,
+        reasons: ["benefit-claim-doc-submit-match"]
+      }
+    ];
+
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+      linkedFlowEvidence: linked,
+      downstreamTraces: [
+        {
+          phase: "claim-insert",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaim",
+          serviceMethod: "AccBenefitClaimService.saveBenefitClaim",
+          filePath: "dcp-insurance/.../AccBenefitClaimService.java",
+          steps: ["getRedisInfo: Redis 세션/청구 진행상태 조회", "saveClamDocument: 청구 기본정보 DB insert/update"],
+          evidence: [],
+          eaiInterfaces: []
+        },
+        {
+          phase: "doc-insert",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/doc/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaimDoc",
+          serviceMethod: "AccBenefitClaimService.saveBenefitClaimDoc",
+          filePath: "dcp-insurance/.../AccBenefitClaimService.java",
+          steps: [
+            "selectClamDocument: 기존 청구문서/최근 제출 이력 조회",
+            "callMODC0008 -> F13630020: 동의서/청구서 문서변환 호출",
+            "callF1FCZ0045: 청구 관련 EAI 전문 호출",
+            "saveClamDocumentFile: 첨부파일 이력 DB 저장"
+          ],
+          evidence: [],
+          eaiInterfaces: ["F13630020", "F1FCZ0045"]
+        }
+      ]
+    });
+
+    expect(output.answer).toContain("/gw/api/insurance/accBenefit/claim/check");
+    expect(output.answer).toContain("/gw/api/insurance/accBenefit/claim/insert");
+    expect(output.answer).toContain("/gw/api/insurance/accBenefit/claim/doc/insert");
+    expect(output.answer).toContain("F13630020");
+    expect(output.answer).toContain("F1FCZ0045");
+    expect(output.caveats).toContain("downstream-static-trace");
+  });
+
 });

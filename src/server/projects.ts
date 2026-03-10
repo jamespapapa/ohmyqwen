@@ -36,6 +36,7 @@ import {
   type FrontBackGraphSnapshot
 } from "./front-back-graph.js";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
+import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import { expandCapabilitySearchTerms, extractQuestionCapabilityTags, isCrossLayerFlowQuestion } from "./flow-capabilities.js";
 
 const ServerProjectSchema = z.object({
@@ -255,6 +256,7 @@ export interface ProjectAskResponse {
     scopeModules?: string[];
     hydratedEvidenceCount?: number;
     linkedEaiEvidenceCount?: number;
+    downstreamTraceCount?: number;
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
     frontBackEvidenceUsedCount?: number;
@@ -4895,6 +4897,31 @@ export async function askServerProject(options: {
       });
     }
     const crossLayerFlowQuestion = isCrossLayerFlowQuestion(question);
+    const downstreamFlowTraces =
+      crossLayerFlowQuestion && linkedFlowEvidence.length > 0
+        ? await traceLinkedFlowDownstream({
+            workspaceDir: project.workspaceDir,
+            linkedFlowEvidence,
+            structure: structureSnapshot
+              ? {
+                  entries: structureSnapshot.entries
+                }
+              : undefined
+          })
+        : [];
+    if (downstreamFlowTraces.length > 0) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "downstream service trace prepared",
+        metadata: {
+          count: downstreamFlowTraces.length,
+          phases: downstreamFlowTraces.map((item) => item.phase)
+        }
+      });
+    }
 
     const bestSearch =
       [...searchResults].sort((a, b) => {
@@ -4927,7 +4954,8 @@ export async function askServerProject(options: {
     let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion && linkedFlowEvidence.length > 0
       ? buildDeterministicFlowAnswer({
           question,
-          linkedFlowEvidence
+          linkedFlowEvidence,
+          downstreamTraces: downstreamFlowTraces
         })
       : {
           answer:
@@ -4967,7 +4995,8 @@ export async function askServerProject(options: {
           retrievalChars: JSON.stringify(llmMergedHits).length,
           hydratedEvidenceCount: hydratedEvidence.length,
           linkedEaiEvidenceCount: linkedEaiEvidence.length,
-          linkedFlowEvidenceCount: linkedFlowEvidence.length
+          linkedFlowEvidenceCount: linkedFlowEvidence.length,
+          downstreamTraceCount: downstreamFlowTraces.length
         }
       });
       await appendProjectDebugEvent({
@@ -5029,6 +5058,7 @@ export async function askServerProject(options: {
             hydratedEvidence,
             linkedEaiEvidence,
             linkedFlowEvidence,
+            downstreamFlowTraces,
             memory: memoryPreview,
             instruction:
               intent.methodFocused
@@ -5132,6 +5162,14 @@ export async function askServerProject(options: {
         );
       }
     }
+    if (downstreamFlowTraces.length > 0) {
+      reportLines.push("", "## Downstream Service Traces");
+      for (const trace of downstreamFlowTraces.slice(0, 6)) {
+        reportLines.push(
+          `- ${trace.phase} | ${trace.serviceMethod} | ${trace.steps.slice(0, 5).join(" -> ")}${trace.eaiInterfaces.length > 0 ? ` | eai=${trace.eaiInterfaces.join(", ")}` : ""}`
+        );
+      }
+    }
     reportLines.push("");
 
     const queryReportFiles = await writeMemoryDocs({
@@ -5169,6 +5207,7 @@ export async function askServerProject(options: {
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
         linkedEaiEvidenceCount: linkedEaiEvidence.length,
+        downstreamTraceCount: downstreamFlowTraces.length,
         frontBackGraphLoaded: Boolean(frontBackGraphSnapshot),
         frontBackLinkCount: frontBackGraphSnapshot?.links.length ?? 0,
         frontBackEvidenceUsedCount: linkedFlowEvidence.length,
