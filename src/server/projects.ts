@@ -54,6 +54,15 @@ import {
   isCrossLayerFlowQuestion,
   resolveQuestionCapabilityTags
 } from "./flow-capabilities.js";
+import {
+  applyLearnedKnowledgeObservation,
+  buildLearnedKnowledgeMarkdown,
+  computeLearnedKnowledgeSnapshot,
+  LearnedKnowledgeSnapshotSchema,
+  matchLearnedKnowledge,
+  type LearnedKnowledgeMatch,
+  type LearnedKnowledgeSnapshot
+} from "./learned-knowledge.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -168,6 +177,19 @@ export interface ProjectAnalysisResult {
   };
   domains?: DomainMaturityResult[];
   maturitySummary?: DomainMaturityOutput["summary"];
+  learnedKnowledge?: {
+    generatedAt: string;
+    candidateCount: number;
+    validatedCount: number;
+    topCandidates: Array<{
+      id: string;
+      kind: string;
+      status: string;
+      label: string;
+      score: number;
+      searchTerms: string[];
+    }>;
+  };
   eaiCatalog?: {
     asOfDate: string;
     interfaceCount: number;
@@ -247,6 +269,8 @@ export interface ProjectAnalysisResult {
     frontBackLinkCount?: number;
     activeDomainCount?: number;
     overallDomainMaturityScore?: number;
+    learnedKnowledgeCount?: number;
+    validatedKnowledgeCount?: number;
   };
 }
 
@@ -283,6 +307,7 @@ export interface ProjectAskResponse {
     activeDomainIds?: string[];
     matchedDomainIds?: string[];
     lockedDomainIds?: string[];
+    matchedLearnedKnowledgeIds?: string[];
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
     frontBackEvidenceUsedCount?: number;
@@ -465,6 +490,7 @@ const EAI_MEMORY_DIR = "eai-dictionary";
 const FRONT_CATALOG_MEMORY_DIR = "front-catalog";
 const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
 const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
+const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
 const QUERY_MEMORY_DIR = "query-reports";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -791,6 +817,7 @@ function buildAskQueryCandidates(options: {
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
   questionTags?: string[];
+  learnedMatches?: LearnedKnowledgeMatch[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -807,6 +834,9 @@ function buildAskQueryCandidates(options: {
   const capabilityTerms = expandCapabilitySearchTerms(questionTags, {
     domainPacks: options.domainPacks
   }).slice(0, 8);
+  const learnedTerms = unique(
+    (options.learnedMatches ?? []).flatMap((item) => [item.label, ...item.searchTerms])
+  ).slice(0, 10);
 
   const candidates = [
     question,
@@ -831,6 +861,9 @@ function buildAskQueryCandidates(options: {
 
   if (capabilityTerms.length > 0) {
     candidates.push(`${capabilityTerms.join(" ")} ${compact}`.trim());
+  }
+  if (learnedTerms.length > 0) {
+    candidates.push(`${learnedTerms.join(" ")} ${compact}`.trim());
   }
 
   if (hasInsuranceClaim) {
@@ -2090,6 +2123,19 @@ async function readFrontBackGraphSnapshot(memoryRoot: string): Promise<FrontBack
   try {
     const raw = await fs.readFile(frontBackGraphSnapshotPath(memoryRoot), "utf8");
     return JSON.parse(raw) as FrontBackGraphSnapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+function learnedKnowledgeSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, LEARNED_KNOWLEDGE_MEMORY_DIR, "latest.json");
+}
+
+async function readLearnedKnowledgeSnapshot(memoryRoot: string): Promise<LearnedKnowledgeSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(learnedKnowledgeSnapshotPath(memoryRoot), "utf8");
+    return LearnedKnowledgeSnapshotSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
   }
@@ -3484,6 +3530,7 @@ function selectAskMemoryFiles(
     ? [
         "front-back-graph/latest.md",
         "front-catalog/latest.md",
+        "learned-knowledge/latest.md",
         "project-analysis/latest.md",
         "structure-index/latest.md",
         "eai-dictionary/latest.md",
@@ -3492,6 +3539,7 @@ function selectAskMemoryFiles(
     : intent?.methodFocused || intent?.moduleFlowFocused
     ? [
         "structure-index/latest.md",
+        "learned-knowledge/latest.md",
         "project-analysis/latest.md",
         "project-profile/latest.md",
         "eai-dictionary/latest.md"
@@ -3499,6 +3547,7 @@ function selectAskMemoryFiles(
     : [
         "project-analysis/latest.md",
         "project-profile/latest.md",
+        "learned-knowledge/latest.md",
         "structure-index/latest.md",
         "eai-dictionary/latest.md",
         "eai-dictionary/maintenance-guide.md",
@@ -3995,6 +4044,15 @@ export async function analyzeServerProject(options: {
       },
       eaiEntries
     });
+    const priorLearnedKnowledge = await readLearnedKnowledgeSnapshot(memoryRoot);
+    const learnedKnowledge = computeLearnedKnowledgeSnapshot({
+      generatedAt,
+      frontBackGraph,
+      structure: {
+        entries: structure.snapshot.entries
+      },
+      existing: priorLearnedKnowledge
+    });
 
     if (projectPreset) {
       const presetMarkdown = buildProjectPresetMarkdown({
@@ -4032,6 +4090,23 @@ export async function analyzeServerProject(options: {
       domainMaturityDocs.latestPath,
       domainMaturityDocs.snapshotPath,
       domainMaturityJsonPath
+    ];
+    const learnedKnowledgeDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildLearnedKnowledgeMarkdown(learnedKnowledge)
+    });
+    const learnedKnowledgeJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: learnedKnowledge
+    });
+    const learnedKnowledgeMemoryFiles = [
+      learnedKnowledgeDocs.latestPath,
+      learnedKnowledgeDocs.snapshotPath,
+      learnedKnowledgeJsonPath
     ];
 
     await appendProjectDebugEvent({
@@ -4114,6 +4189,18 @@ export async function analyzeServerProject(options: {
           band: domain.band,
           strongestSignals: domain.strongestSignals,
           weakestSignals: domain.weakestSignals
+        }))
+      },
+      learnedKnowledge: {
+        candidateCount: learnedKnowledge.summary.candidateCount,
+        validatedCount: learnedKnowledge.summary.validatedCount,
+        strongestCandidates: learnedKnowledge.candidates.slice(0, 12).map((candidate) => ({
+          id: candidate.id,
+          kind: candidate.kind,
+          status: candidate.status,
+          label: candidate.label,
+          score: candidate.score,
+          searchTerms: candidate.searchTerms.slice(0, 6)
         }))
       },
       indexed: {
@@ -4282,7 +4369,8 @@ export async function analyzeServerProject(options: {
         ...presetMemoryFiles,
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
-        ...domainMaturityMemoryFiles
+        ...domainMaturityMemoryFiles,
+        ...learnedKnowledgeMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -4306,7 +4394,8 @@ export async function analyzeServerProject(options: {
         ...presetMemoryFiles,
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
-        ...domainMaturityMemoryFiles
+        ...domainMaturityMemoryFiles,
+        ...learnedKnowledgeMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -4318,6 +4407,19 @@ export async function analyzeServerProject(options: {
         : undefined,
       domains: domainMaturity.domains,
       maturitySummary: domainMaturity.summary,
+      learnedKnowledge: {
+        generatedAt: learnedKnowledge.generatedAt,
+        candidateCount: learnedKnowledge.summary.candidateCount,
+        validatedCount: learnedKnowledge.summary.validatedCount,
+        topCandidates: learnedKnowledge.candidates.slice(0, 12).map((candidate) => ({
+          id: candidate.id,
+          kind: candidate.kind,
+          status: candidate.status,
+          label: candidate.label,
+          score: candidate.score,
+          searchTerms: candidate.searchTerms.slice(0, 6)
+        }))
+      },
       eaiCatalog: eaiEnabled
         ? {
             asOfDate: eaiAsOfDate,
@@ -4402,7 +4504,9 @@ export async function analyzeServerProject(options: {
         frontCatalogCount: frontBackGraph?.frontend.screenCount ?? 0,
         frontBackLinkCount: frontBackGraph?.links.length ?? 0,
         activeDomainCount: activeDomainPacks.length,
-        overallDomainMaturityScore: domainMaturity.summary.overallScore
+        overallDomainMaturityScore: domainMaturity.summary.overallScore,
+        learnedKnowledgeCount: learnedKnowledge.summary.candidateCount,
+        validatedKnowledgeCount: learnedKnowledge.summary.validatedCount
       }
     };
 
@@ -4941,25 +5045,10 @@ export async function askServerProject(options: {
     const pinnedDomainPacks = domainSelection.lockedDomainIds.length > 0
       ? resolveDomainPacksByIds(effectiveDomainPacks, domainSelection.lockedDomainIds)
       : [];
-    const questionCapabilityTags = resolveQuestionCapabilityTags({
+    let questionCapabilityTags = resolveQuestionCapabilityTags({
       question,
       domainPacks: effectiveDomainPacks,
       pinnedDomainPacks
-    });
-    await appendProjectDebugEvent({
-      timestamp: nowIso(),
-      projectId: options.projectId,
-      stage: "ask",
-      status: "info",
-      message: "resolved ask domains",
-      metadata: {
-        mode: domainSelection.mode,
-        activeDomainIds: activeDomainPacks.map((item) => item.id),
-        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
-        lockedDomainIds: domainSelection.lockedDomainIds,
-        effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
-        questionCapabilityTags
-      }
     });
 
     const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
@@ -4990,6 +5079,59 @@ export async function askServerProject(options: {
         }
       });
     }
+    let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
+    if (!learnedKnowledgeSnapshot && (frontBackGraphSnapshot || structureSnapshot)) {
+      learnedKnowledgeSnapshot = computeLearnedKnowledgeSnapshot({
+        generatedAt: nowIso(),
+        frontBackGraph: frontBackGraphSnapshot,
+        structure: structureSnapshot
+          ? {
+              entries: structureSnapshot.entries
+            }
+          : undefined
+      });
+      await writeMemoryDocs({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: buildLearnedKnowledgeMarkdown(learnedKnowledgeSnapshot)
+      });
+      await writeMemoryJson({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: learnedKnowledgeSnapshot
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "learned knowledge snapshot generated on demand",
+        metadata: {
+          candidateCount: learnedKnowledgeSnapshot.summary.candidateCount,
+          validatedCount: learnedKnowledgeSnapshot.summary.validatedCount
+        }
+      });
+    }
+    const matchedLearnedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
+    questionCapabilityTags = unique([...questionCapabilityTags, ...matchedLearnedKnowledge.map((item) => item.id)]);
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "info",
+      message: "resolved ask domains",
+      metadata: {
+        mode: domainSelection.mode,
+        activeDomainIds: activeDomainPacks.map((item) => item.id),
+        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+        matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+        lockedDomainIds: domainSelection.lockedDomainIds,
+        effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
+        questionCapabilityTags
+      }
+    });
 
     const expandedQueries = buildAskQueryCandidates({
       question,
@@ -4997,7 +5139,8 @@ export async function askServerProject(options: {
       targetSymbols: strategyDecision.targetSymbols,
       moduleCandidates: strategyDecision.moduleCandidates,
       domainPacks: effectiveDomainPacks,
-      questionTags: questionCapabilityTags
+      questionTags: questionCapabilityTags,
+      learnedMatches: matchedLearnedKnowledge
     });
     const searchResults: ProjectSearchResult[] = [];
     for (const [index, expandedQuery] of expandedQueries.entries()) {
@@ -5136,7 +5279,8 @@ export async function askServerProject(options: {
           })),
           snapshot: frontBackGraphSnapshot,
           limit: 10,
-          domainPacks: effectiveDomainPacks
+          domainPacks: effectiveDomainPacks,
+          learnedKnowledge: learnedKnowledgeSnapshot
         })
       : [];
     if (linkedFlowEvidence.length > 0) {
@@ -5346,6 +5490,7 @@ export async function askServerProject(options: {
               requireCrossLayerFlow: crossLayerFlowQuestion,
               domainSelectionMode: domainSelection.mode,
               matchedDomains: domainSelection.matchedDomains.map((item) => item.id),
+              matchedLearnedKnowledge: matchedLearnedKnowledge.map((item) => item.id),
               lockedDomains: domainSelection.lockedDomainIds,
               effectiveDomains: effectiveDomainPacks.map((item) => item.id)
             },
@@ -5368,6 +5513,7 @@ export async function askServerProject(options: {
             linkedEaiEvidence,
             linkedFlowEvidence,
             downstreamFlowTraces,
+            learnedKnowledgeMatches: matchedLearnedKnowledge,
             memory: memoryPreview,
             instruction:
               intent.methodFocused
@@ -5437,6 +5583,7 @@ export async function askServerProject(options: {
       `- domainSelectionMode: ${domainSelection.mode}`,
       `- activeDomains: ${activeDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedDomains: ${domainSelection.matchedDomains.map((item) => item.id).join(", ") || "(none)"}`,
+      `- matchedLearnedKnowledge: ${matchedLearnedKnowledge.map((item) => item.id).join(", ") || "(none)"}`,
       `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
       `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
@@ -5524,6 +5671,7 @@ export async function askServerProject(options: {
         domainSelectionMode: domainSelection.mode,
         activeDomainIds: activeDomainPacks.map((item) => item.id),
         matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+        matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         lockedDomainIds: domainSelection.lockedDomainIds,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
@@ -5540,6 +5688,27 @@ export async function askServerProject(options: {
         ]
       }
     };
+
+    if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
+      const updatedLearnedKnowledge = applyLearnedKnowledgeObservation({
+        snapshot: learnedKnowledgeSnapshot,
+        matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
+        successful: response.qualityGatePassed,
+        question
+      });
+      await writeMemoryDocs({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: buildLearnedKnowledgeMarkdown(updatedLearnedKnowledge)
+      });
+      await writeMemoryJson({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: updatedLearnedKnowledge
+      });
+    }
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),

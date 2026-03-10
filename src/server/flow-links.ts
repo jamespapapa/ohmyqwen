@@ -1,6 +1,8 @@
 import type { FrontBackGraphLink, FrontBackGraphSnapshot } from "./front-back-graph.js";
 import type { DownstreamFlowTrace } from "./flow-trace.js";
 import type { DomainPack } from "./domain-packs.js";
+import type { LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
+import { extractLearnedKnowledgeTagsFromTexts } from "./learned-knowledge.js";
 import {
   extractFlowCapabilityTagsFromTexts,
   extractQuestionCapabilityTags,
@@ -50,8 +52,12 @@ function tokenize(value: string): string[] {
   return unique(value.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? []);
 }
 
-function resolveLinkCapabilityTags(link: FrontBackGraphLink, domainPacks?: DomainPack[]): string[] {
-  return extractFlowCapabilityTagsFromTexts([
+function resolveLinkCapabilityTags(
+  link: FrontBackGraphLink,
+  domainPacks?: DomainPack[],
+  learnedKnowledge?: LearnedKnowledgeSnapshot
+): string[] {
+  const texts = [
     link.frontend.screenCode,
     link.frontend.screenPath,
     link.frontend.routePath,
@@ -63,7 +69,11 @@ function resolveLinkCapabilityTags(link: FrontBackGraphLink, domainPacks?: Domai
     link.backend.path,
     link.backend.controllerMethod,
     ...link.backend.serviceHints
-  ], { domainPacks });
+  ];
+  return unique([
+    ...extractFlowCapabilityTagsFromTexts(texts, { domainPacks }),
+    ...extractLearnedKnowledgeTagsFromTexts(texts, learnedKnowledge)
+  ]);
 }
 
 export function buildLinkedFlowEvidence(options: {
@@ -73,6 +83,7 @@ export function buildLinkedFlowEvidence(options: {
   snapshot: FrontBackGraphSnapshot;
   limit?: number;
   domainPacks?: DomainPack[];
+  learnedKnowledge?: LearnedKnowledgeSnapshot;
 }): LinkedFlowEvidence[] {
   const tokens = tokenize(options.question);
   const questionTags = options.questionTags ?? resolveQuestionCapabilityTags({
@@ -84,7 +95,7 @@ export function buildLinkedFlowEvidence(options: {
 
   return options.snapshot.links
     .map((link) => {
-      const capabilityTags = resolveLinkCapabilityTags(link, options.domainPacks);
+      const capabilityTags = resolveLinkCapabilityTags(link, options.domainPacks, options.learnedKnowledge);
       const capabilityAlignment = scoreFlowCapabilityAlignment(questionTags, capabilityTags, {
         domainPacks: options.domainPacks,
         question: options.question,

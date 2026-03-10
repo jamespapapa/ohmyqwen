@@ -1859,6 +1859,13 @@ export default function HomePage() {
                     <span>{analysisResult.maturitySummary?.overallScore ?? 0} / 100</span>
                   </div>
                   <div className="report-row">
+                    <span>학습 지식 후보</span>
+                    <span>
+                      {analysisResult.learnedKnowledge?.candidateCount ?? 0}개 · validated=
+                      {analysisResult.learnedKnowledge?.validatedCount ?? 0}
+                    </span>
+                  </div>
+                  <div className="report-row">
                     <span>연결 Workspace</span>
                     <span>{selectedProject?.linkedWorkspaceDirs?.length ?? 0}개</span>
                   </div>
@@ -1983,6 +1990,27 @@ export default function HomePage() {
                     </ul>
                   </>
                 ) : null}
+
+                {(analysisResult.learnedKnowledge?.topCandidates || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Learned Knowledge Candidates
+                      {analysisResult.learnedKnowledge
+                        ? ` · validated=${analysisResult.learnedKnowledge.validatedCount}/${analysisResult.learnedKnowledge.candidateCount}`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 180 }}>
+                      {analysisResult.learnedKnowledge.topCandidates.slice(0, 12).map((candidate, index) => (
+                        <li key={`${candidate.id}-${index}`}>
+                          <span title={`${candidate.id} | ${candidate.kind} | terms=${(candidate.searchTerms || []).join(", ")}`}>
+                            {shortText(candidate.label, 24)} · {candidate.kind} · {candidate.status}
+                          </span>
+                          <span>{candidate.score}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
               </div>
             ) : null}
 
@@ -2077,6 +2105,9 @@ export default function HomePage() {
                     : ""}
                   {(askResult.diagnostics?.matchedDomainIds || []).length > 0
                     ? ` · matchedDomains=${askResult.diagnostics.matchedDomainIds.join(",")}`
+                    : ""}
+                  {(askResult.diagnostics?.matchedLearnedKnowledgeIds || []).length > 0
+                    ? ` · matchedKnowledge=${askResult.diagnostics.matchedLearnedKnowledgeIds.join(",")}`
                     : ""}
                   {(askResult.diagnostics?.lockedDomainIds || []).length > 0
                     ? ` · lockedDomains=${askResult.diagnostics.lockedDomainIds.join(",")}`
