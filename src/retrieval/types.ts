@@ -105,11 +105,17 @@ export interface ResolvedRetrievalConfig {
   lifecycle: RetrievalLifecycleConfig;
   qmd: {
     enabled: boolean;
+    integrationMode: "external-cli" | "internal-runtime";
+    offlineStrict: boolean;
+    targetPlatform: "win32-x64" | "darwin-arm64" | "linux-x64";
     command: string;
     collectionName: string;
     indexName?: string;
     mask: string;
     queryMode: "query_then_search" | "search_only" | "query_only";
+    runtimeRoot?: string;
+    vendorRoot?: string;
+    modelsDir?: string;
     configDir?: string;
     cacheHome?: string;
     indexPath?: string;

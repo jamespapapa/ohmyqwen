@@ -52,11 +52,17 @@ const RetrievalConfigFileSchema = z.object({
   qmd: z
     .object({
       enabled: z.boolean().optional(),
+      integrationMode: z.enum(["external-cli", "internal-runtime"]).optional(),
+      offlineStrict: z.boolean().optional(),
+      targetPlatform: z.enum(["win32-x64", "darwin-arm64", "linux-x64"]).optional(),
       command: z.string().min(1).optional(),
       collectionName: z.string().min(1).optional(),
       indexName: z.string().min(1).optional(),
       mask: z.string().min(1).optional(),
       queryMode: z.enum(["query_then_search", "search_only", "query_only"]).optional(),
+      runtimeRoot: z.string().min(1).optional(),
+      vendorRoot: z.string().min(1).optional(),
+      modelsDir: z.string().min(1).optional(),
       configDir: z.string().min(1).optional(),
       cacheHome: z.string().min(1).optional(),
       indexPath: z.string().min(1).optional(),
@@ -100,11 +106,17 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   qmd: {
     enabled: true,
+    integrationMode: "external-cli",
+    offlineStrict: false,
+    targetPlatform: "win32-x64",
     command: "qmd",
     collectionName: "workspace",
     indexName: undefined,
     mask: "**/*.{ts,tsx,js,jsx,mjs,cjs,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh,properties}",
     queryMode: "query_then_search",
+    runtimeRoot: undefined,
+    vendorRoot: "vendor/qmd",
+    modelsDir: undefined,
     configDir: undefined,
     cacheHome: undefined,
     indexPath: undefined,
@@ -231,6 +243,36 @@ function parseQmdQueryMode(
   return undefined;
 }
 
+function parseQmdIntegrationMode(
+  value: string | undefined
+): "external-cli" | "internal-runtime" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "external-cli" || normalized === "internal-runtime") {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function parseQmdTargetPlatform(
+  value: string | undefined
+): "win32-x64" | "darwin-arm64" | "linux-x64" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized === "win32-x64" || normalized === "darwin-arm64" || normalized === "linux-x64") {
+    return normalized;
+  }
+
+  return undefined;
+}
+
 function mergeConfig(base: ResolvedRetrievalConfig, patch: RetrievalConfigFile): ResolvedRetrievalConfig {
   return {
     providerPriority: uniqueProviders(patch.providerPriority ?? base.providerPriority),
@@ -323,11 +365,23 @@ export async function resolveRetrievalConfig(
   config.qmd = {
     ...config.qmd,
     enabled: asBool(process.env.OHMYQWEN_QMD_ENABLED) ?? config.qmd.enabled,
+    integrationMode:
+      parseQmdIntegrationMode(process.env.OHMYQWEN_QMD_INTEGRATION_MODE) ?? config.qmd.integrationMode,
+    offlineStrict:
+      asBool(process.env.OHMYQWEN_QMD_OFFLINE_STRICT) ?? config.qmd.offlineStrict,
+    targetPlatform:
+      parseQmdTargetPlatform(process.env.OHMYQWEN_QMD_TARGET_PLATFORM) ?? config.qmd.targetPlatform,
     command: process.env.OHMYQWEN_QMD_COMMAND?.trim() || config.qmd.command,
     collectionName: process.env.OHMYQWEN_QMD_COLLECTION?.trim() || config.qmd.collectionName,
     indexName: process.env.OHMYQWEN_QMD_INDEX_NAME?.trim() || config.qmd.indexName,
     mask: process.env.OHMYQWEN_QMD_MASK?.trim() || config.qmd.mask,
     queryMode: parseQmdQueryMode(process.env.OHMYQWEN_QMD_QUERY_MODE) ?? config.qmd.queryMode,
+    runtimeRoot:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_RUNTIME_ROOT) ?? config.qmd.runtimeRoot,
+    vendorRoot:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_VENDOR_ROOT) ?? config.qmd.vendorRoot,
+    modelsDir:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_MODELS_DIR) ?? config.qmd.modelsDir,
     configDir: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CONFIG_DIR) ?? config.qmd.configDir,
     cacheHome: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CACHE_HOME) ?? config.qmd.cacheHome,
     indexPath: normalizeOptionalPath(process.env.OHMYQWEN_QMD_INDEX_PATH) ?? config.qmd.indexPath,
