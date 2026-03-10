@@ -21,6 +21,7 @@ import {
   upsertProjectPreset
 } from "./presets.js";
 import {
+  detectQuestionDomainPacks,
   getDomainPackById,
   listDomainPacks,
   removeDomainPack,
@@ -47,7 +48,12 @@ import {
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import { computeDomainMaturity, type DomainMaturityOutput, type DomainMaturityResult } from "./domain-maturity.js";
-import { expandCapabilitySearchTerms, extractQuestionCapabilityTags, isCrossLayerFlowQuestion } from "./flow-capabilities.js";
+import {
+  expandCapabilitySearchTerms,
+  extractQuestionCapabilityTags,
+  isCrossLayerFlowQuestion,
+  resolveQuestionCapabilityTags
+} from "./flow-capabilities.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -273,6 +279,10 @@ export interface ProjectAskResponse {
     hydratedEvidenceCount?: number;
     linkedEaiEvidenceCount?: number;
     downstreamTraceCount?: number;
+    domainSelectionMode?: "auto" | "lock";
+    activeDomainIds?: string[];
+    matchedDomainIds?: string[];
+    lockedDomainIds?: string[];
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
     frontBackEvidenceUsedCount?: number;
@@ -780,6 +790,7 @@ function buildAskQueryCandidates(options: {
   targetSymbols?: string[];
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
+  questionTags?: string[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -788,9 +799,12 @@ function buildAskQueryCandidates(options: {
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
   const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
-  const capabilityTerms = expandCapabilitySearchTerms(extractQuestionCapabilityTags(question, {
-    domainPacks: options.domainPacks
-  }), {
+  const questionTags =
+    options.questionTags ??
+    extractQuestionCapabilityTags(question, {
+      domainPacks: options.domainPacks
+    });
+  const capabilityTerms = expandCapabilitySearchTerms(questionTags, {
     domainPacks: options.domainPacks
   }).slice(0, 8);
 
@@ -1657,6 +1671,48 @@ async function resolveProjectDomainPacks(preset?: ProjectPreset): Promise<Domain
     return [];
   }
   return resolveDomainPacksByIds(allDomainPacks, preset.domainPackIds);
+}
+
+function uniqueText(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+function resolveAskDomainSelection(options: {
+  question: string;
+  activeDomainPacks: DomainPack[];
+  requestedDomainIds?: string[];
+  mode?: "auto" | "lock";
+}): {
+  effectiveDomainPacks: DomainPack[];
+  matchedDomains: Array<{ id: string; name: string; score: number; matchedTags: string[]; reasons: string[] }>;
+  lockedDomainIds: string[];
+  mode: "auto" | "lock";
+} {
+  const mode = options.mode === "lock" ? "lock" : "auto";
+  const lockedDomainIds = uniqueText(options.requestedDomainIds ?? []).filter((id) =>
+    options.activeDomainPacks.some((domainPack) => domainPack.id === id)
+  );
+  const matchedDomains = detectQuestionDomainPacks(options.question, options.activeDomainPacks);
+
+  if (mode === "lock" && lockedDomainIds.length > 0) {
+    return {
+      effectiveDomainPacks: resolveDomainPacksByIds(options.activeDomainPacks, lockedDomainIds),
+      matchedDomains,
+      lockedDomainIds,
+      mode
+    };
+  }
+
+  const autoMatchedIds = matchedDomains.map((domain) => domain.id);
+  return {
+    effectiveDomainPacks:
+      autoMatchedIds.length > 0
+        ? resolveDomainPacksByIds(options.activeDomainPacks, autoMatchedIds)
+        : options.activeDomainPacks,
+    matchedDomains,
+    lockedDomainIds: [],
+    mode: "auto"
+  };
 }
 
 function buildDomainMaturityMarkdown(input: {
@@ -2922,10 +2978,10 @@ function scoreStructureSymbolForAsk(options: {
   if (options.strategy === "module_flow_topdown" && /controller|service/.test(entryPath)) {
     score += 24;
   }
-  if (/claim|benefit|acc|submit|save|cancel|upload|doc|file|apply|receipt/.test(symbolName)) {
+  if (/claim|benefit|acc|loan|credit|contract|limit|member|auth|session|pension|fund|submit|save|cancel|upload|doc|file|apply|receipt|account|check|select/.test(symbolName)) {
     score += 20;
   }
-  if (/claim|benefit|acc/.test(className)) {
+  if (/claim|benefit|acc|loan|credit|contract|member|auth|pension|fund/.test(className)) {
     score += 10;
   }
 
@@ -4401,6 +4457,7 @@ function qualityGateForAsk(options: {
   }>;
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
+  questionTags?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -4419,7 +4476,8 @@ function qualityGateForAsk(options: {
     linkedEaiEvidence: options.linkedEaiEvidence,
     linkedFlowEvidence: options.linkedFlowEvidence,
     moduleCandidates: options.moduleCandidates,
-    domainPacks: options.domainPacks
+    domainPacks: options.domainPacks,
+    questionTags: options.questionTags
   });
 }
 
@@ -4497,6 +4555,8 @@ export async function askServerProject(options: {
   limit?: number;
   maxLlmCalls?: number;
   deterministicOnly?: boolean;
+  domainPackIds?: string[];
+  domainSelectionMode?: "auto" | "lock";
 }): Promise<ProjectAskResponse> {
   await appendProjectDebugEvent({
     timestamp: nowIso(),
@@ -4506,7 +4566,9 @@ export async function askServerProject(options: {
     message: "project ask started",
     metadata: {
       question: options.question,
-      deterministicOnly: Boolean(options.deterministicOnly)
+      deterministicOnly: Boolean(options.deterministicOnly),
+      domainSelectionMode: options.domainSelectionMode ?? "auto",
+      requestedDomainIds: options.domainPackIds ?? []
     }
   });
 
@@ -4869,6 +4931,36 @@ export async function askServerProject(options: {
     const activeDomainPacks = analysis.projectPreset?.domainPackIds?.length
       ? resolveDomainPacksByIds(await listDomainPacks(), analysis.projectPreset.domainPackIds)
       : await resolveProjectDomainPacks(project.presetId ? await getProjectPresetById(project.presetId) : undefined);
+    const domainSelection = resolveAskDomainSelection({
+      question,
+      activeDomainPacks,
+      requestedDomainIds: options.domainPackIds,
+      mode: options.domainSelectionMode
+    });
+    const effectiveDomainPacks = domainSelection.effectiveDomainPacks;
+    const pinnedDomainPacks = domainSelection.lockedDomainIds.length > 0
+      ? resolveDomainPacksByIds(effectiveDomainPacks, domainSelection.lockedDomainIds)
+      : [];
+    const questionCapabilityTags = resolveQuestionCapabilityTags({
+      question,
+      domainPacks: effectiveDomainPacks,
+      pinnedDomainPacks
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "ask",
+      status: "info",
+      message: "resolved ask domains",
+      metadata: {
+        mode: domainSelection.mode,
+        activeDomainIds: activeDomainPacks.map((item) => item.id),
+        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+        lockedDomainIds: domainSelection.lockedDomainIds,
+        effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
+        questionCapabilityTags
+      }
+    });
 
     const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
     if (eaiSnapshot) {
@@ -4904,7 +4996,8 @@ export async function askServerProject(options: {
       strategy: strategyDecision.strategy,
       targetSymbols: strategyDecision.targetSymbols,
       moduleCandidates: strategyDecision.moduleCandidates,
-      domainPacks: activeDomainPacks
+      domainPacks: effectiveDomainPacks,
+      questionTags: questionCapabilityTags
     });
     const searchResults: ProjectSearchResult[] = [];
     for (const [index, expandedQuery] of expandedQueries.entries()) {
@@ -5035,14 +5128,15 @@ export async function askServerProject(options: {
     const linkedFlowEvidence = frontBackGraphSnapshot
       ? buildLinkedFlowEvidence({
           question,
+          questionTags: questionCapabilityTags,
           hits: mergedHits.map((hit) => ({
             path: hit.path,
             score: hit.score,
             reasons: hit.reasons
           })),
           snapshot: frontBackGraphSnapshot,
-          limit: 6,
-          domainPacks: activeDomainPacks
+          limit: 10,
+          domainPacks: effectiveDomainPacks
         })
       : [];
     if (linkedFlowEvidence.length > 0) {
@@ -5116,6 +5210,7 @@ export async function askServerProject(options: {
     let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion && linkedFlowEvidence.length > 0
       ? buildDeterministicFlowAnswer({
           question,
+          questionTags: questionCapabilityTags,
           linkedFlowEvidence,
           downstreamTraces: downstreamFlowTraces
         })
@@ -5200,7 +5295,11 @@ export async function askServerProject(options: {
               requireCodeEvidence: /(로직|흐름|어떻게|구현|처리|service|controller|domain)/i.test(question),
               requireModuleEvidence: strategyDecision.moduleCandidates.length > 0,
               moduleCandidates: strategyDecision.moduleCandidates,
-              requireCrossLayerFlow: crossLayerFlowQuestion
+              requireCrossLayerFlow: crossLayerFlowQuestion,
+              domainSelectionMode: domainSelection.mode,
+              matchedDomains: domainSelection.matchedDomains.map((item) => item.id),
+              lockedDomains: domainSelection.lockedDomainIds,
+              effectiveDomains: effectiveDomainPacks.map((item) => item.id)
             },
             projectAnalysis: {
               summary: analysis.summary,
@@ -5266,7 +5365,8 @@ export async function askServerProject(options: {
         linkedEaiEvidence,
         linkedFlowEvidence,
         moduleCandidates: strategyDecision.moduleCandidates,
-        domainPacks: activeDomainPacks
+        domainPacks: effectiveDomainPacks,
+        questionTags: questionCapabilityTags
       });
       if (gate.passed) {
         passed = true;
@@ -5285,6 +5385,11 @@ export async function askServerProject(options: {
       `- question: ${question}`,
       `- strategy: ${strategyDecision.strategy}`,
       `- strategyConfidence: ${strategyDecision.confidence.toFixed(2)}`,
+      `- domainSelectionMode: ${domainSelection.mode}`,
+      `- activeDomains: ${activeDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
+      `- matchedDomains: ${domainSelection.matchedDomains.map((item) => item.id).join(", ") || "(none)"}`,
+      `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
+      `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
         strategyDecision.moduleCandidates.length > 0 ? strategyDecision.moduleCandidates.join(", ") : "(none)"
       }`,
@@ -5367,6 +5472,10 @@ export async function askServerProject(options: {
         strategyConfidence: strategyDecision.confidence,
         strategyLlmUsed: strategyDecision.llmUsed,
         strategyReason: strategyDecision.reason,
+        domainSelectionMode: domainSelection.mode,
+        activeDomainIds: activeDomainPacks.map((item) => item.id),
+        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+        lockedDomainIds: domainSelection.lockedDomainIds,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
         linkedEaiEvidenceCount: linkedEaiEvidence.length,

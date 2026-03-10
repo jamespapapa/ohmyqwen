@@ -4,6 +4,8 @@ import {
   expandCapabilitySearchTerms,
   extractFlowCapabilityTagsFromTexts,
   extractQuestionCapabilityTags,
+  resolveQuestionCapabilityTags,
+  seedCapabilityTagsFromDomainPacks,
   scoreFlowCapabilityAlignment
 } from "../src/server/flow-capabilities.js";
 import { buildLinkedFlowEvidence, type LinkedFlowEvidence } from "../src/server/flow-links.js";
@@ -18,6 +20,7 @@ const loanDomainPack: DomainPack = {
   capabilityTags: [
     {
       tag: "loan",
+      kind: "domain",
       aliases: ["대출", "loan"],
       questionPatterns: ["대출", "loan"],
       textPatterns: ["Loan", "/loan/", "loan"],
@@ -25,6 +28,18 @@ const loanDomainPack: DomainPack = {
       pathHints: ["dcp-loan/"],
       symbolHints: ["LoanController", "LoanService"],
       apiHints: ["/loan/"]
+    },
+    {
+      tag: "sunshine-loan",
+      kind: "subdomain",
+      aliases: ["햇살론", "모바일햇살론", "sunshine loan"],
+      questionPatterns: ["햇살론", "모바일햇살론", "sunshine\\s*loan"],
+      textPatterns: ["CreditLowWorkerLoan", "low/worker", "MYLOT0213"],
+      searchTerms: ["CreditLowWorkerLoanReauestController", "CreditLowWorkerLoanReauestService"],
+      pathHints: ["MYLOT0213"],
+      symbolHints: ["CreditLowWorkerLoanReauestController", "CreditLowWorkerLoanReauestService"],
+      apiHints: ["/loan/credit/low/worker/request/"],
+      parents: ["loan"]
     }
   ],
   rankingPriors: [
@@ -34,6 +49,13 @@ const loanDomainPack: DomainPack = {
       whenApiMatches: ["/loan/"],
       weight: 35,
       reason: "domain:loan"
+    },
+    {
+      whenQuestionHas: ["sunshine-loan"],
+      whenLinkHas: ["sunshine-loan"],
+      whenApiMatches: ["/loan/credit/low/worker/request/"],
+      weight: 45,
+      reason: "domain:sunshine-loan"
     }
   ],
   exemplars: [],
@@ -43,37 +65,47 @@ const loanDomainPack: DomainPack = {
 };
 
 describe("domain-backed capability extraction", () => {
-  it("extracts question tags and search terms from configured domain packs", () => {
-    const tags = extractQuestionCapabilityTags("대출 로직이 어떻게 실행되는지 알려줘.", {
+  it("extracts sunshine-loan question tags and search terms from configured domain packs", () => {
+    const tags = extractQuestionCapabilityTags("햇살론 대출 로직이 어떻게 실행되는지 알려줘.", {
       domainPacks: [loanDomainPack]
     });
-    const textTags = extractFlowCapabilityTagsFromTexts([
-      "dcp-loan/src/main/java/com/acme/LoanController.java",
-      "/gw/api/loan/apply"
-    ], {
-      domainPacks: [loanDomainPack]
-    });
+    const textTags = extractFlowCapabilityTagsFromTexts(
+      [
+        "dcp-loan/src/main/java/com/acme/CreditLowWorkerLoanReauestController.java",
+        "/gw/api/loan/credit/low/worker/request/selectCustInfo"
+      ],
+      {
+        domainPacks: [loanDomainPack]
+      }
+    );
     const terms = expandCapabilitySearchTerms(tags, {
       domainPacks: [loanDomainPack]
     });
 
-    expect(tags).toContain("loan");
-    expect(textTags).toContain("loan");
-    expect(terms).toEqual(expect.arrayContaining(["LoanController", "LoanService", "LoanApply"]));
+    expect(tags).toEqual(expect.arrayContaining(["loan", "sunshine-loan"]));
+    expect(textTags).toEqual(expect.arrayContaining(["loan", "sunshine-loan"]));
+    expect(terms).toEqual(
+      expect.arrayContaining([
+        "LoanController",
+        "LoanService",
+        "CreditLowWorkerLoanReauestController",
+        "CreditLowWorkerLoanReauestService"
+      ])
+    );
   });
 
-  it("applies configured domain ranking priors to flow alignment", () => {
-    const alignment = scoreFlowCapabilityAlignment(["loan"], ["loan"], {
+  it("applies configured domain ranking priors to sunshine-loan flow alignment", () => {
+    const alignment = scoreFlowCapabilityAlignment(["loan", "sunshine-loan"], ["loan", "sunshine-loan"], {
       domainPacks: [loanDomainPack],
-      apiText: "/gw/api/loan/apply",
-      methodText: "LoanController.apply LoanService.submit"
+      apiText: "/gw/api/loan/credit/low/worker/request/selectCustInfo",
+      methodText: "CreditLowWorkerLoanReauestController.selectCustInfo CreditLowWorkerLoanReauestService.selectCustInfo"
     });
 
-    expect(alignment.score).toBeGreaterThan(80);
-    expect(alignment.reasons).toContain("domain:loan");
+    expect(alignment.score).toBeGreaterThan(120);
+    expect(alignment.reasons).toEqual(expect.arrayContaining(["domain:loan", "domain:sunshine-loan"]));
   });
 
-  it("ranks domain-aligned cross-layer flows ahead of unrelated flows", () => {
+  it("ranks sunshine-loan cross-layer flows ahead of unrelated flows", () => {
     const snapshot: FrontBackGraphSnapshot = {
       version: 1,
       generatedAt: "2026-03-10T00:00:00.000Z",
@@ -96,38 +128,38 @@ describe("domain-backed capability extraction", () => {
       },
       links: [
         {
-          confidence: 0.72,
-          capabilityTags: ["benefit-claim"],
+          confidence: 0.91,
+          capabilityTags: ["loan"],
           frontend: {
-            screenCode: "MDP-MYINT020220M",
-            screenPath: "src/views/claim.vue",
-            routePath: "/claim"
+            screenCode: "MDP-PRLOP000010M",
+            screenPath: "src/views/display/loanProduct.vue",
+            routePath: "/display/loan/product"
           },
           api: {
-            rawUrl: "/gw/api/insurance/benefit/claim/insert",
-            normalizedUrl: "/insurance/benefit/claim/insert",
+            rawUrl: "/display/loan/product/basic",
+            normalizedUrl: "/display/loan/product/basic",
             source: "http-call"
           },
           gateway: {},
           backend: {
-            path: "/insurance/benefit/claim/insert",
-            controllerMethod: "BenefitClaimController.insertBenefitClaim",
-            filePath: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
-            serviceHints: ["BenefitClaimService.saveBenefitClaim"]
+            path: "/display/loan/product/basic",
+            controllerMethod: "DisplayLoanProductController.selectLoanBasicList",
+            filePath: "dcp-display/src/main/java/com/acme/DisplayLoanProductController.java",
+            serviceHints: ["DisplayLoanProductService.selectLoanBasicList"]
           },
           evidence: ["frontend-http-call"]
         },
         {
           confidence: 0.69,
-          capabilityTags: ["loan"],
+          capabilityTags: ["loan", "sunshine-loan", "action-inquiry"],
           frontend: {
-            screenCode: "MDP-MYLOAN010100M",
-            screenPath: "src/views/loan.vue",
-            routePath: "/loan"
+            screenCode: "MDP-MYLOT021320M",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021320M.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021320M"
           },
           api: {
-            rawUrl: "/gw/api/loan/apply",
-            normalizedUrl: "/loan/apply",
+            rawUrl: "/gw/api/loan/credit/low/worker/request/selectCustInfo",
+            normalizedUrl: "/loan/credit/low/worker/request/selectCustInfo",
             source: "http-call"
           },
           gateway: {
@@ -135,10 +167,10 @@ describe("domain-backed capability extraction", () => {
             controllerMethod: "RouteController.route"
           },
           backend: {
-            path: "/loan/apply",
-            controllerMethod: "LoanController.apply",
-            filePath: "dcp-loan/src/main/java/com/acme/LoanController.java",
-            serviceHints: ["LoanService.submit"]
+            path: "/loan/credit/low/worker/request/selectCustInfo",
+            controllerMethod: "CreditLowWorkerLoanReauestController.selectCustInfo",
+            filePath: "dcp-loan/src/main/java/com/acme/CreditLowWorkerLoanReauestController.java",
+            serviceHints: ["CreditLowWorkerLoanReauestService.selectCustInfo"]
           },
           evidence: ["frontend-http-call", "gateway-api-proxy"]
         }
@@ -151,12 +183,42 @@ describe("domain-backed capability extraction", () => {
     };
 
     const linked = buildLinkedFlowEvidence({
-      question: "대출 로직이 frontend부터 backend까지 어떤 흐름으로 가는지 분석해줘.",
+      question: "햇살론 대출 로직이 frontend부터 backend까지 어떤 흐름으로 가는지 분석해줘.",
       snapshot,
       domainPacks: [loanDomainPack]
     });
 
-    expect((linked[0] as LinkedFlowEvidence).backendControllerMethod).toBe("LoanController.apply");
-    expect(linked[0]?.capabilityTags).toContain("loan");
+    expect((linked[0] as LinkedFlowEvidence).backendControllerMethod).toBe(
+      "CreditLowWorkerLoanReauestController.selectCustInfo"
+    );
+    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["loan", "sunshine-loan"]));
+  });
+
+  it("does not leak benefit-claim tags into sunshine-loan check flows", () => {
+    const tags = extractFlowCapabilityTagsFromTexts(
+      [
+        "MDP-MYLOT021301C",
+        "/gw/api/loan/credit/low/worker/request/checktime",
+        "CreditLowWorkerLoanReauestController.checkTimeService"
+      ],
+      {
+        domainPacks: [loanDomainPack]
+      }
+    );
+
+    expect(tags).toEqual(expect.arrayContaining(["loan", "sunshine-loan", "action-check"]));
+    expect(tags).not.toContain("benefit-claim");
+    expect(tags).not.toContain("claim-inquiry");
+  });
+
+  it("adds pinned domain seed tags when the user locks a domain", () => {
+    const tags = resolveQuestionCapabilityTags({
+      question: "check 흐름을 프론트부터 백엔드까지 추적해줘.",
+      domainPacks: [loanDomainPack],
+      pinnedDomainPacks: [loanDomainPack]
+    });
+
+    expect(seedCapabilityTagsFromDomainPacks([loanDomainPack])).toContain("loan");
+    expect(tags).toContain("loan");
   });
 });

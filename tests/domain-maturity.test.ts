@@ -13,6 +13,7 @@ const benefitClaimPack: DomainPack = {
   capabilityTags: [
     {
       tag: "benefit-claim",
+      kind: "domain",
       aliases: ["보험금 청구"],
       questionPatterns: ["보험금\\s*청구"],
       textPatterns: ["BenefitClaim", "claim/insert"],
@@ -23,6 +24,7 @@ const benefitClaimPack: DomainPack = {
     },
     {
       tag: "claim-doc",
+      kind: "subdomain",
       aliases: ["청구 서류"],
       questionPatterns: ["서류"],
       textPatterns: ["saveBenefitClaimDoc", "doc/insert", "F13630020"],

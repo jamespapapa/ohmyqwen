@@ -4,83 +4,227 @@
       "id": "benefit-claim",
       "name": "보험금 청구",
       "description": "보험금 청구/조회/서류제출/사고보험금/대리청구 계열 capability pack",
-      "families": ["insurance"],
+      "families": [
+        "insurance"
+      ],
       "enabledByDefault": true,
       "capabilityTags": [
         {
           "tag": "benefit-claim",
-          "aliases": ["보험금 청구", "benefit claim"],
-          "questionPatterns": ["보험금\\s*청구", "benefit\\s*claim"],
-          "textPatterns": ["보험금\\s*청구", "BenefitClaim", "benefit/claim", "accBenefit/claim"],
-          "searchTerms": ["BenefitClaim", "BenefitClaimController", "BenefitClaimService", "AccBenefitClaim", "AccBenefitClaimController", "AccBenefitClaimService"],
-          "pathHints": ["dcp-insurance/"],
-          "symbolHints": ["BenefitClaimController", "AccBenefitClaimController", "BenefitClaimService", "AccBenefitClaimService"],
-          "apiHints": ["/insurance/benefit/claim", "/insurance/accBenefit/claim"],
-          "adjacentConfusers": ["division-expiry", "application-retraction"]
+          "aliases": [
+            "보험금 청구",
+            "benefit claim"
+          ],
+          "questionPatterns": [
+            "보험금\\s*청구",
+            "benefit\\s*claim"
+          ],
+          "textPatterns": [
+            "보험금\\s*청구",
+            "BenefitClaim",
+            "benefit/claim",
+            "accBenefit/claim"
+          ],
+          "searchTerms": [
+            "BenefitClaim",
+            "BenefitClaimController",
+            "BenefitClaimService",
+            "AccBenefitClaim",
+            "AccBenefitClaimController",
+            "AccBenefitClaimService"
+          ],
+          "pathHints": [
+            "dcp-insurance/"
+          ],
+          "symbolHints": [
+            "BenefitClaimController",
+            "AccBenefitClaimController",
+            "BenefitClaimService",
+            "AccBenefitClaimService"
+          ],
+          "apiHints": [
+            "/insurance/benefit/claim",
+            "/insurance/accBenefit/claim"
+          ],
+          "adjacentConfusers": [
+            "division-expiry",
+            "application-retraction"
+          ],
+          "kind": "domain"
         },
         {
           "tag": "accident-benefit-claim",
-          "aliases": ["사고보험금", "accident benefit claim"],
-          "questionPatterns": ["사고보험금", "accident\\s*benefit"],
-          "textPatterns": ["AccBenefitClaim", "사고보험금", "accBenefit/claim"],
-          "searchTerms": ["AccBenefitClaim", "insertBenefitClaim", "insertBenefitClaimDoc", "saveBenefitClaimDoc"],
-          "parents": ["benefit-claim"]
+          "aliases": [
+            "사고보험금",
+            "accident benefit claim"
+          ],
+          "questionPatterns": [
+            "사고보험금",
+            "accident\\s*benefit"
+          ],
+          "textPatterns": [
+            "AccBenefitClaim",
+            "사고보험금",
+            "accBenefit/claim"
+          ],
+          "searchTerms": [
+            "AccBenefitClaim",
+            "insertBenefitClaim",
+            "insertBenefitClaimDoc",
+            "saveBenefitClaimDoc"
+          ],
+          "parents": [
+            "benefit-claim"
+          ],
+          "kind": "subdomain"
         },
         {
           "tag": "agent-benefit-claim",
-          "aliases": ["보험금 대리 청구"],
-          "questionPatterns": ["대리\\s*청구", "agent\\s*benefit"],
-          "textPatterns": ["AgentBenefitClaim", "대리보험금"],
-          "searchTerms": ["AgentBenefitClaim", "AgentBenefitClaimController", "AgentBenefitClaimService"],
-          "parents": ["benefit-claim"]
+          "aliases": [
+            "보험금 대리 청구"
+          ],
+          "questionPatterns": [
+            "대리\\s*청구",
+            "agent\\s*benefit"
+          ],
+          "textPatterns": [
+            "AgentBenefitClaim",
+            "대리보험금"
+          ],
+          "searchTerms": [
+            "AgentBenefitClaim",
+            "AgentBenefitClaimController",
+            "AgentBenefitClaimService"
+          ],
+          "parents": [
+            "benefit-claim"
+          ],
+          "kind": "subdomain"
         },
         {
           "tag": "claim-doc",
-          "aliases": ["청구 서류 제출"],
-          "questionPatterns": ["서류", "문서", "첨부", "upload"],
-          "textPatterns": ["claim/doc", "doc/insert", "saveBenefitClaimDoc", "F13630020"],
-          "searchTerms": ["saveBenefitClaimDoc", "claim doc insert", "F13630020", "callMODC0008"],
-          "parents": ["benefit-claim"]
+          "aliases": [
+            "청구 서류 제출",
+            "보험금 청구 서류"
+          ],
+          "questionPatterns": [
+            "보험금\\s*청구\\s*서류",
+            "보험금\\s*서류",
+            "claim\\s*doc",
+            "청구서류"
+          ],
+          "textPatterns": [
+            "claim/doc",
+            "doc/insert",
+            "saveBenefitClaimDoc",
+            "F13630020"
+          ],
+          "searchTerms": [
+            "saveBenefitClaimDoc",
+            "claim doc insert",
+            "F13630020",
+            "callMODC0008"
+          ],
+          "parents": [
+            "benefit-claim"
+          ],
+          "kind": "subdomain"
         },
         {
           "tag": "claim-submit",
-          "aliases": ["청구 접수", "청구 제출"],
-          "questionPatterns": ["접수", "제출", "submit"],
-          "textPatterns": ["claim/insert", "saveBenefitClaim", "insertBenefitClaim"],
-          "searchTerms": ["saveBenefitClaim", "insertBenefitClaim", "claim insert"],
-          "parents": ["benefit-claim"]
+          "aliases": [
+            "청구 접수",
+            "청구 제출",
+            "보험금 청구 접수"
+          ],
+          "questionPatterns": [
+            "보험금\\s*청구\\s*(접수|제출)",
+            "claim\\s*insert",
+            "benefit\\s*claim\\s*submit"
+          ],
+          "textPatterns": [
+            "claim/insert",
+            "saveBenefitClaim",
+            "insertBenefitClaim"
+          ],
+          "searchTerms": [
+            "saveBenefitClaim",
+            "insertBenefitClaim",
+            "claim insert"
+          ],
+          "parents": [
+            "benefit-claim"
+          ],
+          "kind": "subdomain"
         },
         {
           "tag": "claim-inquiry",
-          "aliases": ["청구 조회"],
-          "questionPatterns": ["조회", "check", "inqury"],
-          "textPatterns": ["claim/check", "claim/inqury", "benefitClaimCheck", "checkApply"],
-          "searchTerms": ["benefitClaimCheck", "checkApply", "claim inqury"],
-          "parents": ["benefit-claim"]
+          "aliases": [
+            "청구 조회",
+            "보험금 청구 조회"
+          ],
+          "questionPatterns": [
+            "보험금\\s*청구\\s*(조회|확인)",
+            "claim\\s*(inqury|check)",
+            "청구대상\\s*조회"
+          ],
+          "textPatterns": [
+            "claim/check",
+            "claim/inqury",
+            "benefitClaimCheck",
+            "checkApply"
+          ],
+          "searchTerms": [
+            "benefitClaimCheck",
+            "checkApply",
+            "claim inqury"
+          ],
+          "parents": [
+            "benefit-claim"
+          ],
+          "kind": "subdomain"
         }
       ],
       "rankingPriors": [
         {
-          "whenQuestionHas": ["benefit-claim"],
-          "whenLinkHas": ["benefit-claim"],
+          "whenQuestionHas": [
+            "benefit-claim"
+          ],
+          "whenLinkHas": [
+            "benefit-claim"
+          ],
           "weight": 30,
           "reason": "domain:benefit-claim"
         },
         {
-          "whenQuestionHas": ["benefit-claim"],
-          "whenLinkHas": ["accident-benefit-claim"],
+          "whenQuestionHas": [
+            "benefit-claim"
+          ],
+          "whenLinkHas": [
+            "accident-benefit-claim"
+          ],
           "weight": 24,
           "reason": "domain:benefit-claim-family"
         },
         {
-          "whenQuestionHas": ["benefit-claim"],
-          "whenApiMatches": ["/claim/insert", "/doc/insert"],
+          "whenQuestionHas": [
+            "benefit-claim"
+          ],
+          "whenApiMatches": [
+            "/claim/insert",
+            "/doc/insert"
+          ],
           "weight": 18,
           "reason": "domain:benefit-claim-submit"
         },
         {
-          "whenQuestionHas": ["benefit-claim"],
-          "whenApiMatches": ["division/appexpiry", "retraction"],
+          "whenQuestionHas": [
+            "benefit-claim"
+          ],
+          "whenApiMatches": [
+            "division/appexpiry",
+            "retraction"
+          ],
           "weight": -90,
           "reason": "domain:benefit-claim-adjacent-penalty",
           "negative": true
@@ -89,9 +233,17 @@
       "exemplars": [
         {
           "question": "보험금 청구 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
-          "expectedTags": ["benefit-claim"],
-          "expectedApiPatterns": ["claim/insert", "doc/insert"],
-          "expectedControllerPatterns": ["BenefitClaimController", "AccBenefitClaimController"]
+          "expectedTags": [
+            "benefit-claim"
+          ],
+          "expectedApiPatterns": [
+            "claim/insert",
+            "doc/insert"
+          ],
+          "expectedControllerPatterns": [
+            "BenefitClaimController",
+            "AccBenefitClaimController"
+          ]
         }
       ],
       "createdAt": "2026-03-10T00:00:00.000Z",
@@ -102,21 +254,465 @@
       "id": "loan",
       "name": "대출",
       "description": "보험계약대출/부동산담보대출/신용대출 등 대출 capability pack",
-      "families": ["loan"],
+      "families": [
+        "loan"
+      ],
       "enabledByDefault": true,
       "capabilityTags": [
         {
           "tag": "loan",
-          "aliases": ["대출", "loan"],
-          "questionPatterns": ["대출", "loan"],
-          "textPatterns": ["Loan", "loan/", "contractloan", "credit", "realty"],
-          "searchTerms": ["Loan", "LoanController", "LoanService", "ContractLoan", "CreditLoan", "RealtyCollateralLoan"],
-          "pathHints": ["dcp-loan/"],
-          "apiHints": ["/loan/"]
+          "aliases": [
+            "대출",
+            "loan"
+          ],
+          "questionPatterns": [
+            "대출",
+            "loan"
+          ],
+          "textPatterns": [
+            "Loan",
+            "loan/",
+            "contractloan",
+            "CreditLoan",
+            "RealtyCollateralLoan"
+          ],
+          "searchTerms": [
+            "Loan",
+            "LoanController",
+            "LoanService",
+            "ContractLoan",
+            "CreditLoan",
+            "RealtyCollateralLoan"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "apiHints": [
+            "/loan/"
+          ],
+          "kind": "domain"
+        },
+        {
+          "tag": "sunshine-loan",
+          "kind": "subdomain",
+          "aliases": [
+            "햇살론",
+            "모바일햇살론",
+            "sunshine loan"
+          ],
+          "questionPatterns": [
+            "햇살론",
+            "모바일햇살론",
+            "sunshine\\s*loan"
+          ],
+          "textPatterns": [
+            "햇살론",
+            "모바일햇살론",
+            "CreditLowWorkerLoan",
+            "low/worker",
+            "MYLOT0213"
+          ],
+          "searchTerms": [
+            "CreditLowWorkerLoanReauestController",
+            "CreditLowWorkerLoanReauestService",
+            "MYLOT021300M",
+            "MYLOT021320M",
+            "MYLOT021330M",
+            "MYLOT021350M",
+            "MYLOT021360M",
+            "MYLOT021370M",
+            "/loan/credit/low/worker/request/"
+          ],
+          "pathHints": [
+            "dcp-loan/",
+            "MYLOT0213",
+            "loan/request/MDP-MYLOT0213"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController",
+            "CreditLowWorkerLoanReauestService",
+            "CreditLowWorkerLoanPdfReauestService"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/"
+          ],
+          "parents": [
+            "loan"
+          ],
+          "adjacentConfusers": []
+        },
+        {
+          "tag": "credit-low-worker-loan",
+          "kind": "subdomain",
+          "aliases": [
+            "근로자 햇살론",
+            "credit low worker loan"
+          ],
+          "questionPatterns": [
+            "근로자\\s*햇살론",
+            "low\\s*worker\\s*loan",
+            "credit\\s*low\\s*worker"
+          ],
+          "textPatterns": [
+            "CreditLowWorkerLoanReauest",
+            "credit/low/worker",
+            "MYLOT0213"
+          ],
+          "searchTerms": [
+            "CreditLowWorkerLoanReauestController",
+            "CreditLowWorkerLoanReauestService",
+            "CreditLowWorkerLoanPdfReauestService",
+            "low/worker/request"
+          ],
+          "pathHints": [
+            "dcp-loan/",
+            "loan/request/MDP-MYLOT0213"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController",
+            "CreditLowWorkerLoanReauestService",
+            "CreditLowWorkerLoanPdfReauestService"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/"
+          ],
+          "parents": [
+            "sunshine-loan",
+            "loan"
+          ],
+          "adjacentConfusers": []
+        },
+        {
+          "tag": "low-worker-loan-check",
+          "kind": "action",
+          "aliases": [
+            "햇살론 시간체크",
+            "햇살론 고객정보 조회"
+          ],
+          "questionPatterns": [
+            "햇살론\\s*(시간체크|고객정보\\s*조회)"
+          ],
+          "textPatterns": [
+            "/loan/credit/low/worker/request/checktime",
+            "/loan/credit/low/worker/request/selectCustInfo",
+            "/loan/credit/low/worker/request/customer/check",
+            "validateAccessTime",
+            "selectCustInfo"
+          ],
+          "searchTerms": [
+            "checktime",
+            "selectCustInfo",
+            "validateAccessTime"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController.checkTimeService",
+            "CreditLowWorkerLoanReauestController.selectCustInfo"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/checktime",
+            "/loan/credit/low/worker/request/selectCustInfo",
+            "/loan/credit/low/worker/request/customer/check"
+          ],
+          "parents": [
+            "credit-low-worker-loan",
+            "sunshine-loan",
+            "loan"
+          ]
+        },
+        {
+          "tag": "low-worker-loan-limit",
+          "kind": "action",
+          "aliases": [
+            "햇살론 한도조회"
+          ],
+          "questionPatterns": [
+            "햇살론\\s*한도조회"
+          ],
+          "textPatterns": [
+            "/loan/credit/low/worker/request/limit/amount",
+            "limitAmount"
+          ],
+          "searchTerms": [
+            "limitAmount",
+            "F1CLN0013"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController.limitAmount",
+            "CreditLowWorkerLoanReauestService.limitAmount"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/limit/amount",
+            "/loan/credit/low/worker/request/limit/amount/tmp"
+          ],
+          "parents": [
+            "credit-low-worker-loan",
+            "sunshine-loan",
+            "loan"
+          ]
+        },
+        {
+          "tag": "low-worker-loan-apply",
+          "kind": "action",
+          "aliases": [
+            "햇살론 대출 신청"
+          ],
+          "questionPatterns": [
+            "햇살론\\s*대출\\s*신청"
+          ],
+          "textPatterns": [
+            "/loan/credit/low/worker/request/requestLoanMember",
+            "/loan/credit/low/worker/request/loanAdmit",
+            "/loan/credit/low/worker/request/apply",
+            "requestLoanMember",
+            "loanAdmit"
+          ],
+          "searchTerms": [
+            "requestLoanMember",
+            "loanAdmit",
+            "apply",
+            "saveInput",
+            "saveInputInfo"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController.apply",
+            "CreditLowWorkerLoanReauestController.registLoanMember"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/requestLoanMember",
+            "/loan/credit/low/worker/request/loanAdmit",
+            "/loan/credit/low/worker/request/apply",
+            "/loan/credit/low/worker/request/lowWorker/saveInput",
+            "/loan/credit/low/worker/request/lowWorker/saveInputInfo"
+          ],
+          "parents": [
+            "credit-low-worker-loan",
+            "sunshine-loan",
+            "loan"
+          ]
+        },
+        {
+          "tag": "low-worker-loan-doc",
+          "kind": "action",
+          "aliases": [
+            "햇살론 대출계약서류"
+          ],
+          "questionPatterns": [
+            "햇살론\\s*(대출계약서류|계약서류)"
+          ],
+          "textPatterns": [
+            "/loan/credit/low/worker/request/make/owner/agreement",
+            "makeDocListBeforeApply",
+            "owner/agreement"
+          ],
+          "searchTerms": [
+            "makeOwnerAgreement",
+            "makeDocListBeforeApply"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController.makeOwnerAgreement",
+            "CreditLowWorkerLoanPdfReauestService.makeDocListBeforeApply"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/make/owner/agreement"
+          ],
+          "parents": [
+            "credit-low-worker-loan",
+            "sunshine-loan",
+            "loan"
+          ]
+        },
+        {
+          "tag": "low-worker-loan-account",
+          "kind": "action",
+          "aliases": [
+            "햇살론 계좌등록"
+          ],
+          "questionPatterns": [
+            "햇살론\\s*계좌(등록|조회)"
+          ],
+          "textPatterns": [
+            "/loan/credit/low/worker/request/insertAccntNo",
+            "/loan/credit/low/worker/request/getAccntNo",
+            "insertAccntNo",
+            "getAccntNo"
+          ],
+          "searchTerms": [
+            "insertAccntNo",
+            "getAccntNo"
+          ],
+          "pathHints": [
+            "dcp-loan/"
+          ],
+          "symbolHints": [
+            "CreditLowWorkerLoanReauestController.insertAccntNo",
+            "CreditLowWorkerLoanReauestService.insertAccntNo"
+          ],
+          "apiHints": [
+            "/loan/credit/low/worker/request/insertAccntNo",
+            "/loan/credit/low/worker/request/getAccntNo"
+          ],
+          "parents": [
+            "credit-low-worker-loan",
+            "sunshine-loan",
+            "loan"
+          ]
         }
       ],
-      "rankingPriors": [],
-      "exemplars": [],
+      "rankingPriors": [
+        {
+          "whenQuestionHas": [
+            "loan"
+          ],
+          "whenLinkHas": [
+            "loan"
+          ],
+          "weight": 24,
+          "reason": "domain:loan"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "sunshine-loan"
+          ],
+          "weight": 48,
+          "reason": "domain:sunshine-loan"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "credit-low-worker-loan"
+          ],
+          "weight": 44,
+          "reason": "domain:credit-low-worker-loan"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenApiMatches": [
+            "/loan/credit/low/worker/request/"
+          ],
+          "weight": 32,
+          "reason": "domain:sunshine-loan-api"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenMethodMatches": [
+            "CreditLowWorkerLoanReauestController",
+            "CreditLowWorkerLoanReauestService"
+          ],
+          "weight": 28,
+          "reason": "domain:sunshine-loan-controller"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenPathMatches": [
+            "MYLOT0213"
+          ],
+          "weight": 26,
+          "reason": "domain:sunshine-loan-screen"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "low-worker-loan-check"
+          ],
+          "weight": 12,
+          "reason": "domain:sunshine-loan-check"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "low-worker-loan-limit"
+          ],
+          "weight": 12,
+          "reason": "domain:sunshine-loan-limit"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "low-worker-loan-apply"
+          ],
+          "weight": 16,
+          "reason": "domain:sunshine-loan-apply"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "low-worker-loan-doc"
+          ],
+          "weight": 14,
+          "reason": "domain:sunshine-loan-doc"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenLinkHas": [
+            "low-worker-loan-account"
+          ],
+          "weight": 12,
+          "reason": "domain:sunshine-loan-account"
+        },
+        {
+          "whenQuestionHas": [
+            "sunshine-loan"
+          ],
+          "whenApiMatches": [
+            "/display/loan/product/basic",
+            "/cs/location/region/list",
+            "/point/inqury/credit/"
+          ],
+          "weight": -80,
+          "reason": "domain:sunshine-loan-adjacent-penalty",
+          "negative": true
+        }
+      ],
+      "exemplars": [
+        {
+          "question": "햇살론 대출 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+          "expectedTags": [
+            "loan",
+            "sunshine-loan",
+            "credit-low-worker-loan"
+          ],
+          "expectedApiPatterns": [
+            "/loan/credit/low/worker/request/checktime",
+            "/loan/credit/low/worker/request/apply"
+          ],
+          "expectedControllerPatterns": [
+            "CreditLowWorkerLoanReauestController"
+          ]
+        }
+      ],
       "createdAt": "2026-03-10T00:00:00.000Z",
       "updatedAt": "2026-03-10T00:00:00.000Z",
       "builtIn": true
@@ -125,17 +721,47 @@
       "id": "member-auth",
       "name": "회원/인증",
       "description": "회원가입/로그인/인증/권한/세션 capability pack",
-      "families": ["member", "auth"],
+      "families": [
+        "member",
+        "auth"
+      ],
       "enabledByDefault": true,
       "capabilityTags": [
         {
           "tag": "member-auth",
-          "aliases": ["회원 인증", "member auth"],
-          "questionPatterns": ["회원", "인증", "로그인", "auth", "session"],
-          "textPatterns": ["Member", "Auth", "login", "session", "redis"],
-          "searchTerms": ["Member", "Auth", "Login", "Session", "RedisSession"],
-          "pathHints": ["dcp-member/", "dcp-gateway/"],
-          "apiHints": ["/member/", "/auth/"]
+          "aliases": [
+            "회원 인증",
+            "member auth"
+          ],
+          "questionPatterns": [
+            "회원",
+            "인증",
+            "로그인",
+            "auth",
+            "session"
+          ],
+          "textPatterns": [
+            "Member",
+            "Auth",
+            "login",
+            "session",
+            "redis"
+          ],
+          "searchTerms": [
+            "Member",
+            "Auth",
+            "Login",
+            "Session",
+            "RedisSession"
+          ],
+          "pathHints": [
+            "dcp-member/",
+            "dcp-gateway/"
+          ],
+          "apiHints": [
+            "/member/",
+            "/auth/"
+          ]
         }
       ],
       "rankingPriors": [],
@@ -148,17 +774,48 @@
       "id": "retire-pension",
       "name": "퇴직/연금",
       "description": "퇴직연금/IRP/연금 관련 capability pack",
-      "families": ["retire", "pension"],
+      "families": [
+        "retire",
+        "pension"
+      ],
       "enabledByDefault": true,
       "capabilityTags": [
         {
           "tag": "retire-pension",
-          "aliases": ["퇴직연금", "연금", "IRP"],
-          "questionPatterns": ["퇴직연금", "연금", "IRP", "pension", "retire"],
-          "textPatterns": ["Pension", "Retire", "IRP", "퇴직연금", "연금"],
-          "searchTerms": ["Pension", "Retire", "IRP", "pension service", "retire service"],
-          "pathHints": ["dcp-retire/", "dcp-pension/"],
-          "apiHints": ["/pension/", "/retire/"]
+          "aliases": [
+            "퇴직연금",
+            "연금",
+            "IRP"
+          ],
+          "questionPatterns": [
+            "퇴직연금",
+            "연금",
+            "IRP",
+            "pension",
+            "retire"
+          ],
+          "textPatterns": [
+            "Pension",
+            "Retire",
+            "IRP",
+            "퇴직연금",
+            "연금"
+          ],
+          "searchTerms": [
+            "Pension",
+            "Retire",
+            "IRP",
+            "pension service",
+            "retire service"
+          ],
+          "pathHints": [
+            "dcp-retire/",
+            "dcp-pension/"
+          ],
+          "apiHints": [
+            "/pension/",
+            "/retire/"
+          ]
         }
       ],
       "rankingPriors": [],
@@ -171,17 +828,40 @@
       "id": "fund",
       "name": "펀드",
       "description": "펀드/ETF/수익률/포트폴리오 capability pack",
-      "families": ["fund"],
+      "families": [
+        "fund"
+      ],
       "enabledByDefault": true,
       "capabilityTags": [
         {
           "tag": "fund",
-          "aliases": ["펀드", "ETF"],
-          "questionPatterns": ["펀드", "ETF", "fund"],
-          "textPatterns": ["Fund", "ETF", "portfolio", "펀드"],
-          "searchTerms": ["Fund", "ETF", "Portfolio", "fund service"],
-          "pathHints": ["dcp-fund/"],
-          "apiHints": ["/fund/"]
+          "aliases": [
+            "펀드",
+            "ETF"
+          ],
+          "questionPatterns": [
+            "펀드",
+            "ETF",
+            "fund"
+          ],
+          "textPatterns": [
+            "Fund",
+            "ETF",
+            "portfolio",
+            "펀드"
+          ],
+          "searchTerms": [
+            "Fund",
+            "ETF",
+            "Portfolio",
+            "fund service"
+          ],
+          "pathHints": [
+            "dcp-fund/"
+          ],
+          "apiHints": [
+            "/fund/"
+          ]
         }
       ],
       "rankingPriors": [],

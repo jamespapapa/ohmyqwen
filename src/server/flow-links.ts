@@ -6,6 +6,7 @@ import {
   extractQuestionCapabilityTags,
   hasStrongFlowCapabilityAlignment,
   isCrossLayerFlowQuestion,
+  resolveQuestionCapabilityTags,
   scoreFlowCapabilityAlignment
 } from "./flow-capabilities.js";
 
@@ -41,38 +42,43 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
+function flowHasCapability(flow: LinkedFlowEvidence, capability: string): boolean {
+  return (flow.capabilityTags ?? []).includes(capability);
+}
+
 function tokenize(value: string): string[] {
   return unique(value.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? []);
 }
 
 function resolveLinkCapabilityTags(link: FrontBackGraphLink, domainPacks?: DomainPack[]): string[] {
-  return Array.from(new Set([
-    ...(link.capabilityTags ?? []),
-    ...extractFlowCapabilityTagsFromTexts([
-      link.frontend.screenCode,
-      link.frontend.screenPath,
-      link.frontend.routePath,
-      link.api.rawUrl,
-      link.api.normalizedUrl,
-      link.api.functionName,
-      link.gateway.path,
-      link.gateway.controllerMethod,
-      link.backend.path,
-      link.backend.controllerMethod,
-      ...link.backend.serviceHints
-    ], { domainPacks })
-  ]));
+  return extractFlowCapabilityTagsFromTexts([
+    link.frontend.screenCode,
+    link.frontend.screenPath,
+    link.frontend.routePath,
+    link.api.rawUrl,
+    link.api.normalizedUrl,
+    link.api.functionName,
+    link.gateway.path,
+    link.gateway.controllerMethod,
+    link.backend.path,
+    link.backend.controllerMethod,
+    ...link.backend.serviceHints
+  ], { domainPacks });
 }
 
 export function buildLinkedFlowEvidence(options: {
   question: string;
+  questionTags?: string[];
   hits?: SearchLikeHit[];
   snapshot: FrontBackGraphSnapshot;
   limit?: number;
   domainPacks?: DomainPack[];
 }): LinkedFlowEvidence[] {
   const tokens = tokenize(options.question);
-  const questionTags = extractQuestionCapabilityTags(options.question, { domainPacks: options.domainPacks });
+  const questionTags = options.questionTags ?? resolveQuestionCapabilityTags({
+    question: options.question,
+    domainPacks: options.domainPacks
+  });
   const hitPaths = (options.hits ?? []).map((hit) => hit.path.toLowerCase());
   const crossLayer = isCrossLayerFlowQuestion(options.question);
 
@@ -209,6 +215,7 @@ export function buildLinkedFlowEvidence(options: {
 
 export function buildDeterministicFlowAnswer(options: {
   question: string;
+  questionTags?: string[];
   linkedFlowEvidence: LinkedFlowEvidence[];
   downstreamTraces?: DownstreamFlowTrace[];
 }): DeterministicFlowAnswer {
@@ -222,22 +229,50 @@ export function buildDeterministicFlowAnswer(options: {
     };
   }
 
-  const gatewayPhrase = primary.gatewayControllerMethod
-    ? `${primary.gatewayControllerMethod}${primary.gatewayPath ? `(${primary.gatewayPath})` : ""}를 거쳐 `
-    : "";
-  const questionIsClaim = /(보험금|청구|benefit|claim)/i.test(options.question);
-  const checkFlow = questionIsClaim
-    ? options.linkedFlowEvidence.find((item) => /\/claim\/check/i.test(item.apiUrl))
-    : undefined;
-  const insertFlow = questionIsClaim
-    ? options.linkedFlowEvidence.find((item) => /\/claim\/insert/i.test(item.apiUrl) && !/\/doc\/insert/i.test(item.apiUrl))
-    : undefined;
-  const docInsertFlow = questionIsClaim
-    ? options.linkedFlowEvidence.find((item) => /\/doc\/insert/i.test(item.apiUrl))
-    : undefined;
+  const questionTags = options.questionTags ?? extractQuestionCapabilityTags(options.question);
+  const questionIsClaim = questionTags.includes("benefit-claim") || /(보험금|청구|benefit|claim)/i.test(options.question);
+  const checkFlow =
+    options.linkedFlowEvidence.find(
+      (item) =>
+        flowHasCapability(item, "low-worker-loan-check") ||
+        flowHasCapability(item, "claim-inquiry") ||
+        /\/claim\/check|checktime|customer\/check/i.test(item.apiUrl)
+    ) ??
+    (questionIsClaim ? options.linkedFlowEvidence.find((item) => /\/claim\/check/i.test(item.apiUrl)) : undefined);
+  const inquiryFlow =
+    options.linkedFlowEvidence.find(
+      (item) =>
+        flowHasCapability(item, "low-worker-loan-limit") ||
+        /selectcustinfo|limit\/amount|\/claim\/inqury|\/claim\/inquiry|getinput|getaccntno/i.test(item.apiUrl)
+    ) ??
+    options.linkedFlowEvidence.find((item) => flowHasCapability(item, "action-inquiry"));
+  const insertFlow =
+    options.linkedFlowEvidence.find(
+      (item) =>
+        flowHasCapability(item, "low-worker-loan-apply") ||
+        flowHasCapability(item, "claim-submit") ||
+        /\/claim\/insert|\/apply\b|\/insert\b|saveinput|loanadmit|requestloanmember/i.test(item.apiUrl)
+    ) ??
+    (questionIsClaim
+      ? options.linkedFlowEvidence.find((item) => /\/claim\/insert/i.test(item.apiUrl) && !/\/doc\/insert/i.test(item.apiUrl))
+      : undefined);
+  const docInsertFlow =
+    options.linkedFlowEvidence.find(
+      (item) =>
+        flowHasCapability(item, "low-worker-loan-doc") ||
+        flowHasCapability(item, "claim-doc") ||
+        /\/doc\/insert|agreement|pdf|owner\/agreement/i.test(item.apiUrl)
+    ) ??
+    (questionIsClaim ? options.linkedFlowEvidence.find((item) => /\/doc\/insert/i.test(item.apiUrl)) : undefined);
+  const accountFlow =
+    options.linkedFlowEvidence.find(
+      (item) =>
+        flowHasCapability(item, "low-worker-loan-account") ||
+        /insertaccntno|getaccntno/i.test(item.apiUrl)
+    );
   const orderedFlows: LinkedFlowEvidence[] = [];
   const seenFlowKeys = new Set<string>();
-  for (const candidate of [checkFlow, insertFlow, docInsertFlow, primary]) {
+  for (const candidate of [checkFlow, inquiryFlow, accountFlow, insertFlow, docInsertFlow, primary]) {
     if (!candidate) {
       continue;
     }

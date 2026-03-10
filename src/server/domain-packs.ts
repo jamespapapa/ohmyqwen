@@ -3,8 +3,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+const DomainPackCapabilityKindSchema = z.enum(["domain", "subdomain", "action"]).default("domain");
+
 const DomainPackCapabilitySchema = z.object({
   tag: z.string().min(1),
+  kind: DomainPackCapabilityKindSchema.default("domain"),
   aliases: z.array(z.string().min(1)).default([]),
   questionPatterns: z.array(z.string().min(1)).default([]),
   textPatterns: z.array(z.string().min(1)).default([]),
@@ -70,6 +73,7 @@ const UpsertDomainPackInputSchema = z.object({
 
 export type DomainPack = z.infer<typeof DomainPackSchema>;
 export type DomainPackCapability = z.infer<typeof DomainPackCapabilitySchema>;
+export type DomainPackCapabilityKind = z.infer<typeof DomainPackCapabilityKindSchema>;
 export type DomainPackRankingPrior = z.infer<typeof DomainPackRankingPriorSchema>;
 export type DomainPackExemplar = z.infer<typeof DomainPackExemplarSchema>;
 export type UpsertDomainPackInput = z.infer<typeof UpsertDomainPackInputSchema>;
@@ -108,6 +112,7 @@ function normalizeTextList(values: string[]): string[] {
 function normalizeCapability(capability: DomainPackCapability): DomainPackCapability {
   return {
     ...capability,
+    kind: capability.kind ?? "domain",
     aliases: normalizeTextList(capability.aliases ?? []),
     questionPatterns: normalizeTextList(capability.questionPatterns ?? []),
     textPatterns: normalizeTextList(capability.textPatterns ?? []),
@@ -322,7 +327,97 @@ export function resolveDomainPacksByIds(domainPacks: DomainPack[], ids?: string[
   return domainPacks.filter((domainPack) => idSet.has(domainPack.id));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function compilePattern(pattern: string): RegExp | null {
+  const raw = pattern.trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    return new RegExp(raw, "i");
+  } catch {
+    try {
+      return new RegExp(escapeRegExp(raw), "i");
+    } catch {
+      return null;
+    }
+  }
+}
+
+function scoreCapabilityQuestionMatch(question: string, capability: DomainPackCapability): number {
+  let score = 0;
+  const weightedGroups: Array<[number, string[]]> = [
+    [30, capability.questionPatterns ?? []],
+    [22, capability.aliases ?? []],
+    [18, capability.searchTerms ?? []],
+    [16, capability.symbolHints ?? []],
+    [14, capability.apiHints ?? []],
+    [10, capability.pathHints ?? []],
+    [8, capability.textPatterns ?? []]
+  ];
+
+  for (const [weight, patterns] of weightedGroups) {
+    for (const pattern of patterns) {
+      const compiled = compilePattern(pattern);
+      if (compiled?.test(question)) {
+        score += weight;
+      }
+    }
+  }
+
+  return score;
+}
+
+export interface DomainPackMatch {
+  id: string;
+  name: string;
+  score: number;
+  matchedTags: string[];
+  reasons: string[];
+}
+
+export function detectQuestionDomainPacks(question: string, domainPacks: DomainPack[]): DomainPackMatch[] {
+  const normalizedQuestion = question.trim();
+  if (!normalizedQuestion) {
+    return [];
+  }
+
+  return domainPacks
+    .map((domainPack) => {
+      let score = 0;
+      const matchedTags: string[] = [];
+      const reasons: string[] = [];
+
+      for (const capability of domainPack.capabilityTags) {
+        const capabilityScore = scoreCapabilityQuestionMatch(normalizedQuestion, capability);
+        if (capabilityScore <= 0) {
+          continue;
+        }
+        score += capabilityScore;
+        matchedTags.push(capability.tag);
+        reasons.push(`${capability.tag}:${capabilityScore}`);
+        if (capability.kind === "subdomain") {
+          score += 12;
+        }
+      }
+
+      return {
+        id: domainPack.id,
+        name: domainPack.name,
+        score,
+        matchedTags: normalizeTextList(matchedTags),
+        reasons: normalizeTextList(reasons)
+      } satisfies DomainPackMatch;
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.id.localeCompare(b.id)));
+}
+
 export {
+  DomainPackCapabilityKindSchema,
   DomainPackCapabilitySchema,
   DomainPackExemplarSchema,
   DomainPackRankingPriorSchema,

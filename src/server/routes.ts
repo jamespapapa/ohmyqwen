@@ -623,6 +623,8 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         limit?: number;
         maxLlmCalls?: number;
         deterministicOnly?: boolean;
+        domainPackIds?: string[];
+        domainSelectionMode?: "auto" | "lock";
       };
       const result = await askServerProject({
         projectId: projectAskId,
@@ -630,7 +632,9 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         maxAttempts: payload.maxAttempts,
         limit: payload.limit,
         maxLlmCalls: payload.maxLlmCalls,
-        deterministicOnly: payload.deterministicOnly
+        deterministicOnly: payload.deterministicOnly,
+        domainPackIds: payload.domainPackIds,
+        domainSelectionMode: payload.domainSelectionMode
       });
       routeTrace("project/ask:success", {
         projectId: projectAskId,

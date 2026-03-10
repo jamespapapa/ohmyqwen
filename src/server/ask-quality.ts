@@ -69,6 +69,7 @@ export function qualityGateForAskOutput(options: {
   linkedFlowEvidence?: AskLinkedFlowQualityEvidence[];
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
+  questionTags?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -132,9 +133,11 @@ export function qualityGateForAskOutput(options: {
     failures.push("missing-linked-flow-evidence");
   }
   if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
-    const questionCapabilities = extractQuestionCapabilityTags(options.question, {
-      domainPacks: options.domainPacks
-    });
+    const questionCapabilities =
+      options.questionTags ??
+      extractQuestionCapabilityTags(options.question, {
+        domainPacks: options.domainPacks
+      });
     const alignedFlowEvidence = questionCapabilities.length > 0
       ? linkedFlowEvidence.filter((item) =>
           hasStrongFlowCapabilityAlignment(

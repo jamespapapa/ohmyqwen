@@ -129,7 +129,7 @@ export default {
     expect(catalog.routes[0]?.notes).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성"]));
     expect(catalog.routes[0]?.capabilityTags).toContain("benefit-claim");
     expect(catalog.screens[0]?.labels).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성", "보험금 청구"]));
-    expect(catalog.screens[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "insurance-internet", "claim-submit"]));
+    expect(catalog.screens[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "insurance-internet", "action-submit"]));
   });
 
 

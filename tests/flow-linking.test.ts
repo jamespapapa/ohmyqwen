@@ -179,6 +179,51 @@ describe("flow linking", () => {
     );
   });
 
+  it("recomputes capability tags from text and ignores stale snapshot tags from another domain", () => {
+    const loanSnapshot = {
+      ...snapshot,
+      links: [
+        {
+          confidence: 0.99,
+          capabilityTags: ["benefit-claim", "claim-inquiry", "gateway-api"],
+          frontend: {
+            screenCode: "MDP-MYLOT021301C",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021301C.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021301C"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/credit/low/worker/request/checktime",
+            normalizedUrl: "/loan/credit/low/worker/request/checktime",
+            functionName: "checkTime",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/credit/low/worker/request/checktime",
+            controllerMethod: "CreditLowWorkerLoanReauestController.checkTimeService",
+            filePath: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/controller/CreditLowWorkerLoanReauestController.java",
+            serviceHints: ["CreditLowWorkerLoanReauestService.validateAccessTime"]
+          },
+          evidence: ["frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        }
+      ]
+    } satisfies FrontBackGraphSnapshot;
+
+    const linked = buildLinkedFlowEvidence({
+      question: "햇살론 대출 로직이 frontend부터 backend까지 어떤 흐름인지 분석해줘.",
+      hits: [],
+      snapshot: loanSnapshot
+    });
+
+    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["loan", "sunshine-loan", "credit-low-worker-loan"]));
+    expect(linked[0]?.capabilityTags).not.toContain("benefit-claim");
+    expect(linked[0]?.capabilityTags).not.toContain("claim-inquiry");
+  });
+
   it("prefers benefit-claim chains over adjacent insurance flows for generic claim questions", () => {
     const claimSnapshot = {
       ...snapshot,
@@ -278,7 +323,7 @@ describe("flow linking", () => {
     expect(linked[0]?.screenCode).toBe("MDP-MYINT020210M");
     expect(linked[0]?.backendControllerMethod).toBe("BenefitClaimController.insertBenefitClaim");
     expect(linked[0]?.apiUrl).toBe("/gw/api/insurance/benefit/claim/insert");
-    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "claim-submit"]));
+    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "action-submit"]));
     expect(linked[0]?.reasons).toEqual(expect.arrayContaining(["capability:benefit-claim", "benefit-claim-api-match"]));
   });
 
@@ -366,6 +411,63 @@ describe("flow linking", () => {
     expect(output.answer).toContain("F13630020");
     expect(output.answer).toContain("F1FCZ0045");
     expect(output.caveats).toContain("downstream-static-trace");
+  });
+
+  it("builds an action-oriented answer for sunshine-loan flows without claim-specific leakage", () => {
+    const linked = [
+      {
+        screenCode: "MDP-MYLOT021301C",
+        routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021301M",
+        screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021301C.vue",
+        apiUrl: "/gw/api/loan/credit/low/worker/request/checktime",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/loan/credit/low/worker/request/checktime",
+        backendControllerMethod: "CreditLowWorkerLoanReauestController.checkTimeService",
+        serviceHints: ["CreditLowWorkerLoanReauestService.validateAccessTime"],
+        capabilityTags: ["loan", "sunshine-loan", "action-check"],
+        confidence: 0.99,
+        reasons: ["capability:sunshine-loan"]
+      },
+      {
+        screenCode: "MDP-MYLOT021370M",
+        routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021370M",
+        screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021370M.vue",
+        apiUrl: "/gw/api/loan/credit/low/worker/request/apply",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/loan/credit/low/worker/request/apply",
+        backendControllerMethod: "CreditLowWorkerLoanReauestController.apply",
+        serviceHints: ["CreditLowWorkerLoanReauestService.callF1CLN0015"],
+        capabilityTags: ["loan", "sunshine-loan", "action-submit"],
+        confidence: 0.99,
+        reasons: ["capability:sunshine-loan"]
+      },
+      {
+        screenCode: "MDP-MYLOT021370M",
+        routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021370M",
+        screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021370M.vue",
+        apiUrl: "/gw/api/loan/credit/low/worker/request/make/owner/agreement",
+        gatewayPath: "/api/**",
+        gatewayControllerMethod: "RouteController.route",
+        backendPath: "/loan/credit/low/worker/request/make/owner/agreement",
+        backendControllerMethod: "CreditLowWorkerLoanReauestController.makeOwnerAgreement",
+        serviceHints: ["CreditLowWorkerLoanPdfReauestService.makeDocListBeforeApply"],
+        capabilityTags: ["loan", "sunshine-loan", "action-doc", "action-agreement"],
+        confidence: 0.99,
+        reasons: ["capability:sunshine-loan"]
+      }
+    ];
+
+    const output = buildDeterministicFlowAnswer({
+      question: "햇살론 대출 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+      linkedFlowEvidence: linked
+    });
+
+    expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/checktime");
+    expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/apply");
+    expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/make/owner/agreement");
+    expect(output.answer).not.toContain("보험금");
   });
 
 });

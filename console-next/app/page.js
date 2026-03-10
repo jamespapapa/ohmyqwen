@@ -522,6 +522,8 @@ export default function HomePage() {
   const [askQuestion, setAskQuestion] = useState("");
   const [askMaxAttempts, setAskMaxAttempts] = useState(3);
   const [askDeterministicOnly, setAskDeterministicOnly] = useState(false);
+  const [askDomainMode, setAskDomainMode] = useState("auto");
+  const [askDomainIds, setAskDomainIds] = useState([]);
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
   const [debugEvents, setDebugEvents] = useState([]);
@@ -560,6 +562,13 @@ export default function HomePage() {
     () => domainPacks.find((domainPack) => domainPack.id === selectedDomainPackId) || null,
     [domainPacks, selectedDomainPackId]
   );
+  const askAvailableDomainPacks = useMemo(() => {
+    if (!selectedPreset?.domainPackIds?.length) {
+      return [];
+    }
+    const allowed = new Set(selectedPreset.domainPackIds);
+    return domainPacks.filter((domainPack) => allowed.has(domainPack.id));
+  }, [domainPacks, selectedPreset]);
 
   const done = useMemo(() => {
     const status = run?.status;
@@ -768,6 +777,14 @@ export default function HomePage() {
     setDomainPackRankingPriorsJson(JSON.stringify(selectedDomainPack.rankingPriors || [], null, 2));
     setDomainPackExemplarsJson(JSON.stringify(selectedDomainPack.exemplars || [], null, 2));
   }, [selectedDomainPack, selectedDomainPackId]);
+
+  useEffect(() => {
+    if (askDomainMode !== "lock") {
+      return;
+    }
+    const allowed = new Set(askAvailableDomainPacks.map((item) => item.id));
+    setAskDomainIds((current) => current.filter((item) => allowed.has(item)));
+  }, [askAvailableDomainPacks, askDomainMode]);
 
   useEffect(() => {
     if (done || !runId) return;
@@ -1212,6 +1229,15 @@ export default function HomePage() {
     }
   }
 
+  function onToggleAskDomainId(domainId, checked) {
+    setAskDomainIds((current) => {
+      if (checked) {
+        return Array.from(new Set([...current, domainId]));
+      }
+      return current.filter((item) => item !== domainId);
+    });
+  }
+
   async function onAskProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -1234,7 +1260,9 @@ export default function HomePage() {
         body: JSON.stringify({
           question: askQuestion.trim(),
           maxAttempts: Math.max(0, Math.min(Number(askMaxAttempts) || 0, 5)),
-          deterministicOnly: askDeterministicOnly
+          deterministicOnly: askDeterministicOnly,
+          domainSelectionMode: askDomainMode,
+          domainPackIds: askDomainMode === "lock" ? askDomainIds : []
         })
       });
       setAskResult(response);
@@ -1993,6 +2021,44 @@ export default function HomePage() {
                 {askLoading ? "응답 생성 중..." : "질문 실행"}
               </button>
             </div>
+            <div className="hint" style={{ marginTop: 6 }}>
+              도메인 선택
+              <select
+                value={askDomainMode}
+                onChange={(e) => setAskDomainMode(e.target.value)}
+                style={{ width: 120, marginLeft: 8, marginRight: 8 }}
+              >
+                <option value="auto">auto</option>
+                <option value="lock">lock</option>
+              </select>
+              {askDomainMode === "lock"
+                ? "질문을 이 도메인들로 고정합니다."
+                : "질문에서 도메인을 자동 추정합니다."}
+            </div>
+            {askDomainMode === "lock" ? (
+              <div className="report-box" style={{ marginTop: 8 }}>
+                <div className="label">고정 도메인</div>
+                {askAvailableDomainPacks.length === 0 ? (
+                  <div className="hint">현재 프리셋에 연결된 도메인 팩이 없습니다.</div>
+                ) : (
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {askAvailableDomainPacks.map((domainPack) => (
+                      <label key={`ask-domain-${domainPack.id}`} className="hint" style={{ display: "flex", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={askDomainIds.includes(domainPack.id)}
+                          onChange={(e) => onToggleAskDomainId(domainPack.id, e.target.checked)}
+                          style={{ width: 14 }}
+                        />
+                        <span title={domainPack.description || domainPack.id}>
+                          {domainPack.name} ({domainPack.id})
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
 
             {askResult ? (
               <div className="search-result-box">
@@ -2009,6 +2075,12 @@ export default function HomePage() {
                   {(askResult.diagnostics?.scopeModules || []).length > 0
                     ? ` · modules=${askResult.diagnostics.scopeModules.join(",")}`
                     : ""}
+                  {(askResult.diagnostics?.matchedDomainIds || []).length > 0
+                    ? ` · matchedDomains=${askResult.diagnostics.matchedDomainIds.join(",")}`
+                    : ""}
+                  {(askResult.diagnostics?.lockedDomainIds || []).length > 0
+                    ? ` · lockedDomains=${askResult.diagnostics.lockedDomainIds.join(",")}`
+                    : ""}
                   {Number(askResult.diagnostics?.hydratedEvidenceCount || 0) > 0
                     ? ` · hydrated=${askResult.diagnostics.hydratedEvidenceCount}`
                     : ""}
@@ -2019,6 +2091,14 @@ export default function HomePage() {
                     ? ` · deterministic=${askResult.diagnostics?.deterministicSymbol || "true"}`
                     : ""}
                 </div>
+                {askResult.diagnostics?.domainSelectionMode ? (
+                  <div className="hint" style={{ marginTop: 4 }}>
+                    domainMode={askResult.diagnostics.domainSelectionMode}
+                    {(askResult.diagnostics?.activeDomainIds || []).length > 0
+                      ? ` · activeDomains=${askResult.diagnostics.activeDomainIds.join(",")}`
+                      : ""}
+                  </div>
+                ) : null}
                 <pre className="file-scroll-view" style={{ maxHeight: 240 }}>{askResult.answer}</pre>
                 <div className="label" style={{ marginTop: 8 }}>근거</div>
                 <ul className="reason-list">

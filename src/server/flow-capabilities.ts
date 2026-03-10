@@ -1,4 +1,4 @@
-import type { DomainPack } from "./domain-packs.js";
+import type { DomainPack, DomainPackCapability } from "./domain-packs.js";
 
 const CLAIM_CAPABILITY_FAMILY = [
   "benefit-claim",
@@ -8,6 +8,15 @@ const CLAIM_CAPABILITY_FAMILY = [
 ] as const;
 
 const ADJACENT_NON_CLAIM_CAPABILITIES = ["division-expiry", "application-retraction"] as const;
+
+const ACTION_CAPABILITY_TAGS = [
+  "action-doc",
+  "action-submit",
+  "action-check",
+  "action-inquiry",
+  "action-agreement",
+  "action-account-register"
+] as const;
 
 const CAPABILITY_PATTERNS: Array<{ tag: string; patterns: RegExp[] }> = [
   {
@@ -27,16 +36,40 @@ const CAPABILITY_PATTERNS: Array<{ tag: string; patterns: RegExp[] }> = [
     patterns: [/사망보험금/i, /수익자\s*보험금\s*청구/i, /diffbenefit\/claim/i, /\bDiffBenefitClaim\b/i]
   },
   {
-    tag: "claim-doc",
-    patterns: [/claim\/doc/i, /doc\/insert/i, /spotsave/i, /서류/i, /문서/i, /첨부/i, /upload/i, /file/i]
+    tag: "loan",
+    patterns: [/\/loan\//i, /\bLoanController\b/i, /\bLoanService\b/i]
   },
   {
-    tag: "claim-submit",
-    patterns: [/claim\/insert/i, /보험금\s*청구서\s*등록/i, /접수/i, /제출/i, /submit/i, /regClaimInfo/i]
+    tag: "sunshine-loan",
+    patterns: [/햇살론/i, /모바일햇살론/i, /sunshine\s*loan/i, /MYLOT0213/i]
   },
   {
-    tag: "claim-inquiry",
-    patterns: [/claim\/inqury/i, /claim\/check/i, /spotload/i, /조회/i, /checkApply/i, /targetInfoReis/i]
+    tag: "credit-low-worker-loan",
+    patterns: [/credit\/low\/worker/i, /\bCreditLowWorkerLoanReauest\b/i, /MYLOT0213/i]
+  },
+  {
+    tag: "action-doc",
+    patterns: [/claim\/doc/i, /doc\/insert/i, /spotsave/i, /upload/i, /첨부/i, /agreement/i, /pdf/i, /document/i]
+  },
+  {
+    tag: "action-submit",
+    patterns: [/claim\/insert/i, /\/apply\b/i, /\/insert\b/i, /submit/i, /saveinput/i, /loanadmit/i, /requestloanmember/i]
+  },
+  {
+    tag: "action-check",
+    patterns: [/claim\/check/i, /checkapply/i, /checktime/i, /customer\/check/i, /\bvalidate/i]
+  },
+  {
+    tag: "action-inquiry",
+    patterns: [/claim\/inqury/i, /spotload/i, /select/i, /inqury/i, /inquiry/i, /getinput/i]
+  },
+  {
+    tag: "action-agreement",
+    patterns: [/owner\/agreement/i, /agreement/i, /약관동의/i, /동의서/i]
+  },
+  {
+    tag: "action-account-register",
+    patterns: [/insertaccntno/i, /getaccntno/i, /accnt/i, /계좌등록/i, /계좌조회/i]
   },
   {
     tag: "division-expiry",
@@ -56,6 +89,14 @@ const CAPABILITY_PATTERNS: Array<{ tag: string; patterns: RegExp[] }> = [
   }
 ];
 
+function isActionCapabilityDefinition(capability: DomainPackCapability): boolean {
+  return capability.kind === "action";
+}
+
+export function isActionCapabilityTag(tag: string): boolean {
+  return (ACTION_CAPABILITY_TAGS as readonly string[]).includes(tag);
+}
+
 export interface FlowCapabilityOptions {
   domainPacks?: DomainPack[];
 }
@@ -65,6 +106,14 @@ export interface FlowCapabilityScoreOptions extends FlowCapabilityOptions {
   pathText?: string;
   apiText?: string;
   methodText?: string;
+}
+
+export interface DetectedDomainPackMatch {
+  id: string;
+  name: string;
+  score: number;
+  matchedTags: string[];
+  reasons: string[];
 }
 
 function unique(items: string[]): string[] {
@@ -116,8 +165,10 @@ function extractDomainPackTagsFromText(text: string, domainPacks?: DomainPack[])
       const patterns = rawPatterns.map(compilePattern).filter((value): value is RegExp => Boolean(value));
       if (patterns.some((pattern) => pattern.test(text))) {
         tags.push(capability.tag);
-        for (const parent of capability.parents ?? []) {
-          tags.push(parent);
+        if (!isActionCapabilityDefinition(capability)) {
+          for (const parent of capability.parents ?? []) {
+            tags.push(parent);
+          }
         }
       }
     }
@@ -146,6 +197,36 @@ function expandDomainPackSearchTerms(questionTags: string[], domainPacks?: Domai
     }
   }
   return unique(terms);
+}
+
+export function seedCapabilityTagsFromDomainPacks(domainPacks?: DomainPack[]): string[] {
+  if (!domainPacks || domainPacks.length === 0) {
+    return [];
+  }
+
+  const tags: string[] = [];
+  for (const domainPack of domainPacks) {
+    tags.push(domainPack.id);
+    for (const capability of domainPack.capabilityTags) {
+      if (capability.tag === domainPack.id || capability.kind === "domain") {
+        tags.push(capability.tag);
+      }
+    }
+  }
+  return unique(tags);
+}
+
+export function resolveQuestionCapabilityTags(options: {
+  question: string;
+  domainPacks?: DomainPack[];
+  pinnedDomainPacks?: DomainPack[];
+}): string[] {
+  return unique([
+    ...extractQuestionCapabilityTags(options.question, {
+      domainPacks: options.domainPacks
+    }),
+    ...seedCapabilityTagsFromDomainPacks(options.pinnedDomainPacks)
+  ]);
 }
 
 function scoreDomainPackPriors(
@@ -261,6 +342,33 @@ export function expandCapabilitySearchTerms(questionTags: string[], options?: Fl
   if (tagSet.has("application-retraction")) {
     terms.push("ApplicationRetraction", "retraction", "청약철회");
   }
+  if (tagSet.has("loan")) {
+    terms.push("Loan", "LoanController", "LoanService", "/loan/");
+  }
+  if (tagSet.has("sunshine-loan")) {
+    terms.push(
+      "햇살론",
+      "모바일햇살론",
+      "MYLOT0213",
+      "CreditLowWorkerLoanReauestController",
+      "CreditLowWorkerLoanReauestService",
+      "/loan/credit/low/worker/request/"
+    );
+  }
+  if (tagSet.has("credit-low-worker-loan")) {
+    terms.push(
+      "CreditLowWorkerLoanReauestController",
+      "CreditLowWorkerLoanReauestService",
+      "checktime",
+      "selectCustInfo",
+      "limitAmount",
+      "requestLoanMember",
+      "insertAccntNo",
+      "loanAdmit",
+      "make owner agreement",
+      "apply"
+    );
+  }
 
   terms.push(...expandDomainPackSearchTerms(questionTags, options?.domainPacks));
   return unique(terms);
@@ -285,8 +393,13 @@ export function scoreFlowCapabilityAlignment(
 
   for (const tag of questionSet) {
     if (linkSet.has(tag)) {
-      score += 55;
-      reasons.push(`capability:${tag}`);
+      if (isActionCapabilityTag(tag)) {
+        score += 12;
+        reasons.push(`action:${tag}`);
+      } else {
+        score += 55;
+        reasons.push(`capability:${tag}`);
+      }
     }
   }
 
@@ -303,15 +416,15 @@ export function scoreFlowCapabilityAlignment(
       score += 18;
       reasons.push("capability:benefit-claim-family");
     }
-    if (linkSet.has("claim-doc")) {
+    if (linkSet.has("claim-doc") || linkSet.has("action-doc")) {
       score += 18;
       reasons.push("capability:claim-doc");
     }
-    if (linkSet.has("claim-submit")) {
+    if (linkSet.has("claim-submit") || linkSet.has("action-submit")) {
       score += 14;
       reasons.push("capability:claim-submit");
     }
-    if (linkSet.has("claim-inquiry")) {
+    if (linkSet.has("claim-inquiry") || linkSet.has("action-check") || linkSet.has("action-inquiry")) {
       score += 12;
       reasons.push("capability:claim-inquiry");
     }
@@ -361,6 +474,29 @@ export function scoreFlowCapabilityAlignment(
     reasons.push("capability-penalty:benefit-claim");
   }
 
+  if (questionSet.has("loan") && linkSet.has("benefit-claim") && !hasAny(linkSet, ["loan", "sunshine-loan", "credit-low-worker-loan"])) {
+    score -= 72;
+    reasons.push("capability-penalty:benefit-claim-on-loan");
+  }
+  if (questionSet.has("sunshine-loan")) {
+    if (linkSet.has("sunshine-loan")) {
+      score += 34;
+      reasons.push("capability:sunshine-loan");
+    }
+    if (linkSet.has("credit-low-worker-loan")) {
+      score += 42;
+      reasons.push("capability:credit-low-worker-loan");
+    }
+    if (linkSet.has("loan")) {
+      score += 18;
+      reasons.push("capability:loan-parent");
+    }
+    if (linkSet.has("benefit-claim")) {
+      score -= 80;
+      reasons.push("capability-penalty:benefit-claim");
+    }
+  }
+
   const domainPackAlignment = scoreDomainPackPriors(questionTags, linkTags, options);
   score += domainPackAlignment.score;
   reasons.push(...domainPackAlignment.reasons);
@@ -383,8 +519,15 @@ export function hasStrongFlowCapabilityAlignment(
 
   const questionSet = new Set(questionTags);
   const linkSet = new Set(linkTags);
+  const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
+  if (nonActionQuestionTags.some((tag) => linkSet.has(tag))) {
+    return true;
+  }
   if (questionSet.has("benefit-claim") && hasAny(linkSet, CLAIM_CAPABILITY_FAMILY)) {
     return true;
   }
-  return questionTags.some((tag) => linkSet.has(tag));
+  if (questionSet.has("sunshine-loan") && (linkSet.has("sunshine-loan") || linkSet.has("credit-low-worker-loan"))) {
+    return true;
+  }
+  return false;
 }
