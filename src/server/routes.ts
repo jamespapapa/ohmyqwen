@@ -6,14 +6,18 @@ import {
   analyzeServerProject,
   askServerProject,
   getServerLlmSettings,
+  getServerDomainPack,
   getServerProject,
+  listServerDomainPacks,
   listServerProjectPresets,
   listServerProjects,
   listProjectDebugEvents,
+  removeServerDomainPack,
   readServerProjectFile,
   removeServerProject,
   removeServerProjectPreset,
   searchServerProject,
+  upsertServerDomainPack,
   upsertServerProject,
   upsertServerProjectPreset,
   warmupServerProjectIndex
@@ -77,6 +81,11 @@ function matchPresetPath(urlPath: string): string | undefined {
   return matched?.[1];
 }
 
+function matchDomainPackPath(urlPath: string): string | undefined {
+  const matched = urlPath.match(/^\/api\/domain-packs\/([^/]+)$/);
+  return matched?.[1];
+}
+
 function resolveBrowsePath(raw: string | null): string {
   const value = raw?.trim();
   if (!value) {
@@ -127,6 +136,21 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
     }
   }
 
+  if (method === "GET" && pathname === "/api/domain-packs") {
+    try {
+      const domainPacks = await listServerDomainPacks();
+      json(res, 200, {
+        domainPacks
+      });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
   if (method === "GET" && pathname === "/api/llm/models") {
     try {
       const settings = await getServerLlmSettings();
@@ -147,6 +171,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         name?: string;
         summary?: string;
         keyFacts?: string[];
+        domainPackIds?: string[];
         rules?: {
           workspaceIncludes?: string[];
           projectNameIncludes?: string[];
@@ -172,6 +197,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
               requiredPaths: payload.rules.requiredPaths ?? []
             }
           : undefined,
+        domainPackIds: payload.domainPackIds ?? [],
         eai: payload.eai
           ? {
               enabled: payload.eai.enabled ?? false,
@@ -194,10 +220,76 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
     }
   }
 
+  if (method === "POST" && pathname === "/api/domain-packs") {
+    try {
+      const payload = (await readJsonBody(req)) as {
+        id?: string;
+        name?: string;
+        description?: string;
+        families?: string[];
+        enabledByDefault?: boolean;
+        capabilityTags?: unknown[];
+        rankingPriors?: unknown[];
+        exemplars?: unknown[];
+      };
+
+      const domainPack = await upsertServerDomainPack({
+        id: payload.id,
+        name: payload.name ?? "",
+        description: payload.description ?? "",
+        families: payload.families ?? [],
+        enabledByDefault: payload.enabledByDefault ?? true,
+        capabilityTags: Array.isArray(payload.capabilityTags) ? (payload.capabilityTags as any[]) : [],
+        rankingPriors: Array.isArray(payload.rankingPriors) ? (payload.rankingPriors as any[]) : [],
+        exemplars: Array.isArray(payload.exemplars) ? (payload.exemplars as any[]) : []
+      });
+
+      json(res, 201, {
+        domainPack
+      });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
   const presetId = matchPresetPath(pathname);
   if (presetId && method === "DELETE") {
     try {
       await removeServerProjectPreset(presetId);
+      json(res, 200, { ok: true });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const domainPackId = matchDomainPackPath(pathname);
+  if (domainPackId && method === "GET") {
+    try {
+      const domainPack = await getServerDomainPack(domainPackId);
+      if (!domainPack) {
+        json(res, 404, { error: `domain pack not found: ${domainPackId}` });
+        return true;
+      }
+      json(res, 200, { domainPack });
+      return true;
+    } catch (error) {
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+  if (domainPackId && method === "DELETE") {
+    try {
+      await removeServerDomainPack(domainPackId);
       json(res, 200, { ok: true });
       return true;
     } catch (error) {

@@ -1,3 +1,4 @@
+import type { DomainPack } from "./domain-packs.js";
 import {
   extractFlowCapabilityTagsFromTexts,
   extractQuestionCapabilityTags,
@@ -67,6 +68,7 @@ export function qualityGateForAskOutput(options: {
   linkedEaiEvidence?: AskLinkedEaiQualityEvidence[];
   linkedFlowEvidence?: AskLinkedFlowQualityEvidence[];
   moduleCandidates?: string[];
+  domainPacks?: DomainPack[];
 }): {
   passed: boolean;
   failures: string[];
@@ -130,7 +132,9 @@ export function qualityGateForAskOutput(options: {
     failures.push("missing-linked-flow-evidence");
   }
   if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
-    const questionCapabilities = extractQuestionCapabilityTags(options.question);
+    const questionCapabilities = extractQuestionCapabilityTags(options.question, {
+      domainPacks: options.domainPacks
+    });
     const alignedFlowEvidence = questionCapabilities.length > 0
       ? linkedFlowEvidence.filter((item) =>
           hasStrongFlowCapabilityAlignment(
@@ -145,7 +149,17 @@ export function qualityGateForAskOutput(options: {
                 item.backendPath,
                 item.backendControllerMethod,
                 ...(item.serviceHints ?? [])
-              ])
+              ], {
+                domainPacks: options.domainPacks
+              })
+            ,
+            {
+              domainPacks: options.domainPacks,
+              question: options.question,
+              pathText: [item.routePath, item.backendPath].join(" "),
+              apiText: item.apiUrl,
+              methodText: [item.gatewayControllerMethod, item.backendControllerMethod, ...(item.serviceHints ?? [])].join(" ")
+            }
           )
         )
       : linkedFlowEvidence;

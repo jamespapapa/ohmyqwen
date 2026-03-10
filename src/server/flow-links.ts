@@ -1,5 +1,6 @@
 import type { FrontBackGraphLink, FrontBackGraphSnapshot } from "./front-back-graph.js";
 import type { DownstreamFlowTrace } from "./flow-trace.js";
+import type { DomainPack } from "./domain-packs.js";
 import {
   extractFlowCapabilityTagsFromTexts,
   extractQuestionCapabilityTags,
@@ -44,7 +45,7 @@ function tokenize(value: string): string[] {
   return unique(value.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? []);
 }
 
-function resolveLinkCapabilityTags(link: FrontBackGraphLink): string[] {
+function resolveLinkCapabilityTags(link: FrontBackGraphLink, domainPacks?: DomainPack[]): string[] {
   return Array.from(new Set([
     ...(link.capabilityTags ?? []),
     ...extractFlowCapabilityTagsFromTexts([
@@ -59,7 +60,7 @@ function resolveLinkCapabilityTags(link: FrontBackGraphLink): string[] {
       link.backend.path,
       link.backend.controllerMethod,
       ...link.backend.serviceHints
-    ])
+    ], { domainPacks })
   ]));
 }
 
@@ -68,16 +69,23 @@ export function buildLinkedFlowEvidence(options: {
   hits?: SearchLikeHit[];
   snapshot: FrontBackGraphSnapshot;
   limit?: number;
+  domainPacks?: DomainPack[];
 }): LinkedFlowEvidence[] {
   const tokens = tokenize(options.question);
-  const questionTags = extractQuestionCapabilityTags(options.question);
+  const questionTags = extractQuestionCapabilityTags(options.question, { domainPacks: options.domainPacks });
   const hitPaths = (options.hits ?? []).map((hit) => hit.path.toLowerCase());
   const crossLayer = isCrossLayerFlowQuestion(options.question);
 
   return options.snapshot.links
     .map((link) => {
-      const capabilityTags = resolveLinkCapabilityTags(link);
-      const capabilityAlignment = scoreFlowCapabilityAlignment(questionTags, capabilityTags);
+      const capabilityTags = resolveLinkCapabilityTags(link, options.domainPacks);
+      const capabilityAlignment = scoreFlowCapabilityAlignment(questionTags, capabilityTags, {
+        domainPacks: options.domainPacks,
+        question: options.question,
+        pathText: [link.frontend.screenPath, link.frontend.routePath, link.backend.filePath, link.backend.path].join(" "),
+        apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
+        methodText: [link.gateway.controllerMethod, link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
+      });
       let score = link.confidence * 100 + capabilityAlignment.score;
       const reasons: string[] = [...capabilityAlignment.reasons];
       if (crossLayer) {
@@ -155,7 +163,16 @@ export function buildLinkedFlowEvidence(options: {
           reasons.push("benefit-claim-inquiry-preference");
         }
       }
-      if (questionTags.length > 0 && !hasStrongFlowCapabilityAlignment(questionTags, capabilityTags)) {
+      if (
+        questionTags.length > 0 &&
+        !hasStrongFlowCapabilityAlignment(questionTags, capabilityTags, {
+          domainPacks: options.domainPacks,
+          question: options.question,
+          pathText: [link.frontend.screenPath, link.backend.filePath, link.backend.path].join(" "),
+          apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
+          methodText: [link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
+        })
+      ) {
         score -= 24;
         reasons.push("weak-capability-alignment");
       }

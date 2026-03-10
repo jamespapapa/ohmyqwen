@@ -479,6 +479,9 @@ export default function HomePage() {
   const [presets, setPresets] = useState([]);
   const [presetLoading, setPresetLoading] = useState(false);
   const [presetError, setPresetError] = useState("");
+  const [domainPacks, setDomainPacks] = useState([]);
+  const [domainPackLoading, setDomainPackLoading] = useState(false);
+  const [domainPackError, setDomainPackError] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [projectLoading, setProjectLoading] = useState(false);
@@ -490,6 +493,7 @@ export default function HomePage() {
   const [presetName, setPresetName] = useState("");
   const [presetSummary, setPresetSummary] = useState("");
   const [presetFactsText, setPresetFactsText] = useState("");
+  const [presetDomainPackIds, setPresetDomainPackIds] = useState([]);
   const [presetWorkspaceRules, setPresetWorkspaceRules] = useState("");
   const [presetProjectNameRules, setPresetProjectNameRules] = useState("");
   const [presetRequiredPaths, setPresetRequiredPaths] = useState("");
@@ -497,6 +501,14 @@ export default function HomePage() {
   const [presetEaiAsOfDate, setPresetEaiAsOfDate] = useState("");
   const [presetEaiServiceIncludes, setPresetEaiServiceIncludes] = useState("");
   const [presetEaiOverridesFile, setPresetEaiOverridesFile] = useState("");
+  const [selectedDomainPackId, setSelectedDomainPackId] = useState("");
+  const [domainPackName, setDomainPackName] = useState("");
+  const [domainPackDescription, setDomainPackDescription] = useState("");
+  const [domainPackFamiliesText, setDomainPackFamiliesText] = useState("");
+  const [domainPackEnabledByDefault, setDomainPackEnabledByDefault] = useState(true);
+  const [domainPackCapabilitiesJson, setDomainPackCapabilitiesJson] = useState("[]");
+  const [domainPackRankingPriorsJson, setDomainPackRankingPriorsJson] = useState("[]");
+  const [domainPackExemplarsJson, setDomainPackExemplarsJson] = useState("[]");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchLimit, setSearchLimit] = useState(20);
   const [searchResult, setSearchResult] = useState(null);
@@ -543,6 +555,10 @@ export default function HomePage() {
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
     [presets, selectedPresetId]
+  );
+  const selectedDomainPack = useMemo(
+    () => domainPacks.find((domainPack) => domainPack.id === selectedDomainPackId) || null,
+    [domainPacks, selectedDomainPackId]
   );
 
   const done = useMemo(() => {
@@ -592,6 +608,19 @@ export default function HomePage() {
     }
   }
 
+  async function loadDomainPacks() {
+    setDomainPackLoading(true);
+    setDomainPackError("");
+    try {
+      const response = await getJson("/api/domain-packs");
+      setDomainPacks(response.domainPacks || []);
+    } catch (e) {
+      setDomainPackError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDomainPackLoading(false);
+    }
+  }
+
   async function loadLlmSettings() {
     setLlmSettingsLoading(true);
     try {
@@ -637,6 +666,7 @@ export default function HomePage() {
   useEffect(() => {
     void loadProjects();
     void loadPresets();
+    void loadDomainPacks();
     void loadLlmSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -691,6 +721,7 @@ export default function HomePage() {
         setPresetName("");
         setPresetSummary("");
         setPresetFactsText("");
+        setPresetDomainPackIds([]);
         setPresetWorkspaceRules("");
         setPresetProjectNameRules("");
         setPresetRequiredPaths("");
@@ -705,6 +736,7 @@ export default function HomePage() {
     setPresetName(selectedPreset.name || "");
     setPresetSummary(selectedPreset.summary || "");
     setPresetFactsText((selectedPreset.keyFacts || []).join("\n"));
+    setPresetDomainPackIds(selectedPreset.domainPackIds || []);
     setPresetWorkspaceRules((selectedPreset.rules?.workspaceIncludes || []).join("\n"));
     setPresetProjectNameRules((selectedPreset.rules?.projectNameIncludes || []).join("\n"));
     setPresetRequiredPaths((selectedPreset.rules?.requiredPaths || []).join("\n"));
@@ -713,6 +745,29 @@ export default function HomePage() {
     setPresetEaiServiceIncludes((selectedPreset.eai?.servicePathIncludes || []).join("\n"));
     setPresetEaiOverridesFile(selectedPreset.eai?.manualOverridesFile || "");
   }, [selectedPreset, selectedPresetId]);
+
+  useEffect(() => {
+    if (!selectedDomainPack) {
+      if (!selectedDomainPackId) {
+        setDomainPackName("");
+        setDomainPackDescription("");
+        setDomainPackFamiliesText("");
+        setDomainPackEnabledByDefault(true);
+        setDomainPackCapabilitiesJson("[]");
+        setDomainPackRankingPriorsJson("[]");
+        setDomainPackExemplarsJson("[]");
+      }
+      return;
+    }
+
+    setDomainPackName(selectedDomainPack.name || "");
+    setDomainPackDescription(selectedDomainPack.description || "");
+    setDomainPackFamiliesText((selectedDomainPack.families || []).join("\n"));
+    setDomainPackEnabledByDefault(Boolean(selectedDomainPack.enabledByDefault));
+    setDomainPackCapabilitiesJson(JSON.stringify(selectedDomainPack.capabilityTags || [], null, 2));
+    setDomainPackRankingPriorsJson(JSON.stringify(selectedDomainPack.rankingPriors || [], null, 2));
+    setDomainPackExemplarsJson(JSON.stringify(selectedDomainPack.exemplars || [], null, 2));
+  }, [selectedDomainPack, selectedDomainPackId]);
 
   useEffect(() => {
     if (done || !runId) return;
@@ -791,6 +846,24 @@ export default function HomePage() {
     );
   }
 
+  function parseJsonText(value, label) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return [];
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`${label} JSON 파싱 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function togglePresetDomainPack(domainPackId) {
+    setPresetDomainPackIds((prev) =>
+      prev.includes(domainPackId) ? prev.filter((id) => id !== domainPackId) : [...prev, domainPackId]
+    );
+  }
+
   async function onSavePreset() {
     if (!presetName.trim()) {
       setPresetError("프리셋 이름을 입력해주세요.");
@@ -814,6 +887,7 @@ export default function HomePage() {
         name: presetName.trim(),
         summary: presetSummary.trim(),
         keyFacts,
+        domainPackIds: presetDomainPackIds,
         rules: {
           workspaceIncludes: parseLines(presetWorkspaceRules),
           projectNameIncludes: parseLines(presetProjectNameRules),
@@ -862,6 +936,64 @@ export default function HomePage() {
       setPresetError(e instanceof Error ? e.message : String(e));
     } finally {
       setPresetLoading(false);
+    }
+  }
+
+  async function onSaveDomainPack() {
+    if (!domainPackName.trim()) {
+      setDomainPackError("도메인 이름을 입력해주세요.");
+      return;
+    }
+
+    setDomainPackLoading(true);
+    setDomainPackError("");
+    try {
+      const payload = {
+        id: selectedDomainPack?.builtIn ? undefined : selectedDomainPackId || undefined,
+        name: domainPackName.trim(),
+        description: domainPackDescription.trim(),
+        families: parseLines(domainPackFamiliesText),
+        enabledByDefault: domainPackEnabledByDefault,
+        capabilityTags: parseJsonText(domainPackCapabilitiesJson, "capabilityTags"),
+        rankingPriors: parseJsonText(domainPackRankingPriorsJson, "rankingPriors"),
+        exemplars: parseJsonText(domainPackExemplarsJson, "exemplars")
+      };
+      const response = await getJson("/api/domain-packs", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      await loadDomainPacks();
+      setSelectedDomainPackId(response.domainPack?.id || "");
+      setProjectMessage("도메인 팩이 저장되었습니다.");
+    } catch (e) {
+      setDomainPackError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDomainPackLoading(false);
+    }
+  }
+
+  async function onDeleteDomainPack() {
+    if (!selectedDomainPackId) {
+      return;
+    }
+    if (selectedDomainPack?.builtIn) {
+      setDomainPackError("내장 도메인 팩은 삭제할 수 없습니다.");
+      return;
+    }
+
+    setDomainPackLoading(true);
+    setDomainPackError("");
+    try {
+      await getJson(`/api/domain-packs/${selectedDomainPackId}`, {
+        method: "DELETE"
+      });
+      setSelectedDomainPackId("");
+      await loadDomainPacks();
+      setProjectMessage("도메인 팩이 삭제되었습니다.");
+    } catch (e) {
+      setDomainPackError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDomainPackLoading(false);
     }
   }
 
@@ -1324,6 +1456,25 @@ export default function HomePage() {
                 placeholder={"핵심 사실 1\n핵심 사실 2"}
                 style={{ minHeight: 90 }}
               />
+              <div className="label" style={{ marginTop: 8 }}>활성 도메인 팩</div>
+              <div className="hint">프리셋에 연결된 도메인만 분석/랭킹/성숙도 계산에 사용합니다.</div>
+              <div className="reason-list">
+                {(domainPacks || []).length === 0 ? (
+                  <div className="hint">등록된 도메인 팩이 없습니다.</div>
+                ) : (
+                  domainPacks.map((domainPack) => (
+                    <label key={domainPack.id} style={{ display: "block", marginBottom: 4 }}>
+                      <input
+                        type="checkbox"
+                        checked={presetDomainPackIds.includes(domainPack.id)}
+                        onChange={() => togglePresetDomainPack(domainPack.id)}
+                        style={{ width: 16, marginRight: 6 }}
+                      />
+                      {domainPack.name} ({domainPack.id}){domainPack.builtIn ? " [built-in]" : ""}
+                    </label>
+                  ))
+                )}
+              </div>
               <div className="label" style={{ marginTop: 8 }}>Rule: workspaceIncludes (줄바꿈/콤마)</div>
               <input
                 value={presetWorkspaceRules}
@@ -1381,6 +1532,91 @@ export default function HomePage() {
                 </button>
               </div>
               {presetError ? <div className="error">{presetError}</div> : null}
+            </details>
+
+            <details className="preset-editor">
+              <summary>도메인 팩 추가/수정</summary>
+              <div className="label" style={{ marginTop: 8 }}>도메인 팩 선택</div>
+              <div className="workspace-row">
+                <select
+                  value={selectedDomainPackId}
+                  onChange={(e) => setSelectedDomainPackId(e.target.value)}
+                  disabled={domainPackLoading}
+                >
+                  <option value="">(새 도메인 팩)</option>
+                  {domainPacks.map((domainPack) => (
+                    <option key={domainPack.id} value={domainPack.id}>
+                      {domainPack.name}{domainPack.builtIn ? " [built-in]" : ""}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" className="secondary" onClick={loadDomainPacks} disabled={domainPackLoading}>
+                  도메인 새로고침
+                </button>
+              </div>
+              <div className="label" style={{ marginTop: 8 }}>도메인 이름</div>
+              <input
+                value={domainPackName}
+                onChange={(e) => setDomainPackName(e.target.value)}
+                placeholder="예: 보험금 청구"
+              />
+              <div className="label" style={{ marginTop: 8 }}>설명</div>
+              <textarea
+                value={domainPackDescription}
+                onChange={(e) => setDomainPackDescription(e.target.value)}
+                placeholder="도메인의 목적과 범위"
+                style={{ minHeight: 70 }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>Family (줄바꿈/콤마)</div>
+              <input
+                value={domainPackFamiliesText}
+                onChange={(e) => setDomainPackFamiliesText(e.target.value)}
+                placeholder="예: insurance, claim"
+              />
+              <label style={{ display: "block", marginTop: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={domainPackEnabledByDefault}
+                  onChange={(e) => setDomainPackEnabledByDefault(e.target.checked)}
+                  style={{ width: 16, marginRight: 6 }}
+                />
+                기본 활성 도메인으로 사용
+              </label>
+              <div className="label" style={{ marginTop: 8 }}>capabilityTags JSON</div>
+              <textarea
+                value={domainPackCapabilitiesJson}
+                onChange={(e) => setDomainPackCapabilitiesJson(e.target.value)}
+                placeholder='[{"tag":"benefit-claim","questionPatterns":["보험금 청구"],"textPatterns":["BenefitClaim"],"searchTerms":["BenefitClaimController"]}]'
+                style={{ minHeight: 180, fontFamily: "monospace" }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>rankingPriors JSON</div>
+              <textarea
+                value={domainPackRankingPriorsJson}
+                onChange={(e) => setDomainPackRankingPriorsJson(e.target.value)}
+                placeholder='[{"whenQuestionHas":["benefit-claim"],"whenLinkHas":["benefit-claim"],"weight":30,"reason":"domain exact"}]'
+                style={{ minHeight: 140, fontFamily: "monospace" }}
+              />
+              <div className="label" style={{ marginTop: 8 }}>exemplars JSON</div>
+              <textarea
+                value={domainPackExemplarsJson}
+                onChange={(e) => setDomainPackExemplarsJson(e.target.value)}
+                placeholder='[{"question":"보험금 청구 흐름을 추적해줘","expectedTags":["benefit-claim"]}]'
+                style={{ minHeight: 140, fontFamily: "monospace" }}
+              />
+              <div className="action-row" style={{ marginTop: 8 }}>
+                <button type="button" className="secondary" onClick={onSaveDomainPack} disabled={domainPackLoading}>
+                  {domainPackLoading ? "저장 중..." : "도메인 팩 저장"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onDeleteDomainPack}
+                  disabled={!selectedDomainPackId || domainPackLoading || selectedDomainPack?.builtIn}
+                >
+                  도메인 팩 삭제
+                </button>
+              </div>
+              {domainPackError ? <div className="error">{domainPackError}</div> : null}
             </details>
 
             <div className="label" style={{ marginTop: 10 }}>QMD Query Mode</div>
@@ -1587,6 +1823,14 @@ export default function HomePage() {
                     <span>{analysisResult.projectPreset?.name || "-"}</span>
                   </div>
                   <div className="report-row">
+                    <span>활성 도메인</span>
+                    <span>{analysisResult.domains?.length ?? 0}개</span>
+                  </div>
+                  <div className="report-row">
+                    <span>도메인 성숙도</span>
+                    <span>{analysisResult.maturitySummary?.overallScore ?? 0} / 100</span>
+                  </div>
+                  <div className="report-row">
                     <span>연결 Workspace</span>
                     <span>{selectedProject?.linkedWorkspaceDirs?.length ?? 0}개</span>
                   </div>
@@ -1683,6 +1927,29 @@ export default function HomePage() {
                             {shortText(entry.screenCode || entry.routePath || entry.apiUrl, 26)} · {shortText(entry.apiUrl, 28)}
                           </span>
                           <span>{Number(entry.confidence || 0).toFixed(2)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {(analysisResult.domains || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Domain Maturity
+                      {analysisResult.maturitySummary
+                        ? ` · overall=${analysisResult.maturitySummary.overallScore}/100`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 180 }}>
+                      {analysisResult.domains.slice(0, 12).map((domain, index) => (
+                        <li key={`${domain.id}-${index}`}>
+                          <span
+                            title={`${domain.description || "-"} | strongest=${(domain.strongestSignals || []).join(", ")} | weakest=${(domain.weakestSignals || []).join(", ")}`}
+                          >
+                            {shortText(domain.name, 22)} · {domain.band} · tags={domain.counts?.capabilitiesMatched ?? 0} · links={domain.counts?.linkCount ?? 0}
+                          </span>
+                          <span>{domain.score}</span>
                         </li>
                       ))}
                     </ul>

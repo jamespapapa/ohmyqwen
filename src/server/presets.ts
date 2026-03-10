@@ -35,6 +35,7 @@ const ProjectPresetSchema = z.object({
   name: z.string().min(1),
   summary: z.string().min(1),
   keyFacts: z.array(z.string().min(1)).min(1),
+  domainPackIds: z.array(z.string().min(1)).default([]),
   rules: ProjectPresetRuleSchema.optional(),
   eai: ProjectPresetEaiSchema.optional(),
   createdAt: z.string().min(1),
@@ -53,6 +54,7 @@ const UpsertProjectPresetInputSchema = z.object({
   name: z.string().min(1),
   summary: z.string().min(1),
   keyFacts: z.array(z.string().min(1)).min(1),
+  domainPackIds: z.array(z.string().min(1)).optional(),
   rules: ProjectPresetRuleSchema.optional(),
   eai: ProjectPresetEaiSchema.optional()
 });
@@ -95,6 +97,7 @@ function normalizePreset(preset: ProjectPreset): ProjectPreset {
   return {
     ...preset,
     keyFacts: normalizeTextList(preset.keyFacts),
+    domainPackIds: normalizeTextList(preset.domainPackIds ?? []),
     rules: preset.rules
       ? {
           workspaceIncludes: normalizeTextList(preset.rules.workspaceIncludes ?? []),
@@ -226,6 +229,7 @@ export async function upsertProjectPreset(input: UpsertProjectPresetInput): Prom
         name: parsed.name,
         summary: parsed.summary,
         keyFacts: parsed.keyFacts,
+        domainPackIds: parsed.domainPackIds ?? existing.domainPackIds,
         rules: parsed.rules,
         eai: parsed.eai,
         updatedAt: now,
@@ -243,6 +247,7 @@ export async function upsertProjectPreset(input: UpsertProjectPresetInput): Prom
       name: parsed.name,
       summary: parsed.summary,
       keyFacts: parsed.keyFacts,
+      domainPackIds: parsed.domainPackIds ?? [],
       rules: parsed.rules,
       eai: parsed.eai,
       createdAt: now,

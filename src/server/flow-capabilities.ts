@@ -1,3 +1,5 @@
+import type { DomainPack } from "./domain-packs.js";
+
 const CLAIM_CAPABILITY_FAMILY = [
   "benefit-claim",
   "accident-benefit-claim",
@@ -54,6 +56,17 @@ const CAPABILITY_PATTERNS: Array<{ tag: string; patterns: RegExp[] }> = [
   }
 ];
 
+export interface FlowCapabilityOptions {
+  domainPacks?: DomainPack[];
+}
+
+export interface FlowCapabilityScoreOptions extends FlowCapabilityOptions {
+  question?: string;
+  pathText?: string;
+  apiText?: string;
+  methodText?: string;
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -62,11 +75,134 @@ function joinTexts(values: Array<string | undefined>): string {
   return values.filter((value): value is string => Boolean(value && value.trim())).join("\n");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function compilePattern(pattern: string): RegExp | null {
+  const raw = pattern.trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    return new RegExp(raw, "i");
+  } catch {
+    try {
+      return new RegExp(escapeRegExp(raw), "i");
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractDomainPackTagsFromText(text: string, domainPacks?: DomainPack[]): string[] {
+  if (!text || !domainPacks || domainPacks.length === 0) {
+    return [];
+  }
+
+  const tags: string[] = [];
+  for (const domainPack of domainPacks) {
+    for (const capability of domainPack.capabilityTags) {
+      const rawPatterns = [
+        capability.tag,
+        ...(capability.aliases ?? []),
+        ...(capability.questionPatterns ?? []),
+        ...(capability.textPatterns ?? []),
+        ...(capability.searchTerms ?? []),
+        ...(capability.pathHints ?? []),
+        ...(capability.symbolHints ?? []),
+        ...(capability.apiHints ?? [])
+      ];
+      const patterns = rawPatterns.map(compilePattern).filter((value): value is RegExp => Boolean(value));
+      if (patterns.some((pattern) => pattern.test(text))) {
+        tags.push(capability.tag);
+        for (const parent of capability.parents ?? []) {
+          tags.push(parent);
+        }
+      }
+    }
+  }
+  return unique(tags);
+}
+
+function expandDomainPackSearchTerms(questionTags: string[], domainPacks?: DomainPack[]): string[] {
+  if (!domainPacks || domainPacks.length === 0) {
+    return [];
+  }
+
+  const tagSet = new Set(questionTags);
+  const terms: string[] = [];
+  for (const domainPack of domainPacks) {
+    for (const capability of domainPack.capabilityTags) {
+      if (!tagSet.has(capability.tag) && !(capability.parents ?? []).some((parent) => tagSet.has(parent))) {
+        continue;
+      }
+      terms.push(
+        ...(capability.searchTerms ?? []),
+        ...(capability.aliases ?? []),
+        ...(capability.symbolHints ?? []),
+        ...(capability.apiHints ?? [])
+      );
+    }
+  }
+  return unique(terms);
+}
+
+function scoreDomainPackPriors(
+  questionTags: string[],
+  linkTags: string[],
+  options?: FlowCapabilityScoreOptions
+): { score: number; reasons: string[] } {
+  if (!options?.domainPacks || options.domainPacks.length === 0) {
+    return { score: 0, reasons: [] };
+  }
+
+  const questionSet = new Set(questionTags);
+  const linkSet = new Set(linkTags);
+  const pathText = options.pathText?.toLowerCase() ?? "";
+  const apiText = options.apiText?.toLowerCase() ?? "";
+  const methodText = options.methodText?.toLowerCase() ?? "";
+  const scoreReasons: string[] = [];
+  let score = 0;
+
+  for (const domainPack of options.domainPacks) {
+    for (const prior of domainPack.rankingPriors) {
+      const whenQuestionHas = prior.whenQuestionHas ?? [];
+      const whenLinkHas = prior.whenLinkHas ?? [];
+      const whenPathMatches = prior.whenPathMatches ?? [];
+      const whenApiMatches = prior.whenApiMatches ?? [];
+      const whenMethodMatches = prior.whenMethodMatches ?? [];
+      const questionMatched = whenQuestionHas.length === 0 || whenQuestionHas.some((tag) => questionSet.has(tag));
+      const linkMatched = whenLinkHas.length === 0 || whenLinkHas.some((tag) => linkSet.has(tag));
+      const pathMatched =
+        whenPathMatches.length === 0 || whenPathMatches.some((pattern) => pathText.includes(pattern.toLowerCase()));
+      const apiMatched =
+        whenApiMatches.length === 0 || whenApiMatches.some((pattern) => apiText.includes(pattern.toLowerCase()));
+      const methodMatched =
+        whenMethodMatches.length === 0 ||
+        whenMethodMatches.some((pattern) => methodText.includes(pattern.toLowerCase()));
+
+      if (questionMatched && linkMatched && pathMatched && apiMatched && methodMatched) {
+        score += prior.weight;
+        scoreReasons.push(prior.reason);
+      }
+    }
+  }
+
+  return {
+    score,
+    reasons: unique(scoreReasons)
+  };
+}
+
 export function isCrossLayerFlowQuestion(question: string): boolean {
   return /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(question) && /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(question);
 }
 
-export function extractFlowCapabilityTagsFromTexts(values: Array<string | undefined>): string[] {
+export function extractFlowCapabilityTagsFromTexts(
+  values: Array<string | undefined>,
+  options?: FlowCapabilityOptions
+): string[] {
   const text = joinTexts(values);
   if (!text) {
     return [];
@@ -78,15 +214,15 @@ export function extractFlowCapabilityTagsFromTexts(values: Array<string | undefi
       tags.push(entry.tag);
     }
   }
+  tags.push(...extractDomainPackTagsFromText(text, options?.domainPacks));
   return unique(tags);
 }
 
-export function extractQuestionCapabilityTags(question: string): string[] {
-  const tags = extractFlowCapabilityTagsFromTexts([question]);
-  return tags;
+export function extractQuestionCapabilityTags(question: string, options?: FlowCapabilityOptions): string[] {
+  return extractFlowCapabilityTagsFromTexts([question], options);
 }
 
-export function expandCapabilitySearchTerms(questionTags: string[]): string[] {
+export function expandCapabilitySearchTerms(questionTags: string[], options?: FlowCapabilityOptions): string[] {
   const terms: string[] = [];
   const tagSet = new Set(questionTags);
 
@@ -126,6 +262,7 @@ export function expandCapabilitySearchTerms(questionTags: string[]): string[] {
     terms.push("ApplicationRetraction", "retraction", "청약철회");
   }
 
+  terms.push(...expandDomainPackSearchTerms(questionTags, options?.domainPacks));
   return unique(terms);
 }
 
@@ -133,7 +270,11 @@ function hasAny(tags: Set<string>, values: readonly string[]): boolean {
   return values.some((value) => tags.has(value));
 }
 
-export function scoreFlowCapabilityAlignment(questionTags: string[], linkTags: string[]): {
+export function scoreFlowCapabilityAlignment(
+  questionTags: string[],
+  linkTags: string[],
+  options?: FlowCapabilityScoreOptions
+): {
   score: number;
   reasons: string[];
 } {
@@ -220,14 +361,22 @@ export function scoreFlowCapabilityAlignment(questionTags: string[], linkTags: s
     reasons.push("capability-penalty:benefit-claim");
   }
 
+  const domainPackAlignment = scoreDomainPackPriors(questionTags, linkTags, options);
+  score += domainPackAlignment.score;
+  reasons.push(...domainPackAlignment.reasons);
+
   return {
     score,
     reasons: unique(reasons)
   };
 }
 
-export function hasStrongFlowCapabilityAlignment(questionTags: string[], linkTags: string[]): boolean {
-  const alignment = scoreFlowCapabilityAlignment(questionTags, linkTags);
+export function hasStrongFlowCapabilityAlignment(
+  questionTags: string[],
+  linkTags: string[],
+  options?: FlowCapabilityScoreOptions
+): boolean {
+  const alignment = scoreFlowCapabilityAlignment(questionTags, linkTags, options);
   if (alignment.score >= 40) {
     return true;
   }

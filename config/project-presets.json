@@ -13,8 +13,12 @@
         "dcp-async/dcp-upload/dcp-display는 보조 기능 성격이며, dcp-chatbot 등 일부 저장소는 비활성 가능성이 있다."
       ],
       "rules": {
-        "workspaceIncludes": ["dcp-services"],
-        "projectNameIncludes": ["dcp-services"],
+        "workspaceIncludes": [
+          "dcp-services"
+        ],
+        "projectNameIncludes": [
+          "dcp-services"
+        ],
         "requiredPaths": [
           "dcp-core/",
           "dcp-gateway/",
@@ -24,12 +28,21 @@
       "eai": {
         "enabled": true,
         "asOfDate": "2026-03-06",
-        "servicePathIncludes": ["resources/eai/"],
+        "servicePathIncludes": [
+          "resources/eai/"
+        ],
         "manualOverridesFile": ".ohmyqwen/eai-overrides.json"
       },
       "createdAt": "2026-03-06T00:00:00.000Z",
       "updatedAt": "2026-03-06T00:00:00.000Z",
-      "builtIn": true
+      "builtIn": true,
+      "domainPackIds": [
+        "benefit-claim",
+        "loan",
+        "member-auth",
+        "retire-pension",
+        "fund"
+      ]
     }
   ]
 }

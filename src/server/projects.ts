@@ -21,6 +21,15 @@ import {
   upsertProjectPreset
 } from "./presets.js";
 import {
+  getDomainPackById,
+  listDomainPacks,
+  removeDomainPack,
+  resolveDomainPacksByIds,
+  type DomainPack,
+  type UpsertDomainPackInput,
+  upsertDomainPack
+} from "./domain-packs.js";
+import {
   runQmdMultiCorpusSearch,
   type QmdCorpusAttempt
 } from "../retrieval/qmd-search.js";
@@ -37,6 +46,7 @@ import {
 } from "./front-back-graph.js";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
+import { computeDomainMaturity, type DomainMaturityOutput, type DomainMaturityResult } from "./domain-maturity.js";
 import { expandCapabilitySearchTerms, extractQuestionCapabilityTags, isCrossLayerFlowQuestion } from "./flow-capabilities.js";
 
 const ServerProjectSchema = z.object({
@@ -145,9 +155,13 @@ export interface ProjectAnalysisResult {
   memoryHome: string;
   memoryFiles: string[];
   projectPreset?: {
+    id?: string;
     name: string;
     summary: string;
+    domainPackIds?: string[];
   };
+  domains?: DomainMaturityResult[];
+  maturitySummary?: DomainMaturityOutput["summary"];
   eaiCatalog?: {
     asOfDate: string;
     interfaceCount: number;
@@ -225,6 +239,8 @@ export interface ProjectAnalysisResult {
     structureIndexCount: number;
     frontCatalogCount?: number;
     frontBackLinkCount?: number;
+    activeDomainCount?: number;
+    overallDomainMaturityScore?: number;
   };
 }
 
@@ -438,6 +454,7 @@ const PROFILE_MEMORY_DIR = "project-profile";
 const EAI_MEMORY_DIR = "eai-dictionary";
 const FRONT_CATALOG_MEMORY_DIR = "front-catalog";
 const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
+const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
 const QUERY_MEMORY_DIR = "query-reports";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -762,6 +779,7 @@ function buildAskQueryCandidates(options: {
   strategy: AskStrategyType;
   targetSymbols?: string[];
   moduleCandidates?: string[];
+  domainPacks?: DomainPack[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -770,7 +788,11 @@ function buildAskQueryCandidates(options: {
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
   const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
-  const capabilityTerms = expandCapabilitySearchTerms(extractQuestionCapabilityTags(question)).slice(0, 8);
+  const capabilityTerms = expandCapabilitySearchTerms(extractQuestionCapabilityTags(question, {
+    domainPacks: options.domainPacks
+  }), {
+    domainPacks: options.domainPacks
+  }).slice(0, 8);
 
   const candidates = [
     question,
@@ -1123,6 +1145,22 @@ export async function upsertServerProjectPreset(input: UpsertProjectPresetInput)
 
 export async function removeServerProjectPreset(id: string): Promise<void> {
   await removeProjectPreset(id);
+}
+
+export async function listServerDomainPacks(): Promise<DomainPack[]> {
+  return listDomainPacks();
+}
+
+export async function getServerDomainPack(id: string): Promise<DomainPack | undefined> {
+  return getDomainPackById(id);
+}
+
+export async function upsertServerDomainPack(input: UpsertDomainPackInput): Promise<DomainPack> {
+  return upsertDomainPack(input);
+}
+
+export async function removeServerDomainPack(id: string): Promise<void> {
+  await removeDomainPack(id);
 }
 
 export async function listProjectDebugEvents(options: {
@@ -1577,6 +1615,8 @@ function buildProjectPresetMarkdown(input: {
   project: ServerProject;
   preset: ProjectPreset;
   updatedAt: string;
+  activeDomains?: DomainPack[];
+  maturity?: DomainMaturityOutput;
 }): string {
   const lines: string[] = [];
   lines.push("# Project Preset Context");
@@ -1592,6 +1632,63 @@ function buildProjectPresetMarkdown(input: {
   lines.push("## Key Facts");
   for (const fact of input.preset.keyFacts) {
     lines.push(`- ${fact}`);
+  }
+  lines.push("");
+  if ((input.activeDomains ?? []).length > 0) {
+    lines.push("## Active Domains");
+    for (const domain of input.activeDomains ?? []) {
+      lines.push(`- ${domain.name} (${domain.id})`);
+    }
+    lines.push("");
+  }
+  if (input.maturity && input.maturity.domains.length > 0) {
+    lines.push("## Domain Maturity");
+    for (const domain of input.maturity.domains.slice(0, 12)) {
+      lines.push(`- ${domain.name} | score=${domain.score} | band=${domain.band} | signals=${domain.strongestSignals.join(", ") || "-"}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function resolveProjectDomainPacks(preset?: ProjectPreset): Promise<DomainPack[]> {
+  const allDomainPacks = await listDomainPacks();
+  if (!preset) {
+    return [];
+  }
+  return resolveDomainPacksByIds(allDomainPacks, preset.domainPackIds);
+}
+
+function buildDomainMaturityMarkdown(input: {
+  project: ServerProject;
+  analyzedAt: string;
+  maturity: DomainMaturityOutput;
+}): string {
+  const lines: string[] = [];
+  lines.push("# Domain Maturity");
+  lines.push("");
+  lines.push(`- projectId: ${input.project.id}`);
+  lines.push(`- projectName: ${input.project.name}`);
+  lines.push(`- analyzedAt: ${input.analyzedAt}`);
+  lines.push(`- overallScore: ${input.maturity.summary.overallScore}`);
+  lines.push(`- activeCount: ${input.maturity.summary.activeCount}`);
+  lines.push(`- matureCount: ${input.maturity.summary.matureCount}`);
+  lines.push("");
+  lines.push("## Domains");
+  for (const domain of input.maturity.domains) {
+    lines.push(`- ${domain.name} (${domain.id}) | score=${domain.score} | band=${domain.band}`);
+    lines.push(
+      `  - counts: capabilities=${domain.counts.capabilitiesMatched}, screens=${domain.counts.screenCount}, backend=${domain.counts.backendRouteCount}, links=${domain.counts.linkCount}, downstream=${domain.counts.downstreamTraceCount}, eai=${domain.counts.eaiCount}, exemplars=${domain.counts.exemplarPassed}/${domain.counts.exemplarTotal}`
+    );
+    lines.push(
+      `  - breakdown: vocab=${domain.breakdown.vocabularyCoverage}, front=${domain.breakdown.frontendCoverage}, back=${domain.breakdown.backendCoverage}, link=${domain.breakdown.crossLayerCoverage}, downstream=${domain.breakdown.downstreamCoverage}, integration=${domain.breakdown.integrationCoverage}, regression=${domain.breakdown.regressionCoverage}`
+    );
+    if (domain.strongestSignals.length > 0) {
+      lines.push(`  - strongest: ${domain.strongestSignals.join(", ")}`);
+    }
+    if (domain.weakestSignals.length > 0) {
+      lines.push(`  - weakest: ${domain.weakestSignals.join(", ")}`);
+    }
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
@@ -3647,22 +3744,9 @@ export async function analyzeServerProject(options: {
       });
     }
     const generatedAt = nowIso();
+    const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
 
     let presetMemoryFiles: string[] = [];
-    if (projectPreset) {
-      const presetMarkdown = buildProjectPresetMarkdown({
-        project: warmup.project,
-        preset: projectPreset,
-        updatedAt: generatedAt
-      });
-      const presetDocs = await writeMemoryDocs({
-        memoryRoot,
-        groupDir: PROFILE_MEMORY_DIR,
-        latestFileName: "latest.md",
-        content: presetMarkdown
-      });
-      presetMemoryFiles = [presetDocs.latestPath, presetDocs.snapshotPath];
-    }
 
     const eaiEnabled = Boolean(projectPreset?.eai?.enabled);
     const eaiPresetAsOfDate = projectPreset?.eai?.asOfDate?.trim();
@@ -3784,7 +3868,8 @@ export async function analyzeServerProject(options: {
       });
       frontBackGraph = await buildFrontBackGraph({
         backendWorkspaceDir: project.workspaceDir,
-        frontendWorkspaceDirs
+        frontendWorkspaceDirs,
+        domainPacks: activeDomainPacks
       });
       const frontCatalogDocs = await writeMemoryDocs({
         memoryRoot,
@@ -3845,6 +3930,53 @@ export async function analyzeServerProject(options: {
         }
       });
     }
+
+    const domainMaturity = computeDomainMaturity({
+      domainPacks: activeDomainPacks,
+      frontBackGraph,
+      structure: {
+        entries: structure.snapshot.entries
+      },
+      eaiEntries
+    });
+
+    if (projectPreset) {
+      const presetMarkdown = buildProjectPresetMarkdown({
+        project: warmup.project,
+        preset: projectPreset,
+        updatedAt: generatedAt,
+        activeDomains: activeDomainPacks,
+        maturity: domainMaturity
+      });
+      const presetDocs = await writeMemoryDocs({
+        memoryRoot,
+        groupDir: PROFILE_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: presetMarkdown
+      });
+      presetMemoryFiles = [presetDocs.latestPath, presetDocs.snapshotPath];
+    }
+    const domainMaturityDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: DOMAIN_MATURITY_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildDomainMaturityMarkdown({
+        project: warmup.project,
+        analyzedAt: generatedAt,
+        maturity: domainMaturity
+      })
+    });
+    const domainMaturityJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: DOMAIN_MATURITY_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: domainMaturity
+    });
+    const domainMaturityMemoryFiles = [
+      domainMaturityDocs.latestPath,
+      domainMaturityDocs.snapshotPath,
+      domainMaturityJsonPath
+    ];
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),
@@ -3913,9 +4045,21 @@ export async function analyzeServerProject(options: {
         ? {
             preset: projectPreset.name,
             summary: projectPreset.summary,
-            keyFacts: projectPreset.keyFacts
+            keyFacts: projectPreset.keyFacts,
+            domainPackIds: projectPreset.domainPackIds ?? []
           }
         : null,
+      domainMaturity: {
+        overallScore: domainMaturity.summary.overallScore,
+        domains: domainMaturity.domains.slice(0, 12).map((domain) => ({
+          id: domain.id,
+          name: domain.name,
+          score: domain.score,
+          band: domain.band,
+          strongestSignals: domain.strongestSignals,
+          weakestSignals: domain.weakestSignals
+        }))
+      },
       indexed: {
         fileCount: files.length,
         warmupProvider: warmup.selectedProvider,
@@ -4053,7 +4197,9 @@ export async function analyzeServerProject(options: {
         `structureFiles=${structure.snapshot.stats.fileCount}`,
         `structureMethods=${structure.snapshot.stats.methodCount}`,
         projectPreset ? `projectPreset=${projectPreset.name}` : "",
-        `eaiCatalogCount=${eaiEntries.length}`
+        `eaiCatalogCount=${eaiEntries.length}`,
+        `activeDomainCount=${activeDomainPacks.length}`,
+        `overallDomainMaturity=${domainMaturity.summary.overallScore}`
       ]).slice(0, 30)
     };
 
@@ -4079,7 +4225,8 @@ export async function analyzeServerProject(options: {
         ...structure.memoryFiles,
         ...presetMemoryFiles,
         ...eaiMemoryFiles,
-        ...frontBackMemoryFiles
+        ...frontBackMemoryFiles,
+        ...domainMaturityMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -4102,14 +4249,19 @@ export async function analyzeServerProject(options: {
         ...structure.memoryFiles,
         ...presetMemoryFiles,
         ...eaiMemoryFiles,
-        ...frontBackMemoryFiles
+        ...frontBackMemoryFiles,
+        ...domainMaturityMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
+            id: projectPreset.id,
             name: projectPreset.name,
-            summary: projectPreset.summary
+            summary: projectPreset.summary,
+            domainPackIds: projectPreset.domainPackIds ?? []
           }
         : undefined,
+      domains: domainMaturity.domains,
+      maturitySummary: domainMaturity.summary,
       eaiCatalog: eaiEnabled
         ? {
             asOfDate: eaiAsOfDate,
@@ -4192,7 +4344,9 @@ export async function analyzeServerProject(options: {
         eaiCatalogCount: eaiEntries.length,
         structureIndexCount: structure.snapshot.stats.fileCount,
         frontCatalogCount: frontBackGraph?.frontend.screenCount ?? 0,
-        frontBackLinkCount: frontBackGraph?.links.length ?? 0
+        frontBackLinkCount: frontBackGraph?.links.length ?? 0,
+        activeDomainCount: activeDomainPacks.length,
+        overallDomainMaturityScore: domainMaturity.summary.overallScore
       }
     };
 
@@ -4246,6 +4400,7 @@ function qualityGateForAsk(options: {
     serviceHints?: string[];
   }>;
   moduleCandidates?: string[];
+  domainPacks?: DomainPack[];
 }): {
   passed: boolean;
   failures: string[];
@@ -4263,7 +4418,8 @@ function qualityGateForAsk(options: {
     })),
     linkedEaiEvidence: options.linkedEaiEvidence,
     linkedFlowEvidence: options.linkedFlowEvidence,
-    moduleCandidates: options.moduleCandidates
+    moduleCandidates: options.moduleCandidates,
+    domainPacks: options.domainPacks
   });
 }
 
@@ -4710,6 +4866,10 @@ export async function askServerProject(options: {
       });
     }
 
+    const activeDomainPacks = analysis.projectPreset?.domainPackIds?.length
+      ? resolveDomainPacksByIds(await listDomainPacks(), analysis.projectPreset.domainPackIds)
+      : await resolveProjectDomainPacks(project.presetId ? await getProjectPresetById(project.presetId) : undefined);
+
     const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
     if (eaiSnapshot) {
       await appendProjectDebugEvent({
@@ -4743,7 +4903,8 @@ export async function askServerProject(options: {
       question,
       strategy: strategyDecision.strategy,
       targetSymbols: strategyDecision.targetSymbols,
-      moduleCandidates: strategyDecision.moduleCandidates
+      moduleCandidates: strategyDecision.moduleCandidates,
+      domainPacks: activeDomainPacks
     });
     const searchResults: ProjectSearchResult[] = [];
     for (const [index, expandedQuery] of expandedQueries.entries()) {
@@ -4880,7 +5041,8 @@ export async function askServerProject(options: {
             reasons: hit.reasons
           })),
           snapshot: frontBackGraphSnapshot,
-          limit: 6
+          limit: 6,
+          domainPacks: activeDomainPacks
         })
       : [];
     if (linkedFlowEvidence.length > 0) {
@@ -5103,7 +5265,8 @@ export async function askServerProject(options: {
         hydratedEvidence,
         linkedEaiEvidence,
         linkedFlowEvidence,
-        moduleCandidates: strategyDecision.moduleCandidates
+        moduleCandidates: strategyDecision.moduleCandidates,
+        domainPacks: activeDomainPacks
       });
       if (gate.passed) {
         passed = true;

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { DomainPack } from "./domain-packs.js";
 import { extractFlowCapabilityTagsFromTexts } from "./flow-capabilities.js";
 
 export interface FrontendRouteEntry {
@@ -223,7 +224,10 @@ function deriveScreenCode(filePath: string, componentName?: string): string | un
   return base || componentName;
 }
 
-export async function buildFrontendCatalog(workspaceDir: string): Promise<FrontendCatalogSnapshot> {
+export async function buildFrontendCatalog(
+  workspaceDir: string,
+  options?: { domainPacks?: DomainPack[] }
+): Promise<FrontendCatalogSnapshot> {
   const routeFiles = await collectFiles(workspaceDir, (relativePath) => /(^|\/)src\/router\/.*\/route\.js$/i.test(relativePath));
   const vueFiles = await collectFiles(workspaceDir, (relativePath) => /(^|\/)src\/views\/.*\.vue$/i.test(relativePath));
 
@@ -250,7 +254,7 @@ export async function buildFrontendCatalog(workspaceDir: string): Promise<Fronte
         sourceFile: relativePath,
         screenCode: name || deriveScreenCode(viewPath),
         notes: routeNotes,
-        capabilityTags: extractFlowCapabilityTagsFromTexts([routePath, viewPath, name, ...routeNotes])
+        capabilityTags: extractFlowCapabilityTagsFromTexts([routePath, viewPath, name, ...routeNotes], options)
       });
     }
   }
@@ -372,7 +376,7 @@ export async function buildFrontendCatalog(workspaceDir: string): Promise<Fronte
         ...apiPaths,
         ...httpCalls.flatMap((entry) => [entry.rawUrl, entry.normalizedUrl, entry.functionName]),
         ...labels
-      ])
+      ], options)
     });
   }
 
@@ -438,7 +442,10 @@ function buildPublicRoutePath(modulePrefix: string | undefined, routePath: strin
   return joinUrlPath(`/${modulePrefix}`, normalized);
 }
 
-export async function extractBackendRouteEntries(workspaceDir: string): Promise<BackendRouteEntry[]> {
+export async function extractBackendRouteEntries(
+  workspaceDir: string,
+  options?: { domainPacks?: DomainPack[] }
+): Promise<BackendRouteEntry[]> {
   const controllerFiles = await collectFiles(
     workspaceDir,
     (relativePath) => /controller\/.*\.java$/i.test(relativePath)
@@ -517,7 +524,7 @@ export async function extractBackendRouteEntries(workspaceDir: string): Promise<
               normalizeSlashPath(combined),
               ...serviceHints,
               ...labels
-            ])
+            ], options)
           });
         }
       }
@@ -554,11 +561,16 @@ function chooseBestBackendRoute(normalizedUrl: string, routes: BackendRouteEntry
 export async function buildFrontBackGraph(options: {
   backendWorkspaceDir: string;
   frontendWorkspaceDirs: string[];
+  domainPacks?: DomainPack[];
 }): Promise<FrontBackGraphSnapshot> {
-  const frontendCatalogs = await Promise.all(options.frontendWorkspaceDirs.map((dir) => buildFrontendCatalog(dir)));
+  const frontendCatalogs = await Promise.all(
+    options.frontendWorkspaceDirs.map((dir) => buildFrontendCatalog(dir, { domainPacks: options.domainPacks }))
+  );
   const routes = frontendCatalogs.flatMap((catalog) => catalog.routes);
   const screens = frontendCatalogs.flatMap((catalog) => catalog.screens);
-  const backendRoutesAll = await extractBackendRouteEntries(options.backendWorkspaceDir);
+  const backendRoutesAll = await extractBackendRouteEntries(options.backendWorkspaceDir, {
+    domainPacks: options.domainPacks
+  });
   const gatewayRoutes = backendRoutesAll.filter((entry) => entry.path === "/api/**" || /dcp-gateway\//.test(entry.filePath));
   const backendRoutes = backendRoutesAll.filter((entry) => !gatewayRoutes.includes(entry));
 
@@ -609,7 +621,7 @@ export async function buildFrontBackGraph(options: {
           call.functionName,
           gatewayRoute?.path,
           gatewayRoute ? `${gatewayRoute.controllerClass}.${gatewayRoute.controllerMethod}` : undefined
-        ])
+        ], { domainPacks: options.domainPacks })
       ]);
       links.push({
         confidence: Math.min(0.99, Number(confidence.toFixed(2))),

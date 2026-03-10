@@ -1,0 +1,194 @@
+{
+  "domainPacks": [
+    {
+      "id": "benefit-claim",
+      "name": "보험금 청구",
+      "description": "보험금 청구/조회/서류제출/사고보험금/대리청구 계열 capability pack",
+      "families": ["insurance"],
+      "enabledByDefault": true,
+      "capabilityTags": [
+        {
+          "tag": "benefit-claim",
+          "aliases": ["보험금 청구", "benefit claim"],
+          "questionPatterns": ["보험금\\s*청구", "benefit\\s*claim"],
+          "textPatterns": ["보험금\\s*청구", "BenefitClaim", "benefit/claim", "accBenefit/claim"],
+          "searchTerms": ["BenefitClaim", "BenefitClaimController", "BenefitClaimService", "AccBenefitClaim", "AccBenefitClaimController", "AccBenefitClaimService"],
+          "pathHints": ["dcp-insurance/"],
+          "symbolHints": ["BenefitClaimController", "AccBenefitClaimController", "BenefitClaimService", "AccBenefitClaimService"],
+          "apiHints": ["/insurance/benefit/claim", "/insurance/accBenefit/claim"],
+          "adjacentConfusers": ["division-expiry", "application-retraction"]
+        },
+        {
+          "tag": "accident-benefit-claim",
+          "aliases": ["사고보험금", "accident benefit claim"],
+          "questionPatterns": ["사고보험금", "accident\\s*benefit"],
+          "textPatterns": ["AccBenefitClaim", "사고보험금", "accBenefit/claim"],
+          "searchTerms": ["AccBenefitClaim", "insertBenefitClaim", "insertBenefitClaimDoc", "saveBenefitClaimDoc"],
+          "parents": ["benefit-claim"]
+        },
+        {
+          "tag": "agent-benefit-claim",
+          "aliases": ["보험금 대리 청구"],
+          "questionPatterns": ["대리\\s*청구", "agent\\s*benefit"],
+          "textPatterns": ["AgentBenefitClaim", "대리보험금"],
+          "searchTerms": ["AgentBenefitClaim", "AgentBenefitClaimController", "AgentBenefitClaimService"],
+          "parents": ["benefit-claim"]
+        },
+        {
+          "tag": "claim-doc",
+          "aliases": ["청구 서류 제출"],
+          "questionPatterns": ["서류", "문서", "첨부", "upload"],
+          "textPatterns": ["claim/doc", "doc/insert", "saveBenefitClaimDoc", "F13630020"],
+          "searchTerms": ["saveBenefitClaimDoc", "claim doc insert", "F13630020", "callMODC0008"],
+          "parents": ["benefit-claim"]
+        },
+        {
+          "tag": "claim-submit",
+          "aliases": ["청구 접수", "청구 제출"],
+          "questionPatterns": ["접수", "제출", "submit"],
+          "textPatterns": ["claim/insert", "saveBenefitClaim", "insertBenefitClaim"],
+          "searchTerms": ["saveBenefitClaim", "insertBenefitClaim", "claim insert"],
+          "parents": ["benefit-claim"]
+        },
+        {
+          "tag": "claim-inquiry",
+          "aliases": ["청구 조회"],
+          "questionPatterns": ["조회", "check", "inqury"],
+          "textPatterns": ["claim/check", "claim/inqury", "benefitClaimCheck", "checkApply"],
+          "searchTerms": ["benefitClaimCheck", "checkApply", "claim inqury"],
+          "parents": ["benefit-claim"]
+        }
+      ],
+      "rankingPriors": [
+        {
+          "whenQuestionHas": ["benefit-claim"],
+          "whenLinkHas": ["benefit-claim"],
+          "weight": 30,
+          "reason": "domain:benefit-claim"
+        },
+        {
+          "whenQuestionHas": ["benefit-claim"],
+          "whenLinkHas": ["accident-benefit-claim"],
+          "weight": 24,
+          "reason": "domain:benefit-claim-family"
+        },
+        {
+          "whenQuestionHas": ["benefit-claim"],
+          "whenApiMatches": ["/claim/insert", "/doc/insert"],
+          "weight": 18,
+          "reason": "domain:benefit-claim-submit"
+        },
+        {
+          "whenQuestionHas": ["benefit-claim"],
+          "whenApiMatches": ["division/appexpiry", "retraction"],
+          "weight": -90,
+          "reason": "domain:benefit-claim-adjacent-penalty",
+          "negative": true
+        }
+      ],
+      "exemplars": [
+        {
+          "question": "보험금 청구 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+          "expectedTags": ["benefit-claim"],
+          "expectedApiPatterns": ["claim/insert", "doc/insert"],
+          "expectedControllerPatterns": ["BenefitClaimController", "AccBenefitClaimController"]
+        }
+      ],
+      "createdAt": "2026-03-10T00:00:00.000Z",
+      "updatedAt": "2026-03-10T00:00:00.000Z",
+      "builtIn": true
+    },
+    {
+      "id": "loan",
+      "name": "대출",
+      "description": "보험계약대출/부동산담보대출/신용대출 등 대출 capability pack",
+      "families": ["loan"],
+      "enabledByDefault": true,
+      "capabilityTags": [
+        {
+          "tag": "loan",
+          "aliases": ["대출", "loan"],
+          "questionPatterns": ["대출", "loan"],
+          "textPatterns": ["Loan", "loan/", "contractloan", "credit", "realty"],
+          "searchTerms": ["Loan", "LoanController", "LoanService", "ContractLoan", "CreditLoan", "RealtyCollateralLoan"],
+          "pathHints": ["dcp-loan/"],
+          "apiHints": ["/loan/"]
+        }
+      ],
+      "rankingPriors": [],
+      "exemplars": [],
+      "createdAt": "2026-03-10T00:00:00.000Z",
+      "updatedAt": "2026-03-10T00:00:00.000Z",
+      "builtIn": true
+    },
+    {
+      "id": "member-auth",
+      "name": "회원/인증",
+      "description": "회원가입/로그인/인증/권한/세션 capability pack",
+      "families": ["member", "auth"],
+      "enabledByDefault": true,
+      "capabilityTags": [
+        {
+          "tag": "member-auth",
+          "aliases": ["회원 인증", "member auth"],
+          "questionPatterns": ["회원", "인증", "로그인", "auth", "session"],
+          "textPatterns": ["Member", "Auth", "login", "session", "redis"],
+          "searchTerms": ["Member", "Auth", "Login", "Session", "RedisSession"],
+          "pathHints": ["dcp-member/", "dcp-gateway/"],
+          "apiHints": ["/member/", "/auth/"]
+        }
+      ],
+      "rankingPriors": [],
+      "exemplars": [],
+      "createdAt": "2026-03-10T00:00:00.000Z",
+      "updatedAt": "2026-03-10T00:00:00.000Z",
+      "builtIn": true
+    },
+    {
+      "id": "retire-pension",
+      "name": "퇴직/연금",
+      "description": "퇴직연금/IRP/연금 관련 capability pack",
+      "families": ["retire", "pension"],
+      "enabledByDefault": true,
+      "capabilityTags": [
+        {
+          "tag": "retire-pension",
+          "aliases": ["퇴직연금", "연금", "IRP"],
+          "questionPatterns": ["퇴직연금", "연금", "IRP", "pension", "retire"],
+          "textPatterns": ["Pension", "Retire", "IRP", "퇴직연금", "연금"],
+          "searchTerms": ["Pension", "Retire", "IRP", "pension service", "retire service"],
+          "pathHints": ["dcp-retire/", "dcp-pension/"],
+          "apiHints": ["/pension/", "/retire/"]
+        }
+      ],
+      "rankingPriors": [],
+      "exemplars": [],
+      "createdAt": "2026-03-10T00:00:00.000Z",
+      "updatedAt": "2026-03-10T00:00:00.000Z",
+      "builtIn": true
+    },
+    {
+      "id": "fund",
+      "name": "펀드",
+      "description": "펀드/ETF/수익률/포트폴리오 capability pack",
+      "families": ["fund"],
+      "enabledByDefault": true,
+      "capabilityTags": [
+        {
+          "tag": "fund",
+          "aliases": ["펀드", "ETF"],
+          "questionPatterns": ["펀드", "ETF", "fund"],
+          "textPatterns": ["Fund", "ETF", "portfolio", "펀드"],
+          "searchTerms": ["Fund", "ETF", "Portfolio", "fund service"],
+          "pathHints": ["dcp-fund/"],
+          "apiHints": ["/fund/"]
+        }
+      ],
+      "rankingPriors": [],
+      "exemplars": [],
+      "createdAt": "2026-03-10T00:00:00.000Z",
+      "updatedAt": "2026-03-10T00:00:00.000Z",
+      "builtIn": true
+    }
+  ]
+}
