@@ -110,8 +110,8 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   qmd: {
     enabled: true,
-    integrationMode: "external-cli",
-    offlineStrict: false,
+    integrationMode: "internal-runtime",
+    offlineStrict: true,
     targetPlatform: "win32-x64",
     contextSyncEnabled: true,
     command: "qmd",

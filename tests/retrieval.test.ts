@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -125,6 +125,7 @@ exit 1
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "external-cli";
     config.qmd.command = fakeQmdPath;
     config.qmd.queryMode = "query_then_search";
     config.qmd.syncIntervalMs = 1;
@@ -204,6 +205,7 @@ exit 1
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "external-cli";
     config.qmd.command = fakeQmdPath;
     config.qmd.queryMode = "query_only";
     config.qmd.syncIntervalMs = 1;
@@ -232,6 +234,107 @@ exit 1
       .map((line) => line.trim())
       .filter((line) => line.includes(" query "));
     expect(queryLines.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("uses internal qmd runtime in search_only mode without requiring local models", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-internal-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "claim.ts"), "export const lowWorkerLoan = 1;", "utf8");
+
+    const vendorRuntimeDir = path.join(workspace, "vendor", "qmd", "dist");
+    await mkdir(vendorRuntimeDir, { recursive: true });
+    await writeFile(
+      path.join(vendorRuntimeDir, "runtime.js"),
+      `export function ensureCollection() { return { added: true }; }
+export async function indexCollection() {}
+export async function embedPending() { throw new Error("embed should not run in search_only"); }
+export async function queryRuntime(options) {
+  if (options.mode !== "search") {
+    throw new Error("query path should not run in search_only");
+  }
+  return [{ path: "qmd://workspace-backend-code/claim.ts", score: 7.7, title: "claim" }];
+}
+`,
+      "utf8"
+    );
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "internal-runtime";
+    config.qmd.queryMode = "search_only";
+    config.qmd.offlineStrict = true;
+    config.qmd.vendorRoot = "vendor/qmd";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["claim.ts"],
+      task: "햇살론 대출 흐름 분석",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    expect(inspection.fragments[0]?.path).toBe("claim.ts");
+    const qmdProvider = inspection.retrieval.providerResults.find((result) => result.provider === "qmd");
+    const metadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
+    const corpusResults = Array.isArray(metadata.corpusResults) ? metadata.corpusResults : [];
+    expect(corpusResults.length).toBeGreaterThan(0);
+    expect(String((corpusResults[0] as Record<string, unknown>).embeddingStatus)).toBe("skipped");
+  });
+
+  it("falls back from internal qmd query to search when offline models are missing", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-qmd-internal-fallback-"));
+    tempDirs.push(workspace);
+
+    await writeFile(path.join(workspace, "loan.ts"), "export const sunshineLoan = 1;", "utf8");
+
+    const vendorRuntimeDir = path.join(workspace, "vendor", "qmd", "dist");
+    await mkdir(vendorRuntimeDir, { recursive: true });
+    await writeFile(
+      path.join(vendorRuntimeDir, "runtime.js"),
+      `export function ensureCollection() { return { added: true }; }
+export async function indexCollection() {}
+export async function embedPending() { throw new Error("qmd offlineStrict is enabled but local GGUF models are missing under /tmp/models"); }
+export async function queryRuntime(options) {
+  if (options.mode === "query") {
+    throw new Error("offlineStrict is enabled and model is not available locally");
+  }
+  return [{ path: "qmd://workspace-backend-code/loan.ts", score: 8.1, title: "loan" }];
+}
+`,
+      "utf8"
+    );
+
+    const config = makeConfig();
+    config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "internal-runtime";
+    config.qmd.queryMode = "query_then_search";
+    config.qmd.offlineStrict = true;
+    config.qmd.vendorRoot = "vendor/qmd";
+    config.qmd.syncIntervalMs = 1;
+
+    const inspection = await inspectContext({
+      cwd: workspace,
+      files: ["loan.ts"],
+      task: "sunshine loan",
+      tier: "small",
+      tokenBudget: 900,
+      stage: "IMPLEMENT",
+      retrievalConfig: config
+    });
+
+    expect(inspection.retrieval.selectedProvider).toBe("qmd");
+    expect(inspection.fragments[0]?.path).toBe("loan.ts");
+    const qmdProvider = inspection.retrieval.providerResults.find((result) => result.provider === "qmd");
+    const metadata = (qmdProvider?.metadata ?? {}) as Record<string, unknown>;
+    expect(metadata.mode).toBe("search");
+    const corpusResults = Array.isArray(metadata.corpusResults) ? metadata.corpusResults : [];
+    expect(corpusResults.length).toBeGreaterThan(0);
+    expect(String((corpusResults[0] as Record<string, unknown>).embeddingStatus)).toBe("missing-models");
   });
 
 
@@ -305,6 +408,7 @@ exit 1
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "external-cli";
     config.qmd.command = fakeQmdPath;
     config.qmd.queryMode = "query_then_search";
     config.qmd.syncIntervalMs = 1;
@@ -394,6 +498,7 @@ exit 1
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "external-cli";
     config.qmd.command = fakeQmdPath;
     config.qmd.queryMode = "query_then_search";
     config.qmd.syncIntervalMs = 1;
@@ -461,6 +566,7 @@ exit 1
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
+    config.qmd.integrationMode = "external-cli";
     config.qmd.command = fakeQmdPath;
     config.qmd.queryMode = "query_then_search";
     config.qmd.syncIntervalMs = 1;
