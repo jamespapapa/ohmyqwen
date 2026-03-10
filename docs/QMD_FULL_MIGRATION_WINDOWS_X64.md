@@ -90,12 +90,13 @@
 
 - [x] qmd source vendoring
 - [x] qmd runtime/offline/windows 설정 surface 추가
-- [ ] 내부 런타임 adapter 구현
+- [x] 내부 런타임 adapter 구현
+- [x] local GGUF model path override surface 추가
 
 ### Phase 2. Internal API Migration
 
-- [ ] `spawn("qmd", ...)` 제거
-- [ ] `createStore / hybridQuery / structuredSearch / vectorSearchQuery` 직접 호출
+- [ ] `spawn("qmd", ...)` 제거를 기본 경로로 승격
+- [x] `createStore / hybridQuery / vectorSearchQuery` 직접 호출 경로 추가
 - [ ] internal status / index / embed API 정리
 
 ### Phase 3. Offline Hardening
@@ -106,9 +107,9 @@
 
 ### Phase 4. Lifecycle Integration
 
-- [ ] analyze 시 index/update/embed 포함
+- [x] analyze/search 경로에서 internal runtime index/update/embed 호출 가능
 - [ ] ask 시 incremental update/embed
-- [ ] qmd context sync (project profile, learned knowledge, domain packs)
+- [x] qmd context sync (project profile, learned knowledge, domain packs) 기본 wiring 추가
 
 ### Phase 5. Windows Bundle
 
@@ -126,6 +127,9 @@
 - `runtimeRoot`
 - `vendorRoot`
 - `modelsDir`
+- `embedModelPath`
+- `rerankModelPath`
+- `generateModelPath`
 
 대응 env:
 
@@ -135,6 +139,18 @@
 - `OHMYQWEN_QMD_RUNTIME_ROOT`
 - `OHMYQWEN_QMD_VENDOR_ROOT`
 - `OHMYQWEN_QMD_MODELS_DIR`
+- `OHMYQWEN_QMD_EMBED_MODEL_PATH`
+- `OHMYQWEN_QMD_RERANK_MODEL_PATH`
+- `OHMYQWEN_QMD_GENERATE_MODEL_PATH`
+
+## 번들링 메모
+
+- mac/Linux 개발 중에는 `scripts/bundle-offline.sh`
+- Windows x64 배포물 생성용으로는 `scripts/bundle-offline-win64.ps1`
+
+Windows 최종 산출물은 반드시 Windows x64 환경에서 설치된 native 모듈과 함께 생성해야 한다.
+
+선택적으로 `OHMYQWEN_NODE_RUNTIME_DIR`를 지정하면 번들에 Node 런타임까지 포함시킬 수 있다.
 
 ## 원칙
 

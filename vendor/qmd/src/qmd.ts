@@ -111,18 +111,18 @@ function getDb(): Database {
   return getStore().db;
 }
 
-function closeDb(): void {
+export function closeDb(): void {
   if (store) {
     store.close();
     store = null;
   }
 }
 
-function getDbPath(): string {
+export function getDbPath(): string {
   return store?.dbPath ?? storeDbPathOverride ?? getDefaultDbPath();
 }
 
-function setIndexName(name: string | null): void {
+export function setIndexName(name: string | null): void {
   let normalizedName = name;
   // Normalize relative paths to prevent malformed database paths
   if (name && name.includes('/')) {
@@ -463,7 +463,7 @@ async function showStatus(): Promise<void> {
   closeDb();
 }
 
-async function updateCollections(): Promise<void> {
+export async function updateCollections(): Promise<void> {
   const db = getDb();
   // Collections are defined in YAML; no duplicate cleanup needed.
 
@@ -1397,7 +1397,7 @@ function collectionRename(oldName: string, newName: string): void {
   console.log(`  Virtual paths updated: ${c.cyan}qmd://${oldName}/${c.reset} → ${c.cyan}qmd://${newName}/${c.reset}`);
 }
 
-async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false): Promise<void> {
+export async function indexFiles(pwd?: string, globPattern: string = DEFAULT_GLOB, collectionName?: string, suppressEmbedNotice: boolean = false): Promise<void> {
   const db = getDb();
   const resolvedPwd = pwd || getPwd();
   const now = new Date().toISOString();
@@ -1530,7 +1530,7 @@ function renderProgressBar(percent: number, width: number = 30): string {
   return bar;
 }
 
-async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean = false): Promise<void> {
+export async function vectorIndex(model: string = DEFAULT_EMBED_MODEL, force: boolean = false): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
 

@@ -36,6 +36,7 @@
     "integrationMode": "external-cli",
     "offlineStrict": false,
     "targetPlatform": "win32-x64",
+    "contextSyncEnabled": true,
     "command": "qmd",
     "collectionName": "workspace",
     "mask": "**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,java,kt,kts,xml,yml,yaml,py,go,rs,sql,sh}",
@@ -43,6 +44,9 @@
     "runtimeRoot": ".ohmyqwen/runtime/qmd",
     "vendorRoot": "vendor/qmd",
     "modelsDir": ".ohmyqwen/runtime/qmd/models",
+    "embedModelPath": ".ohmyqwen/runtime/qmd/models/embeddinggemma-300M-Q8_0.gguf",
+    "rerankModelPath": ".ohmyqwen/runtime/qmd/models/qwen3-reranker-0.6b-q8_0.gguf",
+    "generateModelPath": ".ohmyqwen/runtime/qmd/models/qmd-query-expansion-1.7B-q4_k_m.gguf",
     "syncIntervalMs": 60000
   }
 }

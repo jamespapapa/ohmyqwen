@@ -190,7 +190,27 @@ export const DEFAULT_RERANK_MODEL_URI = DEFAULT_RERANK_MODEL;
 export const DEFAULT_GENERATE_MODEL_URI = DEFAULT_GENERATE_MODEL;
 
 // Local model cache directory
-const MODEL_CACHE_DIR = join(homedir(), ".cache", "qmd", "models");
+function readStringEnv(name: string): string | undefined {
+  const raw = process.env[name]?.trim();
+  return raw ? raw : undefined;
+}
+
+function readOfflineStrictEnv(): boolean {
+  const normalized = process.env.QMD_OFFLINE_STRICT?.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function resolveConfiguredModelUri(kind: "embed" | "rerank" | "generate"): string {
+  if (kind === "embed") {
+    return readStringEnv("QMD_EMBED_MODEL") || DEFAULT_EMBED_MODEL;
+  }
+  if (kind === "rerank") {
+    return readStringEnv("QMD_RERANK_MODEL") || DEFAULT_RERANK_MODEL;
+  }
+  return readStringEnv("QMD_GENERATE_MODEL") || DEFAULT_GENERATE_MODEL;
+}
+
+const MODEL_CACHE_DIR = readStringEnv("QMD_MODEL_CACHE_DIR") || join(homedir(), ".cache", "qmd", "models");
 export const DEFAULT_MODEL_CACHE_DIR = MODEL_CACHE_DIR;
 
 export type PullResult = {
@@ -231,6 +251,9 @@ export async function pullModels(
   models: string[],
   options: { refresh?: boolean; cacheDir?: string } = {}
 ): Promise<PullResult[]> {
+  if (readOfflineStrictEnv()) {
+    throw new Error("qmd offlineStrict is enabled; pullModels is disabled");
+  }
   const cacheDir = options.cacheDir || MODEL_CACHE_DIR;
   if (!existsSync(cacheDir)) {
     mkdirSync(cacheDir, { recursive: true });
@@ -386,10 +409,10 @@ export class LlamaCpp implements LLM {
 
 
   constructor(config: LlamaCppConfig = {}) {
-    this.embedModelUri = config.embedModel || DEFAULT_EMBED_MODEL;
-    this.generateModelUri = config.generateModel || DEFAULT_GENERATE_MODEL;
-    this.rerankModelUri = config.rerankModel || DEFAULT_RERANK_MODEL;
-    this.modelCacheDir = config.modelCacheDir || MODEL_CACHE_DIR;
+    this.embedModelUri = config.embedModel || resolveConfiguredModelUri("embed");
+    this.generateModelUri = config.generateModel || resolveConfiguredModelUri("generate");
+    this.rerankModelUri = config.rerankModel || resolveConfiguredModelUri("rerank");
+    this.modelCacheDir = config.modelCacheDir || readStringEnv("QMD_MODEL_CACHE_DIR") || MODEL_CACHE_DIR;
     this.inactivityTimeoutMs = config.inactivityTimeoutMs ?? DEFAULT_INACTIVITY_TIMEOUT_MS;
     this.disposeModelsOnInactivity = config.disposeModelsOnInactivity ?? false;
   }
@@ -534,6 +557,18 @@ export class LlamaCpp implements LLM {
    */
   private async resolveModel(modelUri: string): Promise<string> {
     this.ensureModelCacheDir();
+    if (existsSync(modelUri)) {
+      return modelUri;
+    }
+    if (!modelUri.startsWith("hf:")) {
+      const localCandidate = join(this.modelCacheDir, modelUri);
+      if (existsSync(localCandidate)) {
+        return localCandidate;
+      }
+    }
+    if (readOfflineStrictEnv()) {
+      throw new Error(`offlineStrict is enabled and model is not available locally: ${modelUri}`);
+    }
     // resolveModelFile handles HF URIs and downloads to the cache dir
     return await resolveModelFile(modelUri, this.modelCacheDir);
   }

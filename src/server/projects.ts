@@ -34,6 +34,10 @@ import {
   runQmdMultiCorpusSearch,
   type QmdCorpusAttempt
 } from "../retrieval/qmd-search.js";
+import { buildProjectQmdContextPayload } from "../retrieval/qmd-context.js";
+import { getQmdCorpusDefinitions } from "../retrieval/qmd-corpora.js";
+import { resolveInternalQmdRuntimePaths } from "../retrieval/qmd-runtime.js";
+import { resolveInternalQmdRuntime, syncInternalQmdContexts } from "../retrieval/qmd-internal.js";
 import { qualityGateForAskOutput } from "./ask-quality.js";
 import {
   buildEaiDictionaryEntries,
@@ -785,6 +789,61 @@ function toSearchTokens(query: string): string[] {
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+async function syncInternalQmdProjectContexts(options: {
+  project: ServerProject;
+  retrievalConfig: Awaited<ReturnType<typeof resolveRetrievalConfig>>;
+  analysis: ProjectAnalysisResult;
+}): Promise<void> {
+  if (!options.retrievalConfig.qmd.enabled || options.retrievalConfig.qmd.integrationMode !== "internal-runtime") {
+    return;
+  }
+  if (!resolveInternalQmdRuntimePaths(options.project.workspaceDir, options.retrievalConfig.qmd).contextSyncEnabled) {
+    return;
+  }
+
+  const payload = buildProjectQmdContextPayload({
+    project: {
+      name: options.analysis.project.name,
+      description: options.analysis.project.description,
+    },
+    projectPreset: options.analysis.projectPreset,
+    summary: options.analysis.summary,
+    architecture: options.analysis.architecture,
+    keyModules: options.analysis.keyModules,
+    domains: (options.analysis.domains ?? []).map((domain) => ({
+      id: domain.id,
+      name: domain.name,
+      score: domain.score,
+      band: domain.band,
+    })),
+    eaiCatalog: options.analysis.eaiCatalog,
+    frontBackGraph: options.analysis.frontBackGraph,
+    learnedKnowledge: options.analysis.learnedKnowledge,
+  });
+
+  for (const corpus of getQmdCorpusDefinitions()) {
+    const collectionName = `${options.retrievalConfig.qmd.collectionName}-${corpus.collectionSuffix}`;
+    const indexName = options.retrievalConfig.qmd.indexName
+      ? `${options.retrievalConfig.qmd.indexName}-${corpus.collectionSuffix}`
+      : undefined;
+    const runtime = resolveInternalQmdRuntime({
+      cwd: options.project.workspaceDir,
+      config: options.retrievalConfig.qmd,
+      collectionName,
+      indexName,
+      mask: corpus.mask,
+      queryMode: options.retrievalConfig.qmd.queryMode,
+      timeoutMs: options.retrievalConfig.timeoutMs.qmd,
+      syncIntervalMs: options.retrievalConfig.qmd.syncIntervalMs,
+    });
+    await syncInternalQmdContexts({
+      runtime,
+      globalContext: payload.globalContext,
+      contexts: payload.contexts,
+    });
+  }
 }
 
 function isRetrievalNoisePath(relativePath: string): boolean {
@@ -4152,6 +4211,10 @@ export async function analyzeServerProject(options: {
     });
 
     const llmContext = await resolveProjectLlmContext(project);
+    const retrievalConfig = await resolveRetrievalConfig(
+      project.workspaceDir,
+      mergeRetrievalWithModelCaps(project.retrieval, llmContext.stageTokenCaps)
+    );
     const llm = new OpenAICompatibleLlmClient({
       model: llmContext.model.id,
       maxTokens: llmContext.model.maxOutputTokens,
@@ -4521,6 +4584,24 @@ export async function analyzeServerProject(options: {
       `${JSON.stringify(result, null, 2)}\n`,
       "utf8"
     );
+
+    if (retrievalConfig.qmd.enabled && retrievalConfig.qmd.integrationMode === "internal-runtime") {
+      await syncInternalQmdProjectContexts({
+        project,
+        retrievalConfig,
+        analysis: result,
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "internal qmd contexts synced",
+        metadata: {
+          collectionName: retrievalConfig.qmd.collectionName,
+        }
+      });
+    }
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),

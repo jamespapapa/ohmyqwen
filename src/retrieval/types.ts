@@ -108,6 +108,7 @@ export interface ResolvedRetrievalConfig {
     integrationMode: "external-cli" | "internal-runtime";
     offlineStrict: boolean;
     targetPlatform: "win32-x64" | "darwin-arm64" | "linux-x64";
+    contextSyncEnabled: boolean;
     command: string;
     collectionName: string;
     indexName?: string;
@@ -116,6 +117,9 @@ export interface ResolvedRetrievalConfig {
     runtimeRoot?: string;
     vendorRoot?: string;
     modelsDir?: string;
+    embedModelPath?: string;
+    rerankModelPath?: string;
+    generateModelPath?: string;
     configDir?: string;
     cacheHome?: string;
     indexPath?: string;

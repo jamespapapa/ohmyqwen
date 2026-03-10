@@ -1,5 +1,6 @@
 import { buildQmdCorpusQueryCandidates, planQmdCorpusSearch, type QmdCorpusId } from "./qmd-corpora.js";
 import { ensureQmdIndexed, queryQmd, resolveQmdRuntime, type QmdSearchHit } from "./qmd-cli.js";
+import { ensureInternalQmdIndexed, queryInternalQmd, resolveInternalQmdRuntime } from "./qmd-internal.js";
 import { postprocessQmdHits, scoreQmdHit, selectEffectiveQmdQueryMode } from "./qmd-strategy.js";
 import type { ResolvedRetrievalConfig } from "./types.js";
 
@@ -28,6 +29,7 @@ export interface QmdCorpusAttempt {
   errors: string[];
   mode?: "query" | "search";
   indexMethod?: "add" | "update" | "cached";
+  embeddingStatus?: "ok" | "skipped" | "missing-models" | "failed";
   collectionName: string;
   indexName: string;
 }
@@ -55,6 +57,13 @@ function withCorpusSuffix(base: string | undefined, suffix: string): string | un
   return `${trimmed}-${suffix}`;
 }
 
+function resolveEmbeddingStatus(indexed: { method: "add" | "update" | "cached" } | {
+  method: "add" | "update" | "cached";
+  embedding: "ok" | "skipped" | "missing-models" | "failed";
+}): "ok" | "skipped" | "missing-models" | "failed" | undefined {
+  return "embedding" in indexed ? indexed.embedding : undefined;
+}
+
 export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions): Promise<RunQmdMultiCorpusResult> {
   const queryMode = selectEffectiveQmdQueryMode({
     configuredMode: options.config.queryMode,
@@ -67,22 +76,40 @@ export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions)
   let overallMode: "query" | "search" | undefined;
 
   for (const corpus of corpusPlan.activeCorpora) {
-    const runtime = resolveQmdRuntime({
-      cwd: options.cwd,
-      command: options.config.command,
-      collectionName: withCorpusSuffix(options.config.collectionName, corpus.collectionSuffix) ?? corpus.collectionSuffix,
-      indexName: withCorpusSuffix(options.config.indexName, corpus.collectionSuffix),
-      mask: corpus.mask,
-      queryMode,
-      configDir: options.config.configDir,
-      cacheHome: options.config.cacheHome,
-      indexPath: options.config.indexPath,
-      timeoutMs: options.timeoutMs,
-      syncIntervalMs: options.config.syncIntervalMs
-    });
+    const collectionName =
+      withCorpusSuffix(options.config.collectionName, corpus.collectionSuffix) ?? corpus.collectionSuffix;
+    const indexName = withCorpusSuffix(options.config.indexName, corpus.collectionSuffix);
 
     try {
-      const indexed = await ensureQmdIndexed(runtime);
+      const indexed =
+        options.config.integrationMode === "internal-runtime"
+          ? await ensureInternalQmdIndexed(
+              resolveInternalQmdRuntime({
+                cwd: options.cwd,
+                config: options.config,
+                collectionName,
+                indexName,
+                mask: corpus.mask,
+                queryMode,
+                timeoutMs: options.timeoutMs,
+                syncIntervalMs: options.config.syncIntervalMs,
+              })
+            )
+          : await ensureQmdIndexed(
+              resolveQmdRuntime({
+                cwd: options.cwd,
+                command: options.config.command,
+                collectionName,
+                indexName,
+                mask: corpus.mask,
+                queryMode,
+                configDir: options.config.configDir,
+                cacheHome: options.config.cacheHome,
+                indexPath: options.config.indexPath,
+                timeoutMs: options.timeoutMs,
+                syncIntervalMs: options.config.syncIntervalMs,
+              })
+            );
       const queries = buildQmdCorpusQueryCandidates(corpus.id, options.signals);
       let usedQuery = "";
       let qmdResult: Awaited<ReturnType<typeof queryQmd>> = {
@@ -96,11 +123,39 @@ export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions)
         if (!query) {
           continue;
         }
-        const result = await queryQmd({
-          runtime,
-          query,
-          limit: options.limit
-        });
+        const result =
+          options.config.integrationMode === "internal-runtime"
+            ? await queryInternalQmd({
+                runtime: resolveInternalQmdRuntime({
+                  cwd: options.cwd,
+                  config: options.config,
+                  collectionName,
+                  indexName,
+                  mask: corpus.mask,
+                  queryMode,
+                  timeoutMs: options.timeoutMs,
+                  syncIntervalMs: options.config.syncIntervalMs,
+                }),
+                query,
+                limit: options.limit,
+              })
+            : await queryQmd({
+                runtime: resolveQmdRuntime({
+                  cwd: options.cwd,
+                  command: options.config.command,
+                  collectionName,
+                  indexName,
+                  mask: corpus.mask,
+                  queryMode,
+                  configDir: options.config.configDir,
+                  cacheHome: options.config.cacheHome,
+                  indexPath: options.config.indexPath,
+                  timeoutMs: options.timeoutMs,
+                  syncIntervalMs: options.config.syncIntervalMs,
+                }),
+                query,
+                limit: options.limit,
+              });
         usedQuery = query;
         qmdResult = {
           ...result,
@@ -120,8 +175,9 @@ export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions)
         errors: qmdResult.errors,
         mode: qmdResult.mode,
         indexMethod: indexed.method,
-        collectionName: runtime.collectionName,
-        indexName: runtime.indexName
+        embeddingStatus: resolveEmbeddingStatus(indexed),
+        collectionName,
+        indexName: indexName ?? ""
       });
       allErrors.push(...qmdResult.errors);
       if (!overallMode && qmdResult.mode) {
@@ -158,8 +214,8 @@ export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions)
         query: "",
         queriesTried: buildQmdCorpusQueryCandidates(corpus.id, options.signals),
         errors: [message],
-        collectionName: runtime.collectionName,
-        indexName: runtime.indexName
+        collectionName,
+        indexName: indexName ?? ""
       });
       allErrors.push(message);
     }

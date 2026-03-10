@@ -55,6 +55,7 @@ const RetrievalConfigFileSchema = z.object({
       integrationMode: z.enum(["external-cli", "internal-runtime"]).optional(),
       offlineStrict: z.boolean().optional(),
       targetPlatform: z.enum(["win32-x64", "darwin-arm64", "linux-x64"]).optional(),
+      contextSyncEnabled: z.boolean().optional(),
       command: z.string().min(1).optional(),
       collectionName: z.string().min(1).optional(),
       indexName: z.string().min(1).optional(),
@@ -63,6 +64,9 @@ const RetrievalConfigFileSchema = z.object({
       runtimeRoot: z.string().min(1).optional(),
       vendorRoot: z.string().min(1).optional(),
       modelsDir: z.string().min(1).optional(),
+      embedModelPath: z.string().min(1).optional(),
+      rerankModelPath: z.string().min(1).optional(),
+      generateModelPath: z.string().min(1).optional(),
       configDir: z.string().min(1).optional(),
       cacheHome: z.string().min(1).optional(),
       indexPath: z.string().min(1).optional(),
@@ -109,6 +113,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
     integrationMode: "external-cli",
     offlineStrict: false,
     targetPlatform: "win32-x64",
+    contextSyncEnabled: true,
     command: "qmd",
     collectionName: "workspace",
     indexName: undefined,
@@ -117,6 +122,9 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
     runtimeRoot: undefined,
     vendorRoot: "vendor/qmd",
     modelsDir: undefined,
+    embedModelPath: undefined,
+    rerankModelPath: undefined,
+    generateModelPath: undefined,
     configDir: undefined,
     cacheHome: undefined,
     indexPath: undefined,
@@ -371,6 +379,8 @@ export async function resolveRetrievalConfig(
       asBool(process.env.OHMYQWEN_QMD_OFFLINE_STRICT) ?? config.qmd.offlineStrict,
     targetPlatform:
       parseQmdTargetPlatform(process.env.OHMYQWEN_QMD_TARGET_PLATFORM) ?? config.qmd.targetPlatform,
+    contextSyncEnabled:
+      asBool(process.env.OHMYQWEN_QMD_CONTEXT_SYNC_ENABLED) ?? config.qmd.contextSyncEnabled,
     command: process.env.OHMYQWEN_QMD_COMMAND?.trim() || config.qmd.command,
     collectionName: process.env.OHMYQWEN_QMD_COLLECTION?.trim() || config.qmd.collectionName,
     indexName: process.env.OHMYQWEN_QMD_INDEX_NAME?.trim() || config.qmd.indexName,
@@ -382,6 +392,12 @@ export async function resolveRetrievalConfig(
       normalizeOptionalPath(process.env.OHMYQWEN_QMD_VENDOR_ROOT) ?? config.qmd.vendorRoot,
     modelsDir:
       normalizeOptionalPath(process.env.OHMYQWEN_QMD_MODELS_DIR) ?? config.qmd.modelsDir,
+    embedModelPath:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_EMBED_MODEL_PATH) ?? config.qmd.embedModelPath,
+    rerankModelPath:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_RERANK_MODEL_PATH) ?? config.qmd.rerankModelPath,
+    generateModelPath:
+      normalizeOptionalPath(process.env.OHMYQWEN_QMD_GENERATE_MODEL_PATH) ?? config.qmd.generateModelPath,
     configDir: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CONFIG_DIR) ?? config.qmd.configDir,
     cacheHome: normalizeOptionalPath(process.env.OHMYQWEN_QMD_CACHE_HOME) ?? config.qmd.cacheHome,
     indexPath: normalizeOptionalPath(process.env.OHMYQWEN_QMD_INDEX_PATH) ?? config.qmd.indexPath,
