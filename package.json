@@ -14,6 +14,8 @@
     "test": "vitest run",
     "bundle:offline": "bash ./scripts/bundle-offline.sh",
     "bundle:offline:win64": "pwsh -File ./scripts/bundle-offline-win64.ps1",
+    "qmd:health": "pnpm build && node ./scripts/verify-offline-win64.mjs --require-models false",
+    "verify:offline:win64": "pnpm build && node ./scripts/verify-offline-win64.mjs",
     "eval:retrieval": "node ./scripts/eval-retrieval.mjs --tasks ./samples/retrieval-eval.tasks.json",
     "run": "node dist/cli.js run",
     "plan": "node dist/cli.js plan",

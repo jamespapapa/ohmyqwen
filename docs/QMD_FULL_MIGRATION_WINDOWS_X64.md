@@ -95,7 +95,7 @@
 
 ### Phase 2. Internal API Migration
 
-- [ ] `spawn("qmd", ...)` 제거를 기본 경로로 승격
+- [x] `spawn("qmd", ...)` 제거를 기본 경로로 승격
 - [x] `createStore / hybridQuery / vectorSearchQuery` 직접 호출 경로 추가
 - [ ] internal status / index / embed API 정리
 
@@ -114,7 +114,7 @@
 ### Phase 5. Windows Bundle
 
 - [ ] Windows x64 빌드 파이프라인
-- [ ] 번들 검증 스크립트
+- [x] 번들/런타임 검증 스크립트 추가
 - [ ] 폐쇄망 smoke test
 
 ## 설정 키
@@ -151,6 +151,11 @@
 Windows 최종 산출물은 반드시 Windows x64 환경에서 설치된 native 모듈과 함께 생성해야 한다.
 
 선택적으로 `OHMYQWEN_NODE_RUNTIME_DIR`를 지정하면 번들에 Node 런타임까지 포함시킬 수 있다.
+
+검증 명령:
+
+- `pnpm qmd:health`
+- `pnpm verify:offline:win64`
 
 ## 원칙
 
