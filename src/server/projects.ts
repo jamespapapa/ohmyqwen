@@ -615,6 +615,22 @@ async function isFrontendWorkspace(workspaceDir: string): Promise<boolean> {
   return false;
 }
 
+function sanitizeProjectHomeSegment(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized.slice(0, 48) || "project";
+}
+
+function defaultExternalProjectHome(workspaceDir: string): string {
+  const resolvedWorkspace = path.resolve(workspaceDir);
+  const slug = sanitizeProjectHomeSegment(path.basename(resolvedWorkspace));
+  const hash = createHash("sha1").update(resolvedWorkspace).digest("hex").slice(0, 10);
+  return path.resolve(process.cwd(), ".ohmyqwen", "server", "project-homes", `${slug}-${hash}`);
+}
+
 function toProject(value: ServerProject): ServerProject {
   return {
     ...value,
@@ -624,10 +640,12 @@ function toProject(value: ServerProject): ServerProject {
   };
 }
 
-function resolveProjectHome(workspaceDir: string): string {
+export function resolveServerProjectHome(workspaceDir: string): string {
   const envProjectHome = process.env.OHMYQWEN_PROJECT_HOME?.trim();
   if (!envProjectHome) {
-    return workspaceDir;
+    return isInsideParent(process.cwd(), workspaceDir)
+      ? path.resolve(workspaceDir)
+      : defaultExternalProjectHome(workspaceDir);
   }
 
   return path.isAbsolute(envProjectHome)
@@ -635,8 +653,8 @@ function resolveProjectHome(workspaceDir: string): string {
     : path.resolve(workspaceDir, envProjectHome);
 }
 
-function resolveMemoryHome(workspaceDir: string): string {
-  const projectHome = resolveProjectHome(workspaceDir);
+export function resolveServerProjectMemoryHome(workspaceDir: string): string {
+  const projectHome = resolveServerProjectHome(workspaceDir);
   const envMemoryHome = process.env.OHMYQWEN_MEMORY_HOME?.trim();
   if (!envMemoryHome) {
     return path.resolve(projectHome, "memory");
@@ -645,6 +663,18 @@ function resolveMemoryHome(workspaceDir: string): string {
   return path.isAbsolute(envMemoryHome)
     ? path.resolve(envMemoryHome)
     : path.resolve(projectHome, envMemoryHome);
+}
+
+export function resolveServerProjectContextCachePath(workspaceDir: string): string {
+  return path.resolve(resolveServerProjectHome(workspaceDir), ".ohmyqwen", "cache", "context-index.json");
+}
+
+export function resolveServerProjectStructureSnapshotPath(workspaceDir: string): string {
+  return path.resolve(resolveServerProjectHome(workspaceDir), ".ohmyqwen", "cache", "structure-index.v1.json");
+}
+
+function resolveMemoryHome(workspaceDir: string): string {
+  return resolveServerProjectMemoryHome(workspaceDir);
 }
 
 async function resolveProjectLlmContext(project: ServerProject): Promise<{
@@ -1986,7 +2016,7 @@ function buildFrontBackGraphMarkdown(options: {
 }
 
 function structureSnapshotPath(workspaceDir: string): string {
-  return path.resolve(workspaceDir, ".ohmyqwen", "cache", "structure-index.v1.json");
+  return resolveServerProjectStructureSnapshotPath(workspaceDir);
 }
 
 async function loadStructureSnapshot(workspaceDir: string): Promise<StructureIndexSnapshot | undefined> {
@@ -3006,18 +3036,18 @@ async function hydrateAskEvidence(options: {
   return hydrated.slice(0, 10);
 }
 
-function classifyQuestionIntentFallback(question: string): {
+export function classifyQuestionIntentFallback(question: string): {
   strategy: AskStrategyType;
   confidence: number;
   reason: string;
   targetSymbols: string[];
 } {
   const moduleCandidates = extractModuleCandidates(question);
+  const crossLayerFocused = isCrossLayerFlowQuestion(question);
   const methodFocused =
     /함수|메서드|method|호출|콜트리|이후|흐름|save[A-Z]|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/i.test(
       question
     );
-  const crossLayerFocused = isCrossLayerFlowQuestion(question);
   const moduleFlowFocused =
     moduleCandidates.length > 0 &&
     /(내부|모듈|흐름|로직|탑다운|큰 그림|실행|처리|service|controller|domain)/i.test(question);
@@ -3026,20 +3056,20 @@ function classifyQuestionIntentFallback(question: string): {
   const eaiFocused = /eai|인터페이스|전문|service id|f1[a-z0-9]+/i.test(question);
   const configFocused = /xml|yml|yaml|config|설정|권한|menu|applicationcontext/i.test(question);
 
-  if (methodFocused) {
-    return {
-      strategy: "method_trace",
-      confidence: 0.62,
-      reason: "fallback: method/call-flow keywords detected",
-      targetSymbols: extractMethodCandidates(question)
-    };
-  }
   if (crossLayerFocused) {
     return {
       strategy: "cross_layer_flow",
       confidence: 0.76,
       reason: "fallback: cross-layer frontend/backend flow question detected",
       targetSymbols: [...extractClassCandidates(question), ...extractMethodCandidates(question)].slice(0, 8)
+    };
+  }
+  if (methodFocused) {
+    return {
+      strategy: "method_trace",
+      confidence: 0.62,
+      reason: "fallback: method/call-flow keywords detected",
+      targetSymbols: extractMethodCandidates(question)
     };
   }
   if (moduleFlowFocused) {
@@ -3080,6 +3110,16 @@ function classifyQuestionIntentFallback(question: string): {
     reason: "fallback: generic question",
     targetSymbols: []
   };
+}
+
+export function normalizeAskStrategyForQuestion(
+  question: string,
+  strategy: AskStrategyType
+): AskStrategyType {
+  if (isCrossLayerFlowQuestion(question)) {
+    return "cross_layer_flow";
+  }
+  return strategy;
 }
 
 function strategyToIntent(strategy: AskStrategyType): {
@@ -3384,6 +3424,7 @@ export async function warmupServerProjectIndex(options: {
     );
     const inspection = await inspectContext({
       cwd: project.workspaceDir,
+      cachePath: resolveServerProjectContextCachePath(project.workspaceDir),
       files,
       task: `warmup project index: ${project.name}`,
       tier: "small",
@@ -4040,6 +4081,7 @@ export async function analyzeServerProject(options: {
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
+        cachePath: resolveServerProjectContextCachePath(project.workspaceDir),
         files: unique([...files.slice(0, 5_000), ...relativeMemoryFiles, ...extraMemoryFiles]),
         task: `reindex with memory docs: ${project.name}`,
         tier: "small",
@@ -4277,11 +4319,7 @@ async function decideAskStrategy(options: {
     parse: (value) => AskStrategyDecisionSchema.parse(value)
   });
 
-  const normalizedStrategy =
-    isCrossLayerFlowQuestion(options.question) &&
-    ["architecture_overview", "general"].includes(generation.output.strategy)
-      ? "cross_layer_flow"
-      : generation.output.strategy;
+  const normalizedStrategy = normalizeAskStrategyForQuestion(options.question, generation.output.strategy);
 
   return {
     strategy: normalizedStrategy,
