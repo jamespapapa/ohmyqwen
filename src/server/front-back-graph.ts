@@ -1,11 +1,14 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { extractFlowCapabilityTagsFromTexts } from "./flow-capabilities.js";
 
 export interface FrontendRouteEntry {
   routePath: string;
   screenPath: string;
   sourceFile: string;
   screenCode?: string;
+  notes?: string[];
+  capabilityTags?: string[];
 }
 
 export interface FrontendHttpCall {
@@ -24,6 +27,8 @@ export interface FrontendScreenEntry {
   exportPaths: string[];
   apiPaths: string[];
   httpCalls: FrontendHttpCall[];
+  labels?: string[];
+  capabilityTags?: string[];
 }
 
 export interface FrontendCatalogSnapshot {
@@ -41,10 +46,13 @@ export interface BackendRouteEntry {
   controllerMethod: string;
   filePath: string;
   serviceHints: string[];
+  labels?: string[];
+  capabilityTags?: string[];
 }
 
 export interface FrontBackGraphLink {
   confidence: number;
+  capabilityTags?: string[];
   frontend: {
     screenCode?: string;
     screenPath: string;
@@ -188,6 +196,22 @@ function deriveRouteBaseFromFile(relativePath: string): string {
   return normalizeSlashPath(withoutTail);
 }
 
+function extractTrailingLineComments(before: string, limit = 3): string[] {
+  const lines = before.split(/\r?\n/).slice(-12);
+  const comments = lines
+    .map((line) => line.match(/\/\/\s*(.+?)\s*$/)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+  return unique(comments.slice(-limit));
+}
+
+function extractHeaderTitles(content: string): string[] {
+  return unique(
+    Array.from(content.matchAll(/headerTitle\s*:\s*['"]([^'"]+)['"]/g))
+      .map((match) => match[1]?.trim() ?? "")
+      .filter(Boolean)
+  );
+}
+
 function deriveScreenCode(filePath: string, componentName?: string): string | undefined {
   const base = path.basename(filePath, path.extname(filePath));
   if (/^[A-Z]{3,}-[A-Z0-9]+$/i.test(base)) {
@@ -218,11 +242,15 @@ export async function buildFrontendCatalog(workspaceDir: string): Promise<Fronte
       if (!childPath || !viewPath) {
         continue;
       }
+      const routeNotes = extractTrailingLineComments(before);
+      const routePath = childPath.startsWith("/") ? normalizeSlashPath(childPath) : joinUrlPath(routeBase, childPath);
       routes.push({
-        routePath: childPath.startsWith("/") ? normalizeSlashPath(childPath) : joinUrlPath(routeBase, childPath),
+        routePath,
         screenPath: toForwardSlash(path.join("src/views", viewPath)),
         sourceFile: relativePath,
-        screenCode: name || deriveScreenCode(viewPath)
+        screenCode: name || deriveScreenCode(viewPath),
+        notes: routeNotes,
+        capabilityTags: extractFlowCapabilityTagsFromTexts([routePath, viewPath, name, ...routeNotes])
       });
     }
   }
@@ -317,6 +345,10 @@ export async function buildFrontendCatalog(workspaceDir: string): Promise<Fronte
     const routeEntries = routesByScreenPath.get(relativePath) ?? [];
     const routePaths = unique(routeEntries.map((entry) => entry.routePath));
     const apiPaths = unique([...apiDocPaths, ...httpCalls.map((entry) => entry.normalizedUrl).filter(Boolean)]);
+    const labels = unique([
+      ...routeEntries.flatMap((entry) => entry.notes ?? []),
+      ...extractHeaderTitles(content)
+    ]);
 
     if (routePaths.length === 0 && exportPaths.length === 0 && apiPaths.length === 0 && httpCalls.length === 0) {
       continue;
@@ -329,7 +361,18 @@ export async function buildFrontendCatalog(workspaceDir: string): Promise<Fronte
       routePaths,
       exportPaths,
       apiPaths,
-      httpCalls
+      httpCalls,
+      labels,
+      capabilityTags: extractFlowCapabilityTagsFromTexts([
+        relativePath,
+        deriveScreenCode(relativePath, componentName),
+        componentName,
+        ...routePaths,
+        ...exportPaths,
+        ...apiPaths,
+        ...httpCalls.flatMap((entry) => [entry.rawUrl, entry.normalizedUrl, entry.functionName]),
+        ...labels
+      ])
     });
   }
 
@@ -448,17 +491,33 @@ export async function extractBackendRouteEntries(workspaceDir: string): Promise<
           })
           .filter(Boolean)
       );
+      const labels = unique([
+        ...Array.from(classHeader.matchAll(/@(?:name|note)\s+([^\n*]+)/g)).map((entry) => entry[1]?.trim() ?? "").filter(Boolean),
+        ...Array.from(signature.matchAll(/@ApiOperation\(value\s*=\s*"([^"]+)"/g)).map((entry) => entry[1]?.trim() ?? "").filter(Boolean),
+        ...Array.from(classHeader.matchAll(/description\s*=\s*"([^"]+)"/g)).map((entry) => entry[1]?.trim() ?? "").filter(Boolean)
+      ]);
       const modulePrefix = extractModulePrefix(relativePath);
       for (const classPath of classPaths) {
         for (const methodPath of methodPaths) {
           const combined = classPath === "/" ? normalizeSlashPath(methodPath) : joinUrlPath(classPath, methodPath);
+          const publicPath = buildPublicRoutePath(modulePrefix, combined);
           routes.push({
-            path: buildPublicRoutePath(modulePrefix, combined),
+            path: publicPath,
             internalPath: normalizeSlashPath(combined),
             controllerClass: className,
             controllerMethod: methodName,
             filePath: relativePath,
-            serviceHints
+            serviceHints,
+            labels,
+            capabilityTags: extractFlowCapabilityTagsFromTexts([
+              relativePath,
+              className,
+              methodName,
+              publicPath,
+              normalizeSlashPath(combined),
+              ...serviceHints,
+              ...labels
+            ])
           });
         }
       }
@@ -538,8 +597,23 @@ export async function buildFrontBackGraph(options: {
       if (normalizeComparableBackendPath(backendRoute.path) === normalizeComparableBackendPath(call.normalizedUrl)) {
         confidence += 0.1;
       }
+      const capabilityTags = unique([
+        ...(backendRoute.capabilityTags ?? []),
+        ...extractFlowCapabilityTagsFromTexts([
+          screen.filePath,
+          screen.screenCode,
+          screen.routePaths[0],
+          ...(screen.labels ?? []),
+          call.rawUrl,
+          call.normalizedUrl,
+          call.functionName,
+          gatewayRoute?.path,
+          gatewayRoute ? `${gatewayRoute.controllerClass}.${gatewayRoute.controllerMethod}` : undefined
+        ])
+      ]);
       links.push({
         confidence: Math.min(0.99, Number(confidence.toFixed(2))),
+        capabilityTags,
         frontend: {
           screenCode: screen.screenCode,
           screenPath: screen.filePath,

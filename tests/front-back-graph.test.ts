@@ -77,7 +77,61 @@ export default {
     expect(catalog.screens[0]?.httpCalls[0]?.functionName).toBe("loadAppSbSearch");
     expect(catalog.screens[0]?.httpCalls[0]?.rawUrl).toBe("/gw/api/insurance/division/appexpiry/inqury");
     expect(catalog.screens[0]?.httpCalls[0]?.normalizedUrl).toBe("/insurance/division/appexpiry/inqury");
+    expect(catalog.screens[0]?.capabilityTags).toContain("division-expiry");
   });
+
+
+
+  it("extracts route comments and header titles into capability tags for claim screens", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-front-catalog-claim-tags-"));
+    tempDirs.push(workspace);
+
+    const routerDir = path.join(workspace, "src/router/mo/mysamsunglife/insurance/internet");
+    const viewDir = path.join(workspace, "src/views/mo/mysamsunglife/insurance/internet");
+    await mkdir(routerDir, { recursive: true });
+    await mkdir(viewDir, { recursive: true });
+
+    await writeFile(
+      path.join(routerDir, "route.js"),
+      `export default {
+  children: [
+    {
+      // 보험금청구 - 본인 보험금 청구 - 청구서 작성
+      path: 'MDP-MYINT020210M',
+      name: 'MDP-MYINT020210M',
+      components: { content: () => import('@/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue') }
+    }
+  ]
+};
+`,
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(viewDir, "MDP-MYINT020210M.vue"),
+      `<script>
+export default {
+  name: 'MDP-MYINT020210M',
+  header: { headerTitle: '보험금 청구' },
+  methods: {
+    submitBenefitClaim () {
+      const apiReqUrl = '/gw/api/insurance/benefit/claim/insert'
+      return this.$http.post(apiReqUrl, {})
+    }
+  }
+}
+</script>
+`,
+      "utf8"
+    );
+
+    const catalog = await buildFrontendCatalog(workspace);
+    expect(catalog.routes[0]?.notes).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성"]));
+    expect(catalog.routes[0]?.capabilityTags).toContain("benefit-claim");
+    expect(catalog.screens[0]?.labels).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성", "보험금 청구"]));
+    expect(catalog.screens[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "insurance-internet", "claim-submit"]));
+  });
+
 
   it("captures _self.$http calls and resolves the nearest local api url variable per function", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-front-catalog-http-owner-"));

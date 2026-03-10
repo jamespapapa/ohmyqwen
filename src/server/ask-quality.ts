@@ -1,6 +1,14 @@
+import {
+  extractFlowCapabilityTagsFromTexts,
+  extractQuestionCapabilityTags,
+  hasStrongFlowCapabilityAlignment,
+  isCrossLayerFlowQuestion
+} from "./flow-capabilities.js";
+
 export type AskQualityStrategy =
   | "method_trace"
   | "module_flow_topdown"
+  | "cross_layer_flow"
   | "architecture_overview"
   | "eai_interface"
   | "config_resource"
@@ -29,9 +37,12 @@ export interface AskLinkedFlowQualityEvidence {
   routePath?: string;
   screenCode?: string;
   apiUrl: string;
+  gatewayPath?: string;
+  gatewayControllerMethod?: string;
   backendPath: string;
   backendControllerMethod: string;
   serviceHints?: string[];
+  capabilityTags?: string[];
 }
 
 function hasCodeFileEvidenceFromPaths(paths: string[]): boolean {
@@ -89,8 +100,8 @@ export function qualityGateForAskOutput(options: {
     failures.push("missing-module-scoped-code-evidence");
   }
   if (
-    options.strategy === "module_flow_topdown" &&
-    !/(controller|service|entry|진입|호출|downstream|eai|mapper|dao)/i.test(options.output.answer)
+    (options.strategy === "module_flow_topdown" || options.strategy === "cross_layer_flow") &&
+    !/(controller|service|entry|진입|호출|downstream|eai|mapper|dao|frontend|gateway|api)/i.test(options.output.answer)
   ) {
     failures.push("missing-topdown-structure");
   }
@@ -114,16 +125,65 @@ export function qualityGateForAskOutput(options: {
     failures.push("missing-linked-eai-detail");
   }
 
-  const crossLayerQuestion = /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(options.question) && /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(options.question);
+  const crossLayerQuestion = isCrossLayerFlowQuestion(options.question);
+  if (crossLayerQuestion && linkedFlowEvidence.length === 0) {
+    failures.push("missing-linked-flow-evidence");
+  }
   if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
+    const questionCapabilities = extractQuestionCapabilityTags(options.question);
+    const alignedFlowEvidence = questionCapabilities.length > 0
+      ? linkedFlowEvidence.filter((item) =>
+          hasStrongFlowCapabilityAlignment(
+            questionCapabilities,
+            item.capabilityTags ??
+              extractFlowCapabilityTagsFromTexts([
+                item.screenCode,
+                item.routePath,
+                item.apiUrl,
+                item.gatewayPath,
+                item.gatewayControllerMethod,
+                item.backendPath,
+                item.backendControllerMethod,
+                ...(item.serviceHints ?? [])
+              ])
+          )
+        )
+      : linkedFlowEvidence;
+
+    if (questionCapabilities.length > 0 && alignedFlowEvidence.length === 0) {
+      failures.push("missing-question-capability-match");
+    }
+    const answerAlignedFlow = alignedFlowEvidence.some(
+      (item) =>
+        (item.screenCode && options.output.answer.includes(item.screenCode)) ||
+        (item.routePath && options.output.answer.includes(item.routePath)) ||
+        options.output.answer.includes(item.apiUrl) ||
+        options.output.answer.includes(item.backendPath) ||
+        options.output.answer.includes(item.backendControllerMethod) ||
+        (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint))
+    );
+
     if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
       failures.push("missing-frontend-route-evidence");
     }
     if (!linkedFlowEvidence.some((item) => options.output.answer.includes(item.apiUrl))) {
       failures.push("missing-api-url-evidence");
     }
+    if (
+      linkedFlowEvidence.some((item) => item.gatewayControllerMethod || item.gatewayPath) &&
+      !linkedFlowEvidence.some(
+        (item) =>
+          (item.gatewayControllerMethod && options.output.answer.includes(item.gatewayControllerMethod)) ||
+          (item.gatewayPath && options.output.answer.includes(item.gatewayPath))
+      )
+    ) {
+      failures.push("missing-gateway-evidence");
+    }
     if (!linkedFlowEvidence.some((item) => options.output.answer.includes(item.backendPath) || options.output.answer.includes(item.backendControllerMethod) || (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint)))) {
       failures.push("missing-backend-route-evidence");
+    }
+    if (questionCapabilities.length > 0 && !answerAlignedFlow) {
+      failures.push("missing-aligned-flow-detail");
     }
     if (!/(->|거쳐|호출|이어|gateway|controller|service|route)/i.test(options.output.answer)) {
       failures.push("missing-cross-layer-chain-detail");

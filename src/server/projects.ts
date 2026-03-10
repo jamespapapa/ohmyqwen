@@ -36,6 +36,7 @@ import {
   type FrontBackGraphSnapshot
 } from "./front-back-graph.js";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
+import { expandCapabilitySearchTerms, extractQuestionCapabilityTags, isCrossLayerFlowQuestion } from "./flow-capabilities.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -171,6 +172,8 @@ export interface ProjectAnalysisResult {
       filePath: string;
       routePaths: string[];
       apiPaths: string[];
+      labels?: string[];
+      capabilityTags?: string[];
     }>;
   };
   frontBackGraph?: {
@@ -181,9 +184,11 @@ export interface ProjectAnalysisResult {
       screenCode?: string;
       routePath?: string;
       apiUrl: string;
+      gatewayControllerMethod?: string;
       backendPath: string;
       controllerMethod: string;
       confidence: number;
+      capabilityTags?: string[];
     }>;
   };
   structureCatalog?: {
@@ -279,6 +284,7 @@ export interface ServerLlmSettingsResult {
 type AskStrategyType =
   | "method_trace"
   | "module_flow_topdown"
+  | "cross_layer_flow"
   | "architecture_overview"
   | "eai_interface"
   | "config_resource"
@@ -732,6 +738,7 @@ function buildAskQueryCandidates(options: {
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
   const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
+  const capabilityTerms = expandCapabilitySearchTerms(extractQuestionCapabilityTags(question)).slice(0, 8);
 
   const candidates = [
     question,
@@ -744,12 +751,18 @@ function buildAskQueryCandidates(options: {
     candidates.push(`${compact} controller service domain mapper mybatis`);
   } else if (options.strategy === "module_flow_topdown") {
     candidates.push(`${compact} controller service requestmapping orchestration mapper eai`);
+  } else if (options.strategy === "cross_layer_flow") {
+    candidates.push(`${compact} frontend vue route api gateway controller service`);
   } else if (options.strategy === "eai_interface") {
     candidates.push(`${compact} eai interface service xml`);
   } else if (options.strategy === "config_resource") {
     candidates.push(`${compact} xml config applicationcontext`);
   } else if (options.strategy === "architecture_overview") {
     candidates.push(`${compact} architecture module package service`);
+  }
+
+  if (capabilityTerms.length > 0) {
+    candidates.push(`${capabilityTerms.join(" ")} ${compact}`.trim());
   }
 
   if (hasInsuranceClaim) {
@@ -1388,6 +1401,7 @@ const AskStrategyDecisionSchema = z.object({
   strategy: z.enum([
     "method_trace",
     "module_flow_topdown",
+    "cross_layer_flow",
     "architecture_overview",
     "eai_interface",
     "config_resource",
@@ -1922,6 +1936,12 @@ function buildFrontCatalogMarkdown(options: {
     if (screen.apiPaths.length > 0) {
       lines.push(`  - apis: ${screen.apiPaths.join(", ")}`);
     }
+    if ((screen.labels ?? []).length > 0) {
+      lines.push(`  - labels: ${(screen.labels ?? []).join(", ")}`);
+    }
+    if ((screen.capabilityTags ?? []).length > 0) {
+      lines.push(`  - capabilities: ${(screen.capabilityTags ?? []).join(", ")}`);
+    }
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
@@ -1950,6 +1970,9 @@ function buildFrontBackGraphMarkdown(options: {
     );
     if (link.backend.serviceHints.length > 0) {
       lines.push(`  - services: ${link.backend.serviceHints.join(", ")}`);
+    }
+    if ((link.capabilityTags ?? []).length > 0) {
+      lines.push(`  - capabilities: ${(link.capabilityTags ?? []).join(", ")}`);
     }
   }
   if (options.graph.diagnostics.unmatchedFrontendApis.length > 0) {
@@ -2994,6 +3017,7 @@ function classifyQuestionIntentFallback(question: string): {
     /함수|메서드|method|호출|콜트리|이후|흐름|save[A-Z]|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/i.test(
       question
     );
+  const crossLayerFocused = isCrossLayerFlowQuestion(question);
   const moduleFlowFocused =
     moduleCandidates.length > 0 &&
     /(내부|모듈|흐름|로직|탑다운|큰 그림|실행|처리|service|controller|domain)/i.test(question);
@@ -3008,6 +3032,14 @@ function classifyQuestionIntentFallback(question: string): {
       confidence: 0.62,
       reason: "fallback: method/call-flow keywords detected",
       targetSymbols: extractMethodCandidates(question)
+    };
+  }
+  if (crossLayerFocused) {
+    return {
+      strategy: "cross_layer_flow",
+      confidence: 0.76,
+      reason: "fallback: cross-layer frontend/backend flow question detected",
+      targetSymbols: [...extractClassCandidates(question), ...extractMethodCandidates(question)].slice(0, 8)
     };
   }
   if (moduleFlowFocused) {
@@ -3054,11 +3086,13 @@ function strategyToIntent(strategy: AskStrategyType): {
   methodFocused: boolean;
   architectureFocused: boolean;
   moduleFlowFocused: boolean;
+  crossLayerFocused: boolean;
 } {
   return {
     methodFocused: strategy === "method_trace",
     architectureFocused: strategy === "architecture_overview",
-    moduleFlowFocused: strategy === "module_flow_topdown"
+    moduleFlowFocused: strategy === "module_flow_topdown",
+    crossLayerFocused: strategy === "cross_layer_flow"
   };
 }
 
@@ -3248,10 +3282,19 @@ async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): P
 
 function selectAskMemoryFiles(
   paths: string[],
-  intent?: { methodFocused: boolean; architectureFocused: boolean; moduleFlowFocused: boolean }
+  intent?: { methodFocused: boolean; architectureFocused: boolean; moduleFlowFocused: boolean; crossLayerFocused: boolean }
 ): string[] {
   const normalized = paths.map((item) => toForwardSlash(item));
-  const preferredOrder = intent?.methodFocused || intent?.moduleFlowFocused
+  const preferredOrder = intent?.crossLayerFocused
+    ? [
+        "front-back-graph/latest.md",
+        "front-catalog/latest.md",
+        "project-analysis/latest.md",
+        "structure-index/latest.md",
+        "eai-dictionary/latest.md",
+        "project-profile/latest.md"
+      ]
+    : intent?.methodFocused || intent?.moduleFlowFocused
     ? [
         "structure-index/latest.md",
         "project-analysis/latest.md",
@@ -3874,9 +3917,11 @@ export async function analyzeServerProject(options: {
               screenCode: link.frontend.screenCode,
               routePath: link.frontend.routePath,
               apiUrl: link.api.rawUrl,
+              gatewayControllerMethod: link.gateway.controllerMethod,
               backendPath: link.backend.path,
               controllerMethod: link.backend.controllerMethod,
-              serviceHints: link.backend.serviceHints
+              serviceHints: link.backend.serviceHints,
+              capabilityTags: link.capabilityTags ?? []
             }))
           }
         : null,
@@ -4058,7 +4103,9 @@ export async function analyzeServerProject(options: {
               screenCode: screen.screenCode,
               filePath: screen.filePath,
               routePaths: screen.routePaths.slice(0, 4),
-              apiPaths: screen.apiPaths.slice(0, 4)
+              apiPaths: screen.apiPaths.slice(0, 4),
+              labels: (screen.labels ?? []).slice(0, 4),
+              capabilityTags: (screen.capabilityTags ?? []).slice(0, 6)
             }))
           }
         : undefined,
@@ -4071,9 +4118,11 @@ export async function analyzeServerProject(options: {
               screenCode: link.frontend.screenCode,
               routePath: link.frontend.routePath,
               apiUrl: link.api.rawUrl,
+              gatewayControllerMethod: link.gateway.controllerMethod,
               backendPath: link.backend.path,
               controllerMethod: link.backend.controllerMethod,
-              confidence: link.confidence
+              confidence: link.confidence,
+              capabilityTags: (link.capabilityTags ?? []).slice(0, 6)
             }))
           }
         : undefined,
@@ -4193,15 +4242,16 @@ async function decideAskStrategy(options: {
     systemPrompt: [
       "You are a query-strategy classifier for a code analysis assistant.",
       "Return ONLY one JSON object.",
-      "Pick exactly one strategy from: method_trace, module_flow_topdown, architecture_overview, eai_interface, config_resource, general.",
+      "Pick exactly one strategy from: method_trace, module_flow_topdown, cross_layer_flow, architecture_overview, eai_interface, config_resource, general.",
       "Prefer method_trace when a specific function/class flow is requested.",
-      "Prefer module_flow_topdown when a module-scoped execution flow is requested (e.g. 'dcp-insurance 내부에서 ... 탑다운')."
+      "Prefer module_flow_topdown when a module-scoped execution flow is requested (e.g. 'dcp-insurance 내부에서 ... 탑다운').",
+      "Prefer cross_layer_flow when the user explicitly asks for frontend -> backend, screen -> API -> controller, or gateway-crossing flow."
     ].join("\n"),
     userPrompt: JSON.stringify(
       {
         task: "Classify the question to one strategy.",
         outputSchema: {
-          strategy: "method_trace|module_flow_topdown|architecture_overview|eai_interface|config_resource|general",
+          strategy: "method_trace|module_flow_topdown|cross_layer_flow|architecture_overview|eai_interface|config_resource|general",
           confidence: "0..1",
           reason: "string",
           targetSymbols: ["string"]
@@ -4227,8 +4277,14 @@ async function decideAskStrategy(options: {
     parse: (value) => AskStrategyDecisionSchema.parse(value)
   });
 
+  const normalizedStrategy =
+    isCrossLayerFlowQuestion(options.question) &&
+    ["architecture_overview", "general"].includes(generation.output.strategy)
+      ? "cross_layer_flow"
+      : generation.output.strategy;
+
   return {
-    strategy: generation.output.strategy,
+    strategy: normalizedStrategy,
     confidence: generation.output.confidence,
     reason: generation.output.reason,
     targetSymbols: generation.output.targetSymbols.slice(0, 6),
@@ -4800,10 +4856,7 @@ export async function askServerProject(options: {
         }
       });
     }
-    const crossLayerFlowQuestion =
-      linkedFlowEvidence.length > 0 &&
-      /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(question) &&
-      /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(question);
+    const crossLayerFlowQuestion = isCrossLayerFlowQuestion(question);
 
     const bestSearch =
       [...searchResults].sort((a, b) => {
@@ -4833,7 +4886,7 @@ export async function askServerProject(options: {
 
     const qualityFailures: string[] = [];
 
-    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion
+    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion && linkedFlowEvidence.length > 0
       ? buildDeterministicFlowAnswer({
           question,
           linkedFlowEvidence
@@ -4943,7 +4996,7 @@ export async function askServerProject(options: {
               intent.methodFocused
                 ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
                 : crossLayerFlowQuestion
-                ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요."
+                ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요. 질문의 업무 capability(예: 보험금 청구)와 맞는 flow만 사용하고, 인접 업무 플로우로 대체하지 마세요."
                 : intent.moduleFlowFocused
                 ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. linkedEaiEvidence가 있으면 해당 interfaceId와 인터페이스명을 직접 연결해서 설명하세요. 확정 근거와 추정 범위를 분리하세요."
                 : lowConfidenceMode
@@ -5037,7 +5090,7 @@ export async function askServerProject(options: {
       reportLines.push("", "## Linked Front-Back Flow Evidence");
       for (const item of linkedFlowEvidence.slice(0, 6)) {
         reportLines.push(
-          `- ${item.screenCode ?? item.routePath ?? "(unknown screen)"} | ${item.apiUrl} -> ${item.backendControllerMethod} (${item.backendPath}) | reasons=${item.reasons.join(", ") || "(none)"}`
+          `- ${item.screenCode ?? item.routePath ?? "(unknown screen)"} | ${item.apiUrl}${item.gatewayControllerMethod ? ` -> ${item.gatewayControllerMethod}` : ""} -> ${item.backendControllerMethod} (${item.backendPath}) | capabilities=${(item.capabilityTags ?? []).join(", ") || "(none)"} | reasons=${item.reasons.join(", ") || "(none)"}`
         );
       }
     }

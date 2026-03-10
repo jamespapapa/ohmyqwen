@@ -112,6 +112,7 @@ describe("flow linking", () => {
 
     expect(output.answer).toContain("MDP-MYINT022231M");
     expect(output.answer).toContain("/gw/api/insurance/division/appexpiry/inqury");
+    expect(output.answer).toContain("RouteController.route");
     expect(output.answer).toContain("DivisionExpController.inqury");
     expect(output.answer).toContain("DivisionExpService.selectDivisionExpiry");
     expect(output.confidence).toBeGreaterThanOrEqual(0.7);
@@ -177,4 +178,108 @@ describe("flow linking", () => {
       expect.arrayContaining(["cross-layer-question", "screen-code-match", "backend-hit-match"])
     );
   });
+
+  it("prefers benefit-claim chains over adjacent insurance flows for generic claim questions", () => {
+    const claimSnapshot = {
+      ...snapshot,
+      frontend: {
+        ...snapshot.frontend,
+        routeCount: 2,
+        screenCount: 2,
+        apiCount: 2,
+        routes: [
+          ...snapshot.frontend.routes,
+          {
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+            sourceFile: "src/router/mo/mysamsunglife/insurance/internet/route.js",
+            screenCode: "MDP-MYINT020210M",
+            notes: ["보험금청구 - 본인 보험금 청구 - 청구서 작성"],
+            capabilityTags: ["benefit-claim", "insurance-internet"]
+          }
+        ],
+        screens: [
+          ...snapshot.frontend.screens,
+          {
+            filePath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+            screenCode: "MDP-MYINT020210M",
+            componentName: "MDP-MYINT020210M",
+            routePaths: ["/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M"],
+            exportPaths: ["/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M"],
+            apiPaths: ["/insurance/benefit/claim/insert"],
+            httpCalls: [
+              {
+                method: "POST",
+                rawUrl: "/gw/api/insurance/benefit/claim/insert",
+                normalizedUrl: "/insurance/benefit/claim/insert",
+                functionName: "submitBenefitClaim",
+                source: "http-call"
+              }
+            ],
+            labels: ["보험금 청구"],
+            capabilityTags: ["benefit-claim", "claim-submit", "insurance-internet"]
+          }
+        ]
+      },
+      backend: {
+        ...snapshot.backend,
+        routeCount: 3,
+        routes: [
+          ...snapshot.backend.routes,
+          {
+            path: "/insurance/benefit/claim/insert",
+            controllerClass: "BenefitClaimController",
+            controllerMethod: "insertBenefitClaim",
+            filePath: "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/controller/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+            labels: ["보험금 청구 Controller"],
+            capabilityTags: ["benefit-claim", "claim-submit", "insurance-internet"]
+          }
+        ]
+      },
+      links: [
+        ...snapshot.links,
+        {
+          confidence: 0.91,
+          capabilityTags: ["benefit-claim", "claim-submit", "insurance-internet", "gateway-api"],
+          frontend: {
+            screenCode: "MDP-MYINT020210M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/benefit/claim/insert",
+            normalizedUrl: "/insurance/benefit/claim/insert",
+            functionName: "submitBenefitClaim",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/benefit/claim/insert",
+            controllerMethod: "BenefitClaimController.insertBenefitClaim",
+            filePath: "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/controller/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.saveBenefitClaim"]
+          },
+          evidence: ["frontend-route", "frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        }
+      ]
+    } satisfies FrontBackGraphSnapshot;
+
+    const linked = buildLinkedFlowEvidence({
+      question: "보험금 청구 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+      hits: [],
+      snapshot: claimSnapshot
+    });
+
+    expect(linked[0]?.screenCode).toBe("MDP-MYINT020210M");
+    expect(linked[0]?.backendControllerMethod).toBe("BenefitClaimController.insertBenefitClaim");
+    expect(linked[0]?.apiUrl).toBe("/gw/api/insurance/benefit/claim/insert");
+    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "claim-submit"]));
+    expect(linked[0]?.reasons).toEqual(expect.arrayContaining(["capability:benefit-claim", "benefit-claim-api-match"]));
+  });
+
 });
