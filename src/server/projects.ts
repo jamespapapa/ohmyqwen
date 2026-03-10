@@ -5452,7 +5452,8 @@ export async function askServerProject(options: {
             question,
             questionTags: questionCapabilityTags,
             linkedFlowEvidence,
-            downstreamTraces: downstreamFlowTraces
+            downstreamTraces: downstreamFlowTraces,
+            domainPacks: effectiveDomainPacks
           })
         : null;
 

@@ -5,10 +5,12 @@ import type { LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
 import { extractLearnedKnowledgeTagsFromTexts } from "./learned-knowledge.js";
 import {
   extractFlowCapabilityTagsFromTexts,
+  extractSpecificQuestionCapabilityTags,
   extractQuestionCapabilityTags,
   hasStrongFlowCapabilityAlignment,
   isCrossLayerFlowQuestion,
   resolveQuestionCapabilityTags,
+  scoreSpecificCapabilityCoverage,
   scoreFlowCapabilityAlignment
 } from "./flow-capabilities.js";
 
@@ -229,6 +231,7 @@ export function buildDeterministicFlowAnswer(options: {
   questionTags?: string[];
   linkedFlowEvidence: LinkedFlowEvidence[];
   downstreamTraces?: DownstreamFlowTrace[];
+  domainPacks?: DomainPack[];
 }): DeterministicFlowAnswer {
   const primary = options.linkedFlowEvidence[0];
   if (!primary) {
@@ -240,7 +243,11 @@ export function buildDeterministicFlowAnswer(options: {
     };
   }
 
-  const questionTags = options.questionTags ?? extractQuestionCapabilityTags(options.question);
+  const questionTags =
+    options.questionTags ?? extractQuestionCapabilityTags(options.question, { domainPacks: options.domainPacks });
+  const specificQuestionTags = extractSpecificQuestionCapabilityTags(questionTags, {
+    domainPacks: options.domainPacks
+  });
   const questionIsClaim = questionTags.includes("benefit-claim") || /(보험금|청구|benefit|claim)/i.test(options.question);
   const questionIsSunshineLoan =
     questionTags.includes("sunshine-loan") || questionTags.includes("credit-low-worker-loan") || /햇살론/i.test(options.question);
@@ -421,6 +428,37 @@ export function buildDeterministicFlowAnswer(options: {
   });
 
   const mentionedEaiIds = unique((options.downstreamTraces ?? []).flatMap((trace) => trace.eaiInterfaces)).slice(0, 4);
+  const primarySpecificCoverage = scoreSpecificCapabilityCoverage(questionTags, primary.capabilityTags ?? [], {
+    domainPacks: options.domainPacks
+  });
+  const flowSpecificMatches = unique(
+    orderedFlows.flatMap((flow) =>
+      scoreSpecificCapabilityCoverage(questionTags, flow.capabilityTags ?? [], {
+        domainPacks: options.domainPacks
+      }).matchedSpecificTags
+    )
+  );
+  let confidence = 0.34;
+  confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
+  confidence += orderedFlows.length >= 2 ? 0.08 : 0.03;
+  confidence += primary.serviceHints.length > 0 ? 0.08 : 0;
+  confidence += (options.downstreamTraces ?? []).length > 0 ? 0.12 : 0;
+  confidence += mentionedEaiIds.length > 0 ? 0.06 : 0;
+  if (primarySpecificCoverage.matchedSpecificTags.length > 0) {
+    confidence += 0.18;
+  } else if (specificQuestionTags.length === 0 && questionTags.some((tag) => (primary.capabilityTags ?? []).includes(tag))) {
+    confidence += 0.08;
+  }
+  if (flowSpecificMatches.length > 1) {
+    confidence += 0.05;
+  }
+  if (specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0) {
+    confidence -= 0.26;
+  }
+  if (primarySpecificCoverage.adjacentConfusers.length > 0) {
+    confidence -= Math.min(0.24, primarySpecificCoverage.adjacentConfusers.length * 0.12);
+  }
+  confidence = Math.max(0.18, Math.min(0.9, Number(confidence.toFixed(2))));
   const answer = [
     ...answerLines,
     mentionedEaiIds.length > 0
@@ -439,10 +477,13 @@ export function buildDeterministicFlowAnswer(options: {
 
   return {
     answer,
-    confidence: (options.downstreamTraces ?? []).length > 0 ? 0.86 : primary.serviceHints.length > 0 ? 0.8 : 0.73,
+    confidence,
     evidence,
     caveats: [
       "static-flow-evidence",
+      ...(specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0
+        ? ["specific-capability-mismatch"]
+        : []),
       ...((options.downstreamTraces ?? []).some((trace) => trace.steps.length > 0)
         ? ["downstream-static-trace"]
         : [])

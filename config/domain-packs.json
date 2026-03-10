@@ -785,6 +785,7 @@
       "capabilityTags": [
         {
           "tag": "retire-pension",
+          "kind": "domain",
           "aliases": [
             "퇴직연금",
             "연금",
@@ -819,10 +820,344 @@
             "/pension/",
             "/retire/"
           ]
+        },
+        {
+          "tag": "irp-join",
+          "kind": "subdomain",
+          "aliases": [
+            "IRP가입",
+            "IRP 가입",
+            "개인형IRP 가입",
+            "퇴직연금 IRP 가입"
+          ],
+          "questionPatterns": [
+            "IRP\\s*가입",
+            "개인형\\s*IRP\\s*가입",
+            "퇴직연금\\s*IRP\\s*가입",
+            "IRP가입"
+          ],
+          "textPatterns": [
+            "IrpJoin",
+            "IRP 가입하기",
+            "개인IRP 전자청약",
+            "registIrpSubscription",
+            "registirpsubscription",
+            "AssetContract",
+            "/join/irpjoin",
+            "/join/assetcontract"
+          ],
+          "searchTerms": [
+            "IrpJoinController",
+            "IrpJoinService",
+            "AssetContractController",
+            "AssetContractService",
+            "IRP 가입하기",
+            "registirpsubscription"
+          ],
+          "pathHints": [
+            "dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/",
+            "PDP-MYRET020210M",
+            "PDP-PRREA000000M"
+          ],
+          "symbolHints": [
+            "IrpJoinController",
+            "IrpJoinService",
+            "AssetContractController",
+            "AssetContractService",
+            "registIrpSubscription",
+            "checkRiskCustomer"
+          ],
+          "apiHints": [
+            "/pension/join/irpjoin/",
+            "/pension/join/assetcontract/",
+            "/join/irpjoin/",
+            "/join/assetcontract/"
+          ],
+          "parents": [
+            "retire-pension"
+          ],
+          "adjacentConfusers": [
+            "irp-cancel",
+            "irp-participation-present-state",
+            "pension-change",
+            "retire-pension-content"
+          ]
+        },
+        {
+          "tag": "irp-cancel",
+          "kind": "subdomain",
+          "aliases": [
+            "IRP해지",
+            "IRP 해지",
+            "개인형IRP 해지"
+          ],
+          "questionPatterns": [
+            "IRP\\s*해지",
+            "개인형\\s*IRP\\s*해지",
+            "해지"
+          ],
+          "textPatterns": [
+            "IrpJoinCancel",
+            "IRP 해지",
+            "cancelIrpContract",
+            "/join/irpjoincancel"
+          ],
+          "searchTerms": [
+            "IrpJoinCancelController",
+            "IrpJoinCancelService",
+            "cancelIrpContract"
+          ],
+          "pathHints": [
+            "dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/"
+          ],
+          "symbolHints": [
+            "IrpJoinCancelController",
+            "IrpJoinCancelService",
+            "cancelIrpContract"
+          ],
+          "apiHints": [
+            "/pension/join/irpjoincancel/",
+            "/join/irpjoincancel/"
+          ],
+          "parents": [
+            "retire-pension"
+          ],
+          "adjacentConfusers": [
+            "irp-join",
+            "irp-participation-present-state",
+            "pension-change",
+            "retire-pension-content"
+          ]
+        },
+        {
+          "tag": "irp-participation-present-state",
+          "kind": "subdomain",
+          "aliases": [
+            "IRP가입현황",
+            "IRP 가입현황",
+            "IRP 가입확인서"
+          ],
+          "questionPatterns": [
+            "IRP\\s*가입현황",
+            "IRP\\s*가입확인서",
+            "가입현황"
+          ],
+          "textPatterns": [
+            "IrpParticipationPresentState",
+            "IRP 가입현황",
+            "IRP 가입확인서",
+            "/membermanagement/irpparticipationpresentstate"
+          ],
+          "searchTerms": [
+            "IrpParticipationPresentStateController",
+            "IrpParticipationPresentStateService"
+          ],
+          "pathHints": [
+            "dcp-pension/src/main/java/com/samsunglife/dcp/pension/membermanagement/"
+          ],
+          "symbolHints": [
+            "IrpParticipationPresentStateController",
+            "IrpParticipationPresentStateService"
+          ],
+          "apiHints": [
+            "/pension/membermanagement/irpparticipationpresentstate/",
+            "/membermanagement/irpparticipationpresentstate/"
+          ],
+          "parents": [
+            "retire-pension"
+          ],
+          "adjacentConfusers": [
+            "irp-join",
+            "irp-cancel",
+            "pension-change",
+            "retire-pension-content"
+          ]
+        },
+        {
+          "tag": "pension-change",
+          "kind": "subdomain",
+          "aliases": [
+            "IRP연금전환",
+            "연금전환",
+            "퇴직연금 변경"
+          ],
+          "questionPatterns": [
+            "IRP\\s*연금전환",
+            "연금전환",
+            "퇴직연금\\s*변경"
+          ],
+          "textPatterns": [
+            "PensionChange",
+            "연금전환",
+            "/join/pensionchange"
+          ],
+          "searchTerms": [
+            "PensionChangeController",
+            "PensionChangeService"
+          ],
+          "pathHints": [
+            "dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/"
+          ],
+          "symbolHints": [
+            "PensionChangeController",
+            "PensionChangeService"
+          ],
+          "apiHints": [
+            "/pension/join/pensionchange/",
+            "/join/pensionchange/"
+          ],
+          "parents": [
+            "retire-pension"
+          ],
+          "adjacentConfusers": [
+            "irp-join",
+            "irp-cancel",
+            "irp-participation-present-state",
+            "retire-pension-content"
+          ]
+        },
+        {
+          "tag": "retire-pension-content",
+          "kind": "subdomain",
+          "aliases": [
+            "퇴직연금 컨텐츠",
+            "IRP 상품안내",
+            "연금 메인 컨텐츠"
+          ],
+          "questionPatterns": [
+            "상품안내",
+            "연금 메인",
+            "컨텐츠"
+          ],
+          "textPatterns": [
+            "PRREA",
+            "display/board/content",
+            "DisplayBoardContent",
+            "content/class"
+          ],
+          "searchTerms": [
+            "DisplayBoardContentController",
+            "DisplayContentBoardService",
+            "/display/board/content/"
+          ],
+          "pathHints": [
+            "dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/",
+            "src/views/mo/products/pension/main/"
+          ],
+          "symbolHints": [
+            "DisplayBoardContentController",
+            "DisplayContentBoardService"
+          ],
+          "apiHints": [
+            "/display/board/content/"
+          ],
+          "parents": [
+            "retire-pension"
+          ],
+          "adjacentConfusers": [
+            "irp-join",
+            "irp-cancel",
+            "irp-participation-present-state",
+            "pension-change"
+          ]
         }
       ],
-      "rankingPriors": [],
-      "exemplars": [],
+      "rankingPriors": [
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenLinkHas": [
+            "irp-join"
+          ],
+          "whenApiMatches": [
+            "/join/irpjoin/",
+            "/join/assetcontract/"
+          ],
+          "weight": 110,
+          "reason": "subdomain:irp-join"
+        },
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenMethodMatches": [
+            "IrpJoinController",
+            "IrpJoinService",
+            "AssetContractController",
+            "AssetContractService"
+          ],
+          "weight": 90,
+          "reason": "method:irp-join"
+        },
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenLinkHas": [
+            "retire-pension-content"
+          ],
+          "whenApiMatches": [
+            "/display/board/content/"
+          ],
+          "weight": -180,
+          "reason": "penalty:retire-pension-content",
+          "negative": true
+        },
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenLinkHas": [
+            "irp-cancel"
+          ],
+          "weight": -140,
+          "reason": "penalty:irp-cancel",
+          "negative": true
+        },
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenLinkHas": [
+            "irp-participation-present-state"
+          ],
+          "weight": -130,
+          "reason": "penalty:irp-participation-present-state",
+          "negative": true
+        },
+        {
+          "whenQuestionHas": [
+            "irp-join"
+          ],
+          "whenLinkHas": [
+            "pension-change"
+          ],
+          "weight": -110,
+          "reason": "penalty:pension-change",
+          "negative": true
+        }
+      ],
+      "exemplars": [
+        {
+          "question": "IRP가입 로직이 프론트부터 백엔드까지 어떻게 구성되는지 면밀히 분석해줘",
+          "expectedTags": [
+            "retire-pension",
+            "irp-join"
+          ],
+          "expectedPaths": [
+            "dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/controller/IrpJoinController.java"
+          ],
+          "expectedApiPatterns": [
+            "/gw/api/pension/join/irpjoin/",
+            "/gw/api/pension/join/assetcontract/"
+          ],
+          "expectedControllerPatterns": [
+            "IrpJoinController",
+            "AssetContractController"
+          ]
+        }
+      ],
       "createdAt": "2026-03-10T00:00:00.000Z",
       "updatedAt": "2026-03-10T00:00:00.000Z",
       "builtIn": true

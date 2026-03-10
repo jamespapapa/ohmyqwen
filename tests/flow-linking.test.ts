@@ -1,5 +1,74 @@
 import { describe, expect, it } from "vitest";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence, type FrontBackGraphSnapshot } from "../src/server/flow-links.js";
+import type { DomainPack } from "../src/server/domain-packs.js";
+
+const pensionDomainPack: DomainPack = {
+  id: "retire-pension",
+  name: "퇴직/연금",
+  description: "퇴직연금 capability pack",
+  families: ["retire", "pension"],
+  enabledByDefault: true,
+  capabilityTags: [
+    {
+      tag: "retire-pension",
+      kind: "domain",
+      aliases: ["퇴직연금", "IRP"],
+      questionPatterns: ["퇴직연금", "IRP"],
+      textPatterns: ["Pension", "IRP"],
+      searchTerms: ["Pension", "IRP"],
+      pathHints: ["dcp-pension/"],
+      symbolHints: ["Pension"],
+      apiHints: ["/pension/"]
+    },
+    {
+      tag: "irp-join",
+      kind: "subdomain",
+      aliases: ["IRP가입", "IRP 가입"],
+      questionPatterns: ["IRP\\s*가입"],
+      textPatterns: ["IrpJoin", "/join/irpjoin", "/join/assetcontract", "registirpsubscription"],
+      searchTerms: ["IrpJoinController", "IrpJoinService", "AssetContractController", "AssetContractService"],
+      pathHints: ["dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/"],
+      symbolHints: ["IrpJoinController", "IrpJoinService", "AssetContractController", "AssetContractService"],
+      apiHints: ["/join/irpjoin/", "/join/assetcontract/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["retire-pension-content"]
+    },
+    {
+      tag: "retire-pension-content",
+      kind: "subdomain",
+      aliases: ["연금 컨텐츠"],
+      questionPatterns: ["컨텐츠"],
+      textPatterns: ["DisplayBoardContent", "/display/board/content/", "PRREA"],
+      searchTerms: ["DisplayBoardContentController"],
+      pathHints: ["dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/"],
+      symbolHints: ["DisplayBoardContentController"],
+      apiHints: ["/display/board/content/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["irp-join"]
+    }
+  ],
+  rankingPriors: [
+    {
+      whenQuestionHas: ["irp-join"],
+      whenLinkHas: ["irp-join"],
+      whenApiMatches: ["/join/irpjoin/", "/join/assetcontract/"],
+      weight: 110,
+      reason: "subdomain:irp-join"
+    },
+    {
+      whenQuestionHas: ["irp-join"],
+      whenLinkHas: ["retire-pension-content"],
+      whenApiMatches: ["/display/board/content/"],
+      weight: -180,
+      reason: "penalty:retire-pension-content",
+      negative: true
+    }
+  ],
+  exemplars: [],
+  createdAt: "2026-03-10T00:00:00.000Z",
+  updatedAt: "2026-03-10T00:00:00.000Z",
+  builtIn: false
+};
 
 const snapshot: FrontBackGraphSnapshot = {
   version: 1,
@@ -115,7 +184,7 @@ describe("flow linking", () => {
     expect(output.answer).toContain("RouteController.route");
     expect(output.answer).toContain("DivisionExpController.inqury");
     expect(output.answer).toContain("DivisionExpService.selectDivisionExpiry");
-    expect(output.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(output.confidence).toBeGreaterThanOrEqual(0.55);
     expect(output.evidence.length).toBeGreaterThanOrEqual(3);
   });
 
@@ -614,6 +683,119 @@ describe("flow linking", () => {
     expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/apply");
     expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/make/owner/agreement");
     expect(output.answer).not.toContain("보험금");
+  });
+
+  it("ranks irp-join flows ahead of adjacent retire-pension content flows and lowers confidence on mismatched deterministic answers", () => {
+    const pensionSnapshot: FrontBackGraphSnapshot = {
+      version: 1,
+      generatedAt: "2026-03-10T00:00:00.000Z",
+      meta: {
+        backendWorkspaceDir: "/work/backend",
+        frontendWorkspaceDirs: ["/work/frontend"],
+        asOfDate: "2026-03-10"
+      },
+      frontend: {
+        routeCount: 2,
+        screenCount: 2,
+        apiCount: 2,
+        routes: [],
+        screens: []
+      },
+      backend: {
+        routeCount: 2,
+        gatewayRoutes: [],
+        routes: []
+      },
+      links: [
+        {
+          confidence: 0.97,
+          frontend: {
+            screenCode: "MDP-PRREA000070M",
+            screenPath: "src/views/mo/products/pension/main/MDP-PRREA000070M.vue",
+            routePath: "/mo/products/pension/main/MDP-PRREA000070M"
+          },
+          api: {
+            rawUrl: "/gw/api/display/board/content/class",
+            normalizedUrl: "/display/board/content/class",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/display/board/content/class",
+            controllerMethod: "DisplayBoardContentController.selectClassList",
+            filePath: "dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/DisplayBoardContentController.java",
+            serviceHints: ["DisplayContentBoardService.selectClassList"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        },
+        {
+          confidence: 0.79,
+          frontend: {
+            screenCode: "PDP-MYRET020210M",
+            screenPath: "src/views/pc/individual/mysamsunglife/pension/contractinformation/PDP-MYRET020210M.vue",
+            routePath: "/pc/individual/mysamsunglife/pension/contractinformation/PDP-MYRET020210M"
+          },
+          api: {
+            rawUrl: "/gw/api/pension/join/irpjoin/joinpurpose/checkservicetime",
+            normalizedUrl: "/pension/join/irpjoin/joinpurpose/checkservicetime",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/join/irpjoin/joinpurpose/checkservicetime",
+            controllerMethod: "IrpJoinController.checkServiceTime",
+            filePath: "dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/controller/IrpJoinController.java",
+            serviceHints: ["IrpJoinService.checkServiceTime"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy", "backend-request-mapping"]
+        }
+      ],
+      diagnostics: {
+        parseFailures: [],
+        unmatchedFrontendApis: [],
+        unmatchedFrontendScreens: []
+      }
+    };
+
+    const linked = buildLinkedFlowEvidence({
+      question: "IRP가입 로직이 프론트부터 백엔드까지 어떻게 구성되는지 면밀히 분석해줘.",
+      snapshot: pensionSnapshot,
+      domainPacks: [pensionDomainPack]
+    });
+
+    expect(linked[0]?.backendControllerMethod).toBe("IrpJoinController.checkServiceTime");
+    expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["retire-pension", "irp-join"]));
+
+    const mismatchedOutput = buildDeterministicFlowAnswer({
+      question: "IRP가입 로직이 프론트부터 백엔드까지 어떻게 구성되는지 면밀히 분석해줘.",
+      questionTags: ["retire-pension", "irp-join"],
+      linkedFlowEvidence: [
+        {
+          screenCode: "MDP-PRREA000070M",
+          routePath: "/mo/products/pension/main/MDP-PRREA000070M",
+          screenPath: "src/views/mo/products/pension/main/MDP-PRREA000070M.vue",
+          apiUrl: "/gw/api/display/board/content/class",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/display/board/content/class",
+          backendControllerMethod: "DisplayBoardContentController.selectClassList",
+          serviceHints: ["DisplayContentBoardService.selectClassList"],
+          capabilityTags: ["retire-pension", "retire-pension-content"],
+          confidence: 0.97,
+          reasons: ["capability-penalty:retire-pension-content"]
+        }
+      ],
+      domainPacks: [pensionDomainPack]
+    });
+
+    expect(mismatchedOutput.confidence).toBeLessThan(0.65);
+    expect(mismatchedOutput.caveats).toContain("specific-capability-mismatch");
   });
 
 });

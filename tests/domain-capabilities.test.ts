@@ -64,6 +64,74 @@ const loanDomainPack: DomainPack = {
   builtIn: false
 };
 
+const pensionDomainPack: DomainPack = {
+  id: "retire-pension",
+  name: "퇴직/연금",
+  description: "퇴직연금 capability pack",
+  families: ["retire", "pension"],
+  enabledByDefault: true,
+  capabilityTags: [
+    {
+      tag: "retire-pension",
+      kind: "domain",
+      aliases: ["퇴직연금", "IRP"],
+      questionPatterns: ["퇴직연금", "IRP"],
+      textPatterns: ["Pension", "IRP"],
+      searchTerms: ["Pension", "IRP"],
+      pathHints: ["dcp-pension/"],
+      symbolHints: ["Pension"],
+      apiHints: ["/pension/"]
+    },
+    {
+      tag: "irp-join",
+      kind: "subdomain",
+      aliases: ["IRP가입", "IRP 가입"],
+      questionPatterns: ["IRP\\s*가입"],
+      textPatterns: ["IrpJoin", "/join/irpjoin", "registirpsubscription", "AssetContract"],
+      searchTerms: ["IrpJoinController", "IrpJoinService", "AssetContractController", "AssetContractService"],
+      pathHints: ["dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/"],
+      symbolHints: ["IrpJoinController", "IrpJoinService", "AssetContractController", "AssetContractService"],
+      apiHints: ["/join/irpjoin/", "/join/assetcontract/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["retire-pension-content"]
+    },
+    {
+      tag: "retire-pension-content",
+      kind: "subdomain",
+      aliases: ["연금 컨텐츠"],
+      questionPatterns: ["컨텐츠"],
+      textPatterns: ["DisplayBoardContent", "/display/board/content/"],
+      searchTerms: ["DisplayBoardContentController"],
+      pathHints: ["dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/"],
+      symbolHints: ["DisplayBoardContentController"],
+      apiHints: ["/display/board/content/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["irp-join"]
+    }
+  ],
+  rankingPriors: [
+    {
+      whenQuestionHas: ["irp-join"],
+      whenLinkHas: ["irp-join"],
+      whenApiMatches: ["/join/irpjoin/", "/join/assetcontract/"],
+      weight: 110,
+      reason: "subdomain:irp-join"
+    },
+    {
+      whenQuestionHas: ["irp-join"],
+      whenLinkHas: ["retire-pension-content"],
+      whenApiMatches: ["/display/board/content/"],
+      weight: -180,
+      reason: "penalty:retire-pension-content",
+      negative: true
+    }
+  ],
+  exemplars: [],
+  createdAt: "2026-03-10T00:00:00.000Z",
+  updatedAt: "2026-03-10T00:00:00.000Z",
+  builtIn: false
+};
+
 describe("domain-backed capability extraction", () => {
   it("extracts sunshine-loan question tags and search terms from configured domain packs", () => {
     const tags = extractQuestionCapabilityTags("햇살론 대출 로직이 어떻게 실행되는지 알려줘.", {
@@ -239,5 +307,25 @@ describe("domain-backed capability extraction", () => {
 
     expect(seedCapabilityTagsFromDomainPacks([loanDomainPack])).toContain("loan");
     expect(tags).toContain("loan");
+  });
+
+  it("extracts irp-join as a specific retire-pension capability and penalizes adjacent content flows", () => {
+    const questionTags = extractQuestionCapabilityTags("IRP가입 로직을 프론트부터 백엔드까지 추적해줘.", {
+      domainPacks: [pensionDomainPack]
+    });
+    const joinAlignment = scoreFlowCapabilityAlignment(questionTags, ["retire-pension", "irp-join"], {
+      domainPacks: [pensionDomainPack],
+      apiText: "/gw/api/pension/join/irpjoin/joinpurpose/checkservicetime",
+      methodText: "IrpJoinController.checkServiceTime IrpJoinService.checkServiceTime"
+    });
+    const contentAlignment = scoreFlowCapabilityAlignment(questionTags, ["retire-pension", "retire-pension-content"], {
+      domainPacks: [pensionDomainPack],
+      apiText: "/gw/api/display/board/content/class",
+      methodText: "DisplayBoardContentController.selectClassList DisplayContentBoardService.selectClassList"
+    });
+
+    expect(questionTags).toEqual(expect.arrayContaining(["retire-pension", "irp-join"]));
+    expect(joinAlignment.score).toBeGreaterThan(contentAlignment.score);
+    expect(contentAlignment.reasons).toEqual(expect.arrayContaining(["capability-penalty:missing-specific-subdomain", "capability-penalty:retire-pension-content"]));
   });
 });

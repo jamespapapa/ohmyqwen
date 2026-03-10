@@ -1,6 +1,7 @@
 import type { DomainPack } from "./domain-packs.js";
 import {
   extractFlowCapabilityTagsFromTexts,
+  extractSpecificQuestionCapabilityTags,
   extractQuestionCapabilityTags,
   hasStrongFlowCapabilityAlignment,
   isCrossLayerFlowQuestion
@@ -138,6 +139,9 @@ export function qualityGateForAskOutput(options: {
       extractQuestionCapabilityTags(options.question, {
         domainPacks: options.domainPacks
       });
+    const specificQuestionCapabilities = extractSpecificQuestionCapabilityTags(questionCapabilities, {
+      domainPacks: options.domainPacks
+    });
     const alignedFlowEvidence = questionCapabilities.length > 0
       ? linkedFlowEvidence.filter((item) =>
           hasStrongFlowCapabilityAlignment(
@@ -170,6 +174,14 @@ export function qualityGateForAskOutput(options: {
     if (questionCapabilities.length > 0 && alignedFlowEvidence.length === 0) {
       failures.push("missing-question-capability-match");
     }
+    if (
+      specificQuestionCapabilities.length > 0 &&
+      !linkedFlowEvidence.some((item) =>
+        specificQuestionCapabilities.some((tag) => (item.capabilityTags ?? []).includes(tag))
+      )
+    ) {
+      failures.push("missing-specific-business-capability-evidence");
+    }
     const answerAlignedFlow = alignedFlowEvidence.some(
       (item) =>
         (item.screenCode && options.output.answer.includes(item.screenCode)) ||
@@ -179,6 +191,20 @@ export function qualityGateForAskOutput(options: {
         options.output.answer.includes(item.backendControllerMethod) ||
         (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint))
     );
+    const answerSpecificFlow = specificQuestionCapabilities.length === 0
+      ? true
+      : linkedFlowEvidence.some(
+          (item) =>
+            specificQuestionCapabilities.some((tag) => (item.capabilityTags ?? []).includes(tag)) &&
+            (
+              (item.screenCode && options.output.answer.includes(item.screenCode)) ||
+              (item.routePath && options.output.answer.includes(item.routePath)) ||
+              options.output.answer.includes(item.apiUrl) ||
+              options.output.answer.includes(item.backendPath) ||
+              options.output.answer.includes(item.backendControllerMethod) ||
+              (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint))
+            )
+        );
 
     if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
       failures.push("missing-frontend-route-evidence");
@@ -201,6 +227,9 @@ export function qualityGateForAskOutput(options: {
     }
     if (questionCapabilities.length > 0 && !answerAlignedFlow) {
       failures.push("missing-aligned-flow-detail");
+    }
+    if (specificQuestionCapabilities.length > 0 && !answerSpecificFlow) {
+      failures.push("missing-specific-business-capability-detail");
     }
     if (!/(->|거쳐|호출|이어|gateway|controller|service|route)/i.test(options.output.answer)) {
       failures.push("missing-cross-layer-chain-detail");

@@ -1,5 +1,58 @@
 import { describe, expect, it } from "vitest";
 import { qualityGateForAskOutput } from "../src/server/ask-quality.js";
+import type { DomainPack } from "../src/server/domain-packs.js";
+
+const pensionDomainPack: DomainPack = {
+  id: "retire-pension",
+  name: "퇴직/연금",
+  description: "퇴직연금 capability pack",
+  families: ["retire", "pension"],
+  enabledByDefault: true,
+  capabilityTags: [
+    {
+      tag: "retire-pension",
+      kind: "domain",
+      aliases: ["퇴직연금", "IRP"],
+      questionPatterns: ["퇴직연금", "IRP"],
+      textPatterns: ["Pension", "IRP"],
+      searchTerms: ["Pension", "IRP"],
+      pathHints: ["dcp-pension/"],
+      symbolHints: ["Pension"],
+      apiHints: ["/pension/"]
+    },
+    {
+      tag: "irp-join",
+      kind: "subdomain",
+      aliases: ["IRP가입", "IRP 가입"],
+      questionPatterns: ["IRP\\s*가입"],
+      textPatterns: ["IrpJoin", "/join/irpjoin", "registirpsubscription"],
+      searchTerms: ["IrpJoinController", "IrpJoinService"],
+      pathHints: ["dcp-pension/src/main/java/com/samsunglife/dcp/pension/join/"],
+      symbolHints: ["IrpJoinController", "IrpJoinService"],
+      apiHints: ["/join/irpjoin/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["retire-pension-content"]
+    },
+    {
+      tag: "retire-pension-content",
+      kind: "subdomain",
+      aliases: ["연금 컨텐츠"],
+      questionPatterns: ["컨텐츠"],
+      textPatterns: ["DisplayBoardContent", "/display/board/content/"],
+      searchTerms: ["DisplayBoardContentController"],
+      pathHints: ["dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/"],
+      symbolHints: ["DisplayBoardContentController"],
+      apiHints: ["/display/board/content/"],
+      parents: ["retire-pension"],
+      adjacentConfusers: ["irp-join"]
+    }
+  ],
+  rankingPriors: [],
+  exemplars: [],
+  createdAt: "2026-03-10T00:00:00.000Z",
+  updatedAt: "2026-03-10T00:00:00.000Z",
+  builtIn: false
+};
 
 describe("ask quality gate", () => {
   it("passes module topdown answers only when module-scoped code evidence is present", () => {
@@ -327,6 +380,43 @@ describe("ask quality gate", () => {
 
     expect(gate.passed).toBe(false);
     expect(gate.failures).toContain("missing-aligned-flow-detail");
+  });
+
+  it("fails cross-layer answers when a specific business question is answered with adjacent content flow only", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "MDP-PRREA000070M 화면에서 /gw/api/display/board/content/class 를 호출하고 RouteController.route 를 거쳐 DisplayBoardContentController.selectClassList 와 DisplayContentBoardService.selectClassList 로 이어진다.",
+        confidence: 0.78,
+        evidence: ["frontend evidence", "backend evidence"],
+        caveats: []
+      },
+      question: "IRP가입 로직이 프론트부터 백엔드까지 어떻게 구성되는지 면밀히 분석해줘.",
+      questionTags: ["retire-pension", "irp-join"],
+      domainPacks: [pensionDomainPack],
+      hitPaths: [
+        "dcp-front-develop/src/views/mo/products/pension/main/MDP-PRREA000070M.vue",
+        "dcp-core/src/main/java/com/samsunglife/dcp/core/display/contents/board/DisplayBoardContentController.java"
+      ],
+      strategy: "cross_layer_flow",
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/products/pension/main/MDP-PRREA000070M",
+          screenCode: "MDP-PRREA000070M",
+          apiUrl: "/gw/api/display/board/content/class",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/display/board/content/class",
+          backendControllerMethod: "DisplayBoardContentController.selectClassList",
+          serviceHints: ["DisplayContentBoardService.selectClassList"],
+          capabilityTags: ["retire-pension", "retire-pension-content", "gateway-api"]
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-specific-business-capability-evidence");
+    expect(gate.failures).toContain("missing-specific-business-capability-detail");
   });
 
 });

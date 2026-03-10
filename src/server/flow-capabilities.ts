@@ -116,6 +116,16 @@ export interface DetectedDomainPackMatch {
   reasons: string[];
 }
 
+function buildCapabilityDefinitionMap(domainPacks?: DomainPack[]): Map<string, DomainPackCapability> {
+  const definitions = new Map<string, DomainPackCapability>();
+  for (const domainPack of domainPacks ?? []) {
+    for (const capability of domainPack.capabilityTags) {
+      definitions.set(capability.tag, capability);
+    }
+  }
+  return definitions;
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -389,6 +399,57 @@ export function expandCapabilitySearchTerms(questionTags: string[], options?: Fl
   return unique(terms);
 }
 
+export function extractSpecificQuestionCapabilityTags(questionTags: string[], options?: FlowCapabilityOptions): string[] {
+  const definitions = buildCapabilityDefinitionMap(options?.domainPacks);
+  const specific = questionTags.filter((tag) => definitions.get(tag)?.kind === "subdomain");
+  if (specific.length > 0) {
+    return unique(specific);
+  }
+  return unique(
+    questionTags.filter((tag) => {
+      if (isActionCapabilityTag(tag)) {
+        return false;
+      }
+      const definition = definitions.get(tag);
+      return definition?.kind === "domain";
+    })
+  );
+}
+
+export function scoreSpecificCapabilityCoverage(
+  questionTags: string[],
+  linkTags: string[],
+  options?: FlowCapabilityOptions
+): {
+  questionSpecificTags: string[];
+  matchedSpecificTags: string[];
+  sharedDomainParents: string[];
+  adjacentConfusers: string[];
+} {
+  const definitions = buildCapabilityDefinitionMap(options?.domainPacks);
+  const linkSet = new Set(linkTags);
+  const questionSpecificTags = extractSpecificQuestionCapabilityTags(questionTags, options);
+  const matchedSpecificTags = questionSpecificTags.filter((tag) => linkSet.has(tag));
+  const sharedDomainParents = unique(
+    questionSpecificTags.flatMap((tag) => {
+      const definition = definitions.get(tag);
+      return (definition?.parents ?? []).filter((parent) => linkSet.has(parent));
+    })
+  );
+  const adjacentConfusers = unique(
+    questionSpecificTags.flatMap((tag) => {
+      const definition = definitions.get(tag);
+      return (definition?.adjacentConfusers ?? []).filter((adjacent) => linkSet.has(adjacent));
+    })
+  );
+  return {
+    questionSpecificTags,
+    matchedSpecificTags,
+    sharedDomainParents,
+    adjacentConfusers
+  };
+}
+
 function hasAny(tags: Set<string>, values: readonly string[]): boolean {
   return values.some((value) => tags.has(value));
 }
@@ -403,6 +464,7 @@ export function scoreFlowCapabilityAlignment(
 } {
   const questionSet = new Set(questionTags);
   const linkSet = new Set(linkTags);
+  const definitions = buildCapabilityDefinitionMap(options?.domainPacks);
   const reasons: string[] = [];
   let score = 0;
 
@@ -411,6 +473,9 @@ export function scoreFlowCapabilityAlignment(
       if (isActionCapabilityTag(tag)) {
         score += 12;
         reasons.push(`action:${tag}`);
+      } else if (definitions.get(tag)?.kind === "subdomain") {
+        score += 72;
+        reasons.push(`subdomain:${tag}`);
       } else {
         score += 55;
         reasons.push(`capability:${tag}`);
@@ -512,6 +577,19 @@ export function scoreFlowCapabilityAlignment(
     }
   }
 
+  const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, linkTags, options);
+  if (specificCoverage.matchedSpecificTags.length > 0) {
+    score += specificCoverage.matchedSpecificTags.length * 28;
+    reasons.push(...specificCoverage.matchedSpecificTags.map((tag) => `specific:${tag}`));
+  } else if (specificCoverage.questionSpecificTags.length > 0 && specificCoverage.sharedDomainParents.length > 0) {
+    score -= 80;
+    reasons.push("capability-penalty:missing-specific-subdomain");
+  }
+  if (specificCoverage.adjacentConfusers.length > 0) {
+    score -= specificCoverage.adjacentConfusers.length * 90;
+    reasons.push(...specificCoverage.adjacentConfusers.map((tag) => `capability-penalty:${tag}`));
+  }
+
   const domainPackAlignment = scoreDomainPackPriors(questionTags, linkTags, options);
   score += domainPackAlignment.score;
   reasons.push(...domainPackAlignment.reasons);
@@ -528,7 +606,11 @@ export function hasStrongFlowCapabilityAlignment(
   options?: FlowCapabilityScoreOptions
 ): boolean {
   const alignment = scoreFlowCapabilityAlignment(questionTags, linkTags, options);
+  const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, linkTags, options);
   if (alignment.score >= 40) {
+    if (specificCoverage.questionSpecificTags.length > 0 && specificCoverage.matchedSpecificTags.length === 0) {
+      return false;
+    }
     return true;
   }
 
