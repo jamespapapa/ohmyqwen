@@ -224,6 +224,152 @@ describe("flow linking", () => {
     expect(linked[0]?.capabilityTags).not.toContain("claim-inquiry");
   });
 
+  it("builds sunshine-loan deterministic phases without falling back to contract-loan inquiry flows", () => {
+    const sunshineSnapshot = {
+      ...snapshot,
+      frontend: {
+        ...snapshot.frontend,
+        routeCount: 4,
+        screenCount: 4,
+        apiCount: 4,
+        routes: [],
+        screens: []
+      },
+      backend: {
+        ...snapshot.backend,
+        routeCount: 4,
+        routes: []
+      },
+      links: [
+        {
+          confidence: 0.96,
+          frontend: {
+            screenCode: "MDP-MYLOT021301C",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021301C.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021301C"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/credit/low/worker/request/checktime",
+            normalizedUrl: "/loan/credit/low/worker/request/checktime",
+            functionName: "checkTime",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/credit/low/worker/request/checktime",
+            controllerMethod: "CreditLowWorkerLoanReauestController.checkTimeService",
+            filePath: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/controller/CreditLowWorkerLoanReauestController.java",
+            serviceHints: ["CreditLowWorkerLoanReauestService.validateAccessTime"]
+          },
+          evidence: ["frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        },
+        {
+          confidence: 0.94,
+          frontend: {
+            screenCode: "MDP-MYLOT021320M",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021320M.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021320M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/credit/low/worker/request/requestLoanMember",
+            normalizedUrl: "/loan/credit/low/worker/request/requestLoanMember",
+            functionName: "requestLoanMember",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/credit/low/worker/request/requestLoanMember",
+            controllerMethod: "CreditLowWorkerLoanReauestController.registLoanMember",
+            filePath: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/controller/CreditLowWorkerLoanReauestController.java",
+            serviceHints: ["CreditLowWorkerLoanReauestService.registLoanMember"]
+          },
+          evidence: ["frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        },
+        {
+          confidence: 0.93,
+          frontend: {
+            screenCode: "MDP-MYLOT021370M",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021370M.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021370M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/credit/low/worker/request/make/owner/agreement",
+            normalizedUrl: "/loan/credit/low/worker/request/make/owner/agreement",
+            functionName: "makeOwnerAgreement",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/credit/low/worker/request/make/owner/agreement",
+            controllerMethod: "CreditLowWorkerLoanReauestController.makeOwnerAgreement",
+            filePath: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/controller/CreditLowWorkerLoanReauestController.java",
+            serviceHints: [
+              "CreditLowWorkerLoanReauestService.validateAccessTime",
+              "CreditLowWorkerLoanPdfReauestService.makeDocListBeforeApply"
+            ]
+          },
+          evidence: ["frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        },
+        {
+          confidence: 0.99,
+          frontend: {
+            screenCode: "MDP-MYLOT010100M",
+            screenPath: "src/views/mo/mysamsunglife/loan/contract/MDP-MYLOT010100M.vue",
+            routePath: "/mo/mysamsunglife/loan/contract/MDP-MYLOT010100M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/contract/inqury/list",
+            normalizedUrl: "/loan/contract/inqury/list",
+            functionName: "loadContractLoanList",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/contract/inqury/list",
+            controllerMethod: "ContractLoanInquryController.pllnList",
+            filePath: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/contract/controller/ContractLoanInquryController.java",
+            serviceHints: ["ContractLoanInquryService.callF1CLT0093"]
+          },
+          evidence: ["frontend-http-call", "backend-request-mapping", "gateway-api-proxy", "backend-service-call"]
+        }
+      ]
+    } satisfies FrontBackGraphSnapshot;
+
+    const linked = buildLinkedFlowEvidence({
+      question: "햇살론 대출 로직이 frontend부터 backend까지 어떻게 구성되는지 면밀히 분석해줘.",
+      hits: [],
+      snapshot: sunshineSnapshot
+    });
+
+    const output = buildDeterministicFlowAnswer({
+      question: "햇살론 대출 로직이 frontend부터 backend까지 어떻게 구성되는지 면밀히 분석해줘.",
+      linkedFlowEvidence: linked
+    });
+
+    expect(linked[0]?.backendControllerMethod).toBe("CreditLowWorkerLoanReauestController.checkTimeService");
+    expect(output.answer).toContain("/gw/api/loan/credit/low/worker/request/checktime");
+    expect(output.answer).toContain("CreditLowWorkerLoanReauestController.registLoanMember");
+    expect(output.answer).toContain("CreditLowWorkerLoanReauestController.makeOwnerAgreement");
+    expect(output.answer).not.toContain("/gw/api/loan/contract/inqury/list");
+    expect(output.answer).not.toContain("ContractLoanInquryController.pllnList");
+  });
+
   it("prefers benefit-claim chains over adjacent insurance flows for generic claim questions", () => {
     const claimSnapshot = {
       ...snapshot,

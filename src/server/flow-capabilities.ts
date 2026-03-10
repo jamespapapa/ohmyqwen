@@ -144,7 +144,11 @@ function compilePattern(pattern: string): RegExp | null {
   }
 }
 
-function extractDomainPackTagsFromText(text: string, domainPacks?: DomainPack[]): string[] {
+function extractDomainPackTags(
+  text: string,
+  domainPacks: DomainPack[] | undefined,
+  mode: "text" | "question"
+): string[] {
   if (!text || !domainPacks || domainPacks.length === 0) {
     return [];
   }
@@ -152,16 +156,25 @@ function extractDomainPackTagsFromText(text: string, domainPacks?: DomainPack[])
   const tags: string[] = [];
   for (const domainPack of domainPacks) {
     for (const capability of domainPack.capabilityTags) {
-      const rawPatterns = [
-        capability.tag,
-        ...(capability.aliases ?? []),
-        ...(capability.questionPatterns ?? []),
-        ...(capability.textPatterns ?? []),
-        ...(capability.searchTerms ?? []),
-        ...(capability.pathHints ?? []),
-        ...(capability.symbolHints ?? []),
-        ...(capability.apiHints ?? [])
-      ];
+      const rawPatterns =
+        mode === "question"
+          ? [
+              capability.tag,
+              ...(capability.aliases ?? []),
+              ...(capability.questionPatterns ?? []),
+              ...(capability.textPatterns ?? []),
+              ...(capability.searchTerms ?? []),
+              ...(capability.pathHints ?? []),
+              ...(capability.symbolHints ?? []),
+              ...(capability.apiHints ?? [])
+            ]
+          : [
+              ...(capability.aliases ?? []),
+              ...(capability.textPatterns ?? []),
+              ...(capability.pathHints ?? []),
+              ...(capability.symbolHints ?? []),
+              ...(capability.apiHints ?? [])
+            ];
       const patterns = rawPatterns.map(compilePattern).filter((value): value is RegExp => Boolean(value));
       if (patterns.some((pattern) => pattern.test(text))) {
         tags.push(capability.tag);
@@ -295,12 +308,14 @@ export function extractFlowCapabilityTagsFromTexts(
       tags.push(entry.tag);
     }
   }
-  tags.push(...extractDomainPackTagsFromText(text, options?.domainPacks));
+  tags.push(...extractDomainPackTags(text, options?.domainPacks, "text"));
   return unique(tags);
 }
 
 export function extractQuestionCapabilityTags(question: string, options?: FlowCapabilityOptions): string[] {
-  return extractFlowCapabilityTagsFromTexts([question], options);
+  const tags = extractFlowCapabilityTagsFromTexts([question], options);
+  tags.push(...extractDomainPackTags(question, options?.domainPacks, "question"));
+  return unique(tags);
 }
 
 export function expandCapabilitySearchTerms(questionTags: string[], options?: FlowCapabilityOptions): string[] {

@@ -211,6 +211,25 @@ describe("domain-backed capability extraction", () => {
     expect(tags).not.toContain("claim-inquiry");
   });
 
+  it("does not over-tag agreement flows as sunshine-loan check/apply phases", () => {
+    const tags = extractFlowCapabilityTagsFromTexts(
+      [
+        "MDP-MYLOT021370M",
+        "/gw/api/loan/credit/low/worker/request/make/owner/agreement",
+        "CreditLowWorkerLoanReauestController.makeOwnerAgreement",
+        "CreditLowWorkerLoanPdfReauestService.makeDocListBeforeApply",
+        "CreditLowWorkerLoanPdfReauestService.convertDownloadModel"
+      ],
+      {
+        domainPacks: [loanDomainPack]
+      }
+    );
+
+    expect(tags).toEqual(expect.arrayContaining(["loan", "sunshine-loan", "credit-low-worker-loan", "action-doc", "action-agreement"]));
+    expect(tags).not.toContain("low-worker-loan-check");
+    expect(tags).not.toContain("low-worker-loan-apply");
+  });
+
   it("adds pinned domain seed tags when the user locks a domain", () => {
     const tags = resolveQuestionCapabilityTags({
       question: "check 흐름을 프론트부터 백엔드까지 추적해줘.",

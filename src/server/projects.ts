@@ -5207,67 +5207,115 @@ export async function askServerProject(options: {
 
     const qualityFailures: string[] = [];
 
-    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = crossLayerFlowQuestion && linkedFlowEvidence.length > 0
-      ? buildDeterministicFlowAnswer({
-          question,
-          questionTags: questionCapabilityTags,
-          linkedFlowEvidence,
-          downstreamTraces: downstreamFlowTraces
-        })
-      : {
-          answer:
-            "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
-          confidence: 0.2,
-          evidence: [],
-          caveats: ["low-evidence"]
-        };
+    const deterministicCrossLayerOutput =
+      crossLayerFlowQuestion && linkedFlowEvidence.length > 0
+        ? buildDeterministicFlowAnswer({
+            question,
+            questionTags: questionCapabilityTags,
+            linkedFlowEvidence,
+            downstreamTraces: downstreamFlowTraces
+          })
+        : null;
+
+    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = deterministicCrossLayerOutput ?? {
+      answer:
+        "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
+      confidence: 0.2,
+      evidence: [],
+      caveats: ["low-evidence"]
+    };
     let attempts = 0;
     let usedFallback = false;
     let passed = false;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-      attempts = attempt;
-      const priorFailures = qualityFailures.slice(-8);
-      const sourceHits =
-        (intent.methodFocused || intent.moduleFlowFocused) && mergedCodeHits.length > 0
-          ? [...mergedCodeHits, ...mergedHits.filter((hit) => !mergedCodeHits.includes(hit)).slice(0, 2)]
-          : mergedHits;
-      const llmMergedHits = sourceHits.map((hit) => ({
-        path: hit.path,
-        score: hit.score,
-        confidence: normalizeHitConfidence(hit),
-        reasons: (hit.reasons ?? []).slice(0, 3),
-        snippet: hit.snippet ?? ""
-      }));
+    const deterministicCrossLayerGate = deterministicCrossLayerOutput
+      ? qualityGateForAskOutput({
+          output: deterministicCrossLayerOutput,
+          question,
+          hitPaths: mergedHits.map((hit) => hit.path),
+          strategy: strategyDecision.strategy,
+          hydratedEvidence,
+          linkedEaiEvidence,
+          linkedFlowEvidence,
+          moduleCandidates: strategyDecision.moduleCandidates,
+          domainPacks: effectiveDomainPacks,
+          questionTags: questionCapabilityTags
+        })
+      : null;
+
+    const domainSpecificCrossLayerQuestion = questionCapabilityTags.some((tag) =>
+      /^(sunshine-loan|credit-low-worker-loan|benefit-claim|accident-benefit-claim|agent-benefit-claim|diff-benefit-claim|claim-doc|claim-submit|claim-inquiry|low-worker-loan-)/.test(
+        tag
+      )
+    );
+
+    if (deterministicCrossLayerGate && !deterministicCrossLayerGate.passed) {
+      qualityFailures.push(...deterministicCrossLayerGate.failures);
+    }
+
+    const acceptDeterministicCrossLayer =
+      Boolean(deterministicCrossLayerOutput) &&
+      Boolean(deterministicCrossLayerGate?.passed) &&
+      (domainSpecificCrossLayerQuestion || downstreamFlowTraces.length > 0 || linkedFlowEvidence.length >= 4);
+
+    if (acceptDeterministicCrossLayer) {
+      passed = true;
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
         stage: "ask",
         status: "info",
-        message: `ask prompt prepared (attempt ${attempt}/${maxAttempts})`,
+        message: "deterministic cross-layer answer accepted without LLM",
         metadata: {
-          memoryFiles: memoryPreview.length,
-          memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
-          retrievalHits: llmMergedHits.length,
-          retrievalChars: JSON.stringify(llmMergedHits).length,
-          hydratedEvidenceCount: hydratedEvidence.length,
-          linkedEaiEvidenceCount: linkedEaiEvidence.length,
           linkedFlowEvidenceCount: linkedFlowEvidence.length,
-          downstreamTraceCount: downstreamFlowTraces.length
+          downstreamTraceCount: downstreamFlowTraces.length,
+          questionTags: questionCapabilityTags
         }
       });
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "ask",
-        status: "info",
-        message: `llm answer generation attempt ${attempt}/${maxAttempts} started`,
-        metadata: {
-          priorFailures
-        }
-      });
-      const attemptStartedAt = Date.now();
-      const generation = await llm.generateStructured({
+    } else {
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        attempts = attempt;
+        const priorFailures = qualityFailures.slice(-8);
+        const sourceHits =
+          (intent.methodFocused || intent.moduleFlowFocused) && mergedCodeHits.length > 0
+            ? [...mergedCodeHits, ...mergedHits.filter((hit) => !mergedCodeHits.includes(hit)).slice(0, 2)]
+            : mergedHits;
+        const llmMergedHits = sourceHits.map((hit) => ({
+          path: hit.path,
+          score: hit.score,
+          confidence: normalizeHitConfidence(hit),
+          reasons: (hit.reasons ?? []).slice(0, 3),
+          snippet: hit.snippet ?? ""
+        }));
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: `ask prompt prepared (attempt ${attempt}/${maxAttempts})`,
+          metadata: {
+            memoryFiles: memoryPreview.length,
+            memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
+            retrievalHits: llmMergedHits.length,
+            retrievalChars: JSON.stringify(llmMergedHits).length,
+            hydratedEvidenceCount: hydratedEvidence.length,
+            linkedEaiEvidenceCount: linkedEaiEvidence.length,
+            linkedFlowEvidenceCount: linkedFlowEvidence.length,
+            downstreamTraceCount: downstreamFlowTraces.length
+          }
+        });
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: `llm answer generation attempt ${attempt}/${maxAttempts} started`,
+          metadata: {
+            priorFailures
+          }
+        });
+        const attemptStartedAt = Date.now();
+        const generation = await llm.generateStructured({
         systemPrompt: [
           "You are a strict project Q&A engine for implementation logic.",
           "Return ONLY one JSON object.",
@@ -5339,41 +5387,42 @@ export async function askServerProject(options: {
         parse: (value) => ProjectAskOutputSchema.parse(value)
       });
 
-      usedFallback ||= generation.usedFallback;
-      llmCallCount += generation.liveCallCount;
-      bestOutput = generation.output;
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "ask",
-        status: "info",
-        message: `llm answer generation attempt ${attempt}/${maxAttempts} finished`,
-        metadata: {
-          confidence: generation.output.confidence,
-          usedFallback: generation.usedFallback,
-          liveCallCount: generation.liveCallCount,
-          tookMs: Date.now() - attemptStartedAt
+        usedFallback ||= generation.usedFallback;
+        llmCallCount += generation.liveCallCount;
+        bestOutput = generation.output;
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: `llm answer generation attempt ${attempt}/${maxAttempts} finished`,
+          metadata: {
+            confidence: generation.output.confidence,
+            usedFallback: generation.usedFallback,
+            liveCallCount: generation.liveCallCount,
+            tookMs: Date.now() - attemptStartedAt
+          }
+        });
+
+        const gate = qualityGateForAsk({
+          output: bestOutput,
+          question,
+          hits: mergedHits,
+          strategy: strategyDecision.strategy,
+          hydratedEvidence,
+          linkedEaiEvidence,
+          linkedFlowEvidence,
+          moduleCandidates: strategyDecision.moduleCandidates,
+          domainPacks: effectiveDomainPacks,
+          questionTags: questionCapabilityTags
+        });
+        if (gate.passed) {
+          passed = true;
+          break;
         }
-      });
 
-      const gate = qualityGateForAsk({
-        output: bestOutput,
-        question,
-        hits: mergedHits,
-        strategy: strategyDecision.strategy,
-        hydratedEvidence,
-        linkedEaiEvidence,
-        linkedFlowEvidence,
-        moduleCandidates: strategyDecision.moduleCandidates,
-        domainPacks: effectiveDomainPacks,
-        questionTags: questionCapabilityTags
-      });
-      if (gate.passed) {
-        passed = true;
-        break;
+        qualityFailures.push(...gate.failures);
       }
-
-      qualityFailures.push(...gate.failures);
     }
 
     const reportLines: string[] = [

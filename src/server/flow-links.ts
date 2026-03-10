@@ -231,45 +231,127 @@ export function buildDeterministicFlowAnswer(options: {
 
   const questionTags = options.questionTags ?? extractQuestionCapabilityTags(options.question);
   const questionIsClaim = questionTags.includes("benefit-claim") || /(보험금|청구|benefit|claim)/i.test(options.question);
-  const checkFlow =
-    options.linkedFlowEvidence.find(
-      (item) =>
-        flowHasCapability(item, "low-worker-loan-check") ||
-        flowHasCapability(item, "claim-inquiry") ||
-        /\/claim\/check|checktime|customer\/check/i.test(item.apiUrl)
-    ) ??
-    (questionIsClaim ? options.linkedFlowEvidence.find((item) => /\/claim\/check/i.test(item.apiUrl)) : undefined);
-  const inquiryFlow =
-    options.linkedFlowEvidence.find(
-      (item) =>
-        flowHasCapability(item, "low-worker-loan-limit") ||
-        /selectcustinfo|limit\/amount|\/claim\/inqury|\/claim\/inquiry|getinput|getaccntno/i.test(item.apiUrl)
-    ) ??
-    options.linkedFlowEvidence.find((item) => flowHasCapability(item, "action-inquiry"));
-  const insertFlow =
-    options.linkedFlowEvidence.find(
-      (item) =>
-        flowHasCapability(item, "low-worker-loan-apply") ||
-        flowHasCapability(item, "claim-submit") ||
-        /\/claim\/insert|\/apply\b|\/insert\b|saveinput|loanadmit|requestloanmember/i.test(item.apiUrl)
-    ) ??
-    (questionIsClaim
-      ? options.linkedFlowEvidence.find((item) => /\/claim\/insert/i.test(item.apiUrl) && !/\/doc\/insert/i.test(item.apiUrl))
-      : undefined);
-  const docInsertFlow =
-    options.linkedFlowEvidence.find(
-      (item) =>
-        flowHasCapability(item, "low-worker-loan-doc") ||
-        flowHasCapability(item, "claim-doc") ||
-        /\/doc\/insert|agreement|pdf|owner\/agreement/i.test(item.apiUrl)
-    ) ??
-    (questionIsClaim ? options.linkedFlowEvidence.find((item) => /\/doc\/insert/i.test(item.apiUrl)) : undefined);
-  const accountFlow =
-    options.linkedFlowEvidence.find(
-      (item) =>
-        flowHasCapability(item, "low-worker-loan-account") ||
-        /insertaccntno|getaccntno/i.test(item.apiUrl)
-    );
+  const questionIsSunshineLoan =
+    questionTags.includes("sunshine-loan") || questionTags.includes("credit-low-worker-loan") || /햇살론/i.test(options.question);
+
+  const scorePhaseCandidate = (
+    item: LinkedFlowEvidence,
+    criteria: {
+      tags?: string[];
+      apiPatterns?: RegExp[];
+      methodPatterns?: RegExp[];
+      screenPatterns?: RegExp[];
+      avoidApiPatterns?: RegExp[];
+    }
+  ): number => {
+    const haystack = [item.apiUrl, item.backendControllerMethod, ...(item.serviceHints ?? [])].join(" ");
+    const lowerApi = item.apiUrl.toLowerCase();
+    let score = item.confidence * 100;
+    for (const tag of criteria.tags ?? []) {
+      if (flowHasCapability(item, tag)) {
+        score += 70;
+      }
+    }
+    for (const pattern of criteria.apiPatterns ?? []) {
+      if (pattern.test(item.apiUrl)) {
+        score += 90;
+      }
+    }
+    for (const pattern of criteria.methodPatterns ?? []) {
+      if (pattern.test(haystack)) {
+        score += 55;
+      }
+    }
+    for (const pattern of criteria.screenPatterns ?? []) {
+      if (pattern.test(item.screenCode ?? "") || pattern.test(item.routePath ?? "")) {
+        score += 30;
+      }
+    }
+    for (const pattern of criteria.avoidApiPatterns ?? []) {
+      if (pattern.test(lowerApi)) {
+        score -= 120;
+      }
+    }
+    if (questionIsSunshineLoan && /\/loan\/contract\/inqury\//i.test(item.apiUrl)) {
+      score -= 160;
+    }
+    if (questionIsClaim && /\/loan\//i.test(item.apiUrl)) {
+      score -= 120;
+    }
+    return score;
+  };
+
+  const pickBestFlow = (criteria: Parameters<typeof scorePhaseCandidate>[1]): LinkedFlowEvidence | undefined =>
+    [...options.linkedFlowEvidence]
+      .map((item) => ({ item, score: scorePhaseCandidate(item, criteria) }))
+      .sort((a, b) => b.score - a.score)
+      .find((entry) => entry.score >= 120)?.item;
+
+  const checkFlow = questionIsSunshineLoan
+    ? pickBestFlow({
+        tags: ["low-worker-loan-check"],
+        apiPatterns: [/\/checktime$/i, /\/selectCustInfo$/i, /\/customer\/check$/i],
+        methodPatterns: [/checkTimeService/i, /selectCustInfo/i, /checkCustomer/i]
+      })
+    : pickBestFlow({
+        tags: ["claim-inquiry", "action-check"],
+        apiPatterns: [/\/claim\/check$/i],
+        methodPatterns: [/benefitClaimCheck/i, /checkApply/i]
+      });
+
+  const inquiryFlow = questionIsSunshineLoan
+    ? pickBestFlow({
+        tags: ["low-worker-loan-limit"],
+        apiPatterns: [/\/limit\/amount(?:\/tmp)?$/i, /\/lowWorker\/getInput$/i],
+        methodPatterns: [/limitAmount/i, /getLoanMemberInfo/i]
+      })
+    : pickBestFlow({
+        tags: ["claim-inquiry", "action-inquiry"],
+        apiPatterns: [/\/claim\/inqury$/i, /\/claim\/inquiry$/i],
+        methodPatterns: [/benefitClaimInqr/i, /claimInq/i]
+      });
+
+  const accountFlow = questionIsSunshineLoan
+    ? pickBestFlow({
+        tags: ["low-worker-loan-account"],
+        apiPatterns: [/\/insertAccntNo$/i, /\/getAccntNo$/i],
+        methodPatterns: [/insertAccntNo/i, /getAccntNo/i]
+      })
+    : pickBestFlow({
+        tags: ["action-account-register"],
+        apiPatterns: [/insertAccntNo/i, /getAccntNo/i]
+      });
+
+  const insertFlow = questionIsSunshineLoan
+    ? pickBestFlow({
+        tags: ["low-worker-loan-apply"],
+        apiPatterns: [
+          /\/requestLoanMember$/i,
+          /\/loanAdmit$/i,
+          /\/apply$/i,
+          /\/lowWorker\/saveInput$/i,
+          /\/lowWorker\/saveInputInfo$/i
+        ],
+        methodPatterns: [/registLoanMember/i, /loanAdmit/i, /saveLoanMemberInfo/i, /saveLoanInputInfo/i]
+      })
+    : pickBestFlow({
+        tags: ["claim-submit", "action-submit"],
+        apiPatterns: [/\/claim\/insert$/i],
+        methodPatterns: [/saveBenefitClaim/i, /insertBenefitClaim/i]
+      });
+
+  const docInsertFlow = questionIsSunshineLoan
+    ? pickBestFlow({
+        tags: ["low-worker-loan-doc"],
+        apiPatterns: [/\/make\/owner\/agreement$/i],
+        methodPatterns: [/makeOwnerAgreement/i, /makeDocListBeforeApply/i]
+      })
+    : pickBestFlow({
+        tags: ["claim-doc", "action-doc"],
+        apiPatterns: [/\/doc\/insert$/i],
+        methodPatterns: [/saveBenefitClaimDoc/i, /insertBenefitClaimDoc/i]
+      });
+
   const orderedFlows: LinkedFlowEvidence[] = [];
   const seenFlowKeys = new Set<string>();
   for (const candidate of [checkFlow, inquiryFlow, accountFlow, insertFlow, docInsertFlow, primary]) {

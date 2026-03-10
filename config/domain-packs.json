@@ -396,13 +396,14 @@
             "/loan/credit/low/worker/request/checktime",
             "/loan/credit/low/worker/request/selectCustInfo",
             "/loan/credit/low/worker/request/customer/check",
-            "validateAccessTime",
+            "checkTimeService",
             "selectCustInfo"
           ],
           "searchTerms": [
             "checktime",
             "selectCustInfo",
-            "validateAccessTime"
+            "checkTimeService",
+            "checkCustomer"
           ],
           "pathHints": [
             "dcp-loan/"
@@ -475,9 +476,10 @@
           "searchTerms": [
             "requestLoanMember",
             "loanAdmit",
-            "apply",
             "saveInput",
-            "saveInputInfo"
+            "saveInputInfo",
+            "CreditLowWorkerLoanReauestController.apply",
+            "CreditLowWorkerLoanReauestController.registLoanMember"
           ],
           "pathHints": [
             "dcp-loan/"
@@ -687,11 +689,12 @@
             "sunshine-loan"
           ],
           "whenApiMatches": [
+            "/loan/contract/inqury/",
             "/display/loan/product/basic",
             "/cs/location/region/list",
             "/point/inqury/credit/"
           ],
-          "weight": -80,
+          "weight": -120,
           "reason": "domain:sunshine-loan-adjacent-penalty",
           "negative": true
         }
