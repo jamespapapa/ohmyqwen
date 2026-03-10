@@ -63,6 +63,11 @@ import {
   type LearnedKnowledgeMatch,
   type LearnedKnowledgeSnapshot
 } from "./learned-knowledge.js";
+import {
+  compareAskRetryEvidence,
+  decideAskRetry,
+  summarizeAskRetryEvidence
+} from "./ask-retry.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -311,6 +316,7 @@ export interface ProjectAskResponse {
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
     frontBackEvidenceUsedCount?: number;
+    retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
     memoryFiles: string[];
@@ -5045,11 +5051,6 @@ export async function askServerProject(options: {
     const pinnedDomainPacks = domainSelection.lockedDomainIds.length > 0
       ? resolveDomainPacksByIds(effectiveDomainPacks, domainSelection.lockedDomainIds)
       : [];
-    let questionCapabilityTags = resolveQuestionCapabilityTags({
-      question,
-      domainPacks: effectiveDomainPacks,
-      pinnedDomainPacks
-    });
 
     const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
     if (eaiSnapshot) {
@@ -5114,240 +5115,334 @@ export async function askServerProject(options: {
         }
       });
     }
-    const matchedLearnedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
-    questionCapabilityTags = unique([...questionCapabilityTags, ...matchedLearnedKnowledge.map((item) => item.id)]);
-    await appendProjectDebugEvent({
-      timestamp: nowIso(),
-      projectId: options.projectId,
-      stage: "ask",
-      status: "info",
-      message: "resolved ask domains",
-      metadata: {
-        mode: domainSelection.mode,
-        activeDomainIds: activeDomainPacks.map((item) => item.id),
-        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
-        matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-        lockedDomainIds: domainSelection.lockedDomainIds,
-        effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
-        questionCapabilityTags
-      }
-    });
-
-    const expandedQueries = buildAskQueryCandidates({
+    const crossLayerFlowQuestion = isCrossLayerFlowQuestion(question);
+    const baseQuestionCapabilityTags = resolveQuestionCapabilityTags({
       question,
-      strategy: strategyDecision.strategy,
-      targetSymbols: strategyDecision.targetSymbols,
-      moduleCandidates: strategyDecision.moduleCandidates,
       domainPacks: effectiveDomainPacks,
-      questionTags: questionCapabilityTags,
-      learnedMatches: matchedLearnedKnowledge
+      pinnedDomainPacks
     });
-    const searchResults: ProjectSearchResult[] = [];
-    for (const [index, expandedQuery] of expandedQueries.entries()) {
+    const loadAskMemoryPreview = async () => {
+      const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
+      const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent);
+      const preview: Array<{ path: string; content: string }> = [];
+      for (const relativePath of selectedMemoryFiles) {
+        const absolutePath = path.resolve(memoryRoot, relativePath);
+        const content = await readTextFileSafe(absolutePath);
+        if (!content) {
+          continue;
+        }
+        preview.push({
+          path: relativePath,
+          content
+        });
+      }
+      return preview;
+    };
+
+    const persistLearnedKnowledgeSnapshot = async (snapshot: LearnedKnowledgeSnapshot) => {
+      await writeMemoryDocs({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        latestFileName: "latest.md",
+        content: buildLearnedKnowledgeMarkdown(snapshot)
+      });
+      await writeMemoryJson({
+        memoryRoot,
+        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+        fileName: "latest.json",
+        payload: snapshot
+      });
+    };
+
+    const buildAskEvidenceBundle = async (round: number) => {
+      const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
+      const questionTags = unique([...baseQuestionCapabilityTags, ...matchedKnowledge.map((item) => item.id)]);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
         stage: "ask",
         status: "info",
-        message: `retrieval query ${index + 1}/${expandedQueries.length} started`,
+        message: round === 1 ? "resolved ask domains" : `refined ask evidence context (round ${round})`,
         metadata: {
-          query: expandedQuery
-        }
-      });
-      const result = await searchServerProject({
-        projectId: options.projectId,
-        query: expandedQuery,
-        limit: options.limit ?? 14
-      });
-      searchResults.push(result);
-
-      const topConfidence = result.hits[0] ? normalizeHitConfidence(result.hits[0]) : 0;
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "ask",
-        status: "info",
-        message: `retrieval query ${index + 1}/${expandedQueries.length} finished`,
-        metadata: {
-          provider: result.provider,
-          fallbackUsed: result.fallbackUsed,
-          hitCount: result.hits.length,
-          topConfidence
+          round,
+          mode: domainSelection.mode,
+          activeDomainIds: activeDomainPacks.map((item) => item.id),
+          matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+          matchedLearnedKnowledgeIds: matchedKnowledge.map((item) => item.id),
+          lockedDomainIds: domainSelection.lockedDomainIds,
+          effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
+          questionCapabilityTags: questionTags
         }
       });
 
-      if (result.hits.length >= 8 && topConfidence >= 0.72) {
+      const queries = buildAskQueryCandidates({
+        question,
+        strategy: strategyDecision.strategy,
+        targetSymbols: strategyDecision.targetSymbols,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        domainPacks: effectiveDomainPacks,
+        questionTags,
+        learnedMatches: matchedKnowledge
+      });
+      const results: ProjectSearchResult[] = [];
+      for (const [index, expandedQuery] of queries.entries()) {
         await appendProjectDebugEvent({
           timestamp: nowIso(),
           projectId: options.projectId,
           stage: "ask",
           status: "info",
-          message: "retrieval early-stop: enough high-confidence evidence collected",
+          message: `retrieval query ${index + 1}/${queries.length} started`,
           metadata: {
-            query: expandedQuery,
+            round,
+            query: expandedQuery
+          }
+        });
+        const result = await searchServerProject({
+          projectId: options.projectId,
+          query: expandedQuery,
+          limit: options.limit ?? 14
+        });
+        results.push(result);
+
+        const topConfidence = result.hits[0] ? normalizeHitConfidence(result.hits[0]) : 0;
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: `retrieval query ${index + 1}/${queries.length} finished`,
+          metadata: {
+            round,
+            provider: result.provider,
+            fallbackUsed: result.fallbackUsed,
             hitCount: result.hits.length,
             topConfidence
           }
         });
-        break;
-      }
-    }
 
-    const mergedHitsMap = new Map<string, ProjectSearchHit>();
-    for (const result of searchResults) {
-      for (const hit of result.hits) {
-        const existing = mergedHitsMap.get(hit.path);
-        if (!existing || existing.score < hit.score) {
-          mergedHitsMap.set(hit.path, hit);
+        if (result.hits.length >= 8 && topConfidence >= 0.72) {
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "ask",
+            status: "info",
+            message: "retrieval early-stop: enough high-confidence evidence collected",
+            metadata: {
+              round,
+              query: expandedQuery,
+              hitCount: result.hits.length,
+              topConfidence
+            }
+          });
+          break;
         }
       }
-    }
-    const askFocusTokens = buildAskFocusTokens(question);
-    const mergedHits = Array.from(mergedHitsMap.values())
-      .sort((a, b) => {
-        const aScore = scoreAskHitRelevance({
-          hit: a,
-          question,
-          strategy: strategyDecision.strategy,
-          moduleCandidates: strategyDecision.moduleCandidates,
-          focusTokens: askFocusTokens
-        });
-        const bScore = scoreAskHitRelevance({
-          hit: b,
-          question,
-          strategy: strategyDecision.strategy,
-          moduleCandidates: strategyDecision.moduleCandidates,
-          focusTokens: askFocusTokens
-        });
-        return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
-      })
-      .slice(0, options.limit ?? 14);
-    const mergedCodeHits = mergedHits.filter((hit) => CODE_FILE_EXTENSIONS.has(path.extname(hit.path).toLowerCase()));
-    const hydratedEvidence = await hydrateAskEvidence({
-      project,
-      question,
-      strategy: strategyDecision.strategy,
-      targetSymbols: strategyDecision.targetSymbols,
-      moduleCandidates: strategyDecision.moduleCandidates,
-      hits: intent.methodFocused && mergedCodeHits.length > 0 ? mergedCodeHits : mergedHits,
-      structure: structureSnapshot
-    });
-    await appendProjectDebugEvent({
-      timestamp: nowIso(),
-      projectId: options.projectId,
-      stage: "ask",
-      status: "info",
-      message: "hydrated ask evidence prepared",
-      metadata: {
-        evidenceCount: hydratedEvidence.length,
-        codeEvidenceCount: hydratedEvidence.filter((item) => item.codeFile).length,
-        moduleEvidenceCount: hydratedEvidence.filter((item) => item.moduleMatched).length
-      }
-    });
 
-    const linkedEaiEvidence = buildLinkedEaiEvidence({
-      question,
-      moduleCandidates: strategyDecision.moduleCandidates,
-      hydratedEvidence,
-      hits: mergedHits.map((hit) => ({
-        path: hit.path,
-        reason: (hit.reasons ?? []).join(" | "),
-        snippet: hit.snippet ?? ""
-      })),
-      entries: eaiSnapshot?.entries ?? [],
-      limit: 6
-    });
-    await appendProjectDebugEvent({
-      timestamp: nowIso(),
-      projectId: options.projectId,
-      stage: "ask",
-      status: "info",
-      message: "linked eai evidence prepared",
-      metadata: {
-        count: linkedEaiEvidence.length,
-        topInterfaces: linkedEaiEvidence.slice(0, 3).map((item) => item.interfaceId)
+      const mergedHitsMap = new Map<string, ProjectSearchHit>();
+      for (const result of results) {
+        for (const hit of result.hits) {
+          const existing = mergedHitsMap.get(hit.path);
+          if (!existing || existing.score < hit.score) {
+            mergedHitsMap.set(hit.path, hit);
+          }
+        }
       }
-    });
-    const linkedFlowEvidence = frontBackGraphSnapshot
-      ? buildLinkedFlowEvidence({
-          question,
-          questionTags: questionCapabilityTags,
-          hits: mergedHits.map((hit) => ({
-            path: hit.path,
-            score: hit.score,
-            reasons: hit.reasons
-          })),
-          snapshot: frontBackGraphSnapshot,
-          limit: 10,
-          domainPacks: effectiveDomainPacks,
-          learnedKnowledge: learnedKnowledgeSnapshot
+      const askFocusTokens = buildAskFocusTokens(question);
+      const merged = Array.from(mergedHitsMap.values())
+        .sort((a, b) => {
+          const aScore = scoreAskHitRelevance({
+            hit: a,
+            question,
+            strategy: strategyDecision.strategy,
+            moduleCandidates: strategyDecision.moduleCandidates,
+            focusTokens: askFocusTokens
+          });
+          const bScore = scoreAskHitRelevance({
+            hit: b,
+            question,
+            strategy: strategyDecision.strategy,
+            moduleCandidates: strategyDecision.moduleCandidates,
+            focusTokens: askFocusTokens
+          });
+          return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
         })
-      : [];
-    if (linkedFlowEvidence.length > 0) {
+        .slice(0, options.limit ?? 14);
+      const mergedCode = merged.filter((hit) => CODE_FILE_EXTENSIONS.has(path.extname(hit.path).toLowerCase()));
+      const hydrated = await hydrateAskEvidence({
+        project,
+        question,
+        strategy: strategyDecision.strategy,
+        targetSymbols: strategyDecision.targetSymbols,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        hits: intent.methodFocused && mergedCode.length > 0 ? mergedCode : merged,
+        structure: structureSnapshot
+      });
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
         stage: "ask",
         status: "info",
-        message: "linked front-back flow evidence prepared",
+        message: "hydrated ask evidence prepared",
         metadata: {
-          count: linkedFlowEvidence.length,
-          topRoutes: linkedFlowEvidence.slice(0, 3).map((item) => item.routePath ?? item.screenCode ?? item.apiUrl)
+          round,
+          evidenceCount: hydrated.length,
+          codeEvidenceCount: hydrated.filter((item) => item.codeFile).length,
+          moduleEvidenceCount: hydrated.filter((item) => item.moduleMatched).length
         }
       });
-    }
-    const crossLayerFlowQuestion = isCrossLayerFlowQuestion(question);
-    const downstreamFlowTraces =
-      crossLayerFlowQuestion && linkedFlowEvidence.length > 0
-        ? await traceLinkedFlowDownstream({
-            workspaceDir: project.workspaceDir,
-            linkedFlowEvidence,
-            structure: structureSnapshot
-              ? {
-                  entries: structureSnapshot.entries
-                }
-              : undefined
+
+      const linkedEai = buildLinkedEaiEvidence({
+        question,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        hydratedEvidence: hydrated,
+        hits: merged.map((hit) => ({
+          path: hit.path,
+          reason: (hit.reasons ?? []).join(" | "),
+          snippet: hit.snippet ?? ""
+        })),
+        entries: eaiSnapshot?.entries ?? [],
+        limit: 6
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "linked eai evidence prepared",
+        metadata: {
+          round,
+          count: linkedEai.length,
+          topInterfaces: linkedEai.slice(0, 3).map((item) => item.interfaceId)
+        }
+      });
+
+      const linkedFlows = frontBackGraphSnapshot
+        ? buildLinkedFlowEvidence({
+            question,
+            questionTags,
+            hits: merged.map((hit) => ({
+              path: hit.path,
+              score: hit.score,
+              reasons: hit.reasons
+            })),
+            snapshot: frontBackGraphSnapshot,
+            limit: 10,
+            domainPacks: effectiveDomainPacks,
+            learnedKnowledge: learnedKnowledgeSnapshot
           })
         : [];
-    if (downstreamFlowTraces.length > 0) {
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "ask",
-        status: "info",
-        message: "downstream service trace prepared",
-        metadata: {
-          count: downstreamFlowTraces.length,
-          phases: downstreamFlowTraces.map((item) => item.phase)
-        }
-      });
-    }
-
-    const bestSearch =
-      [...searchResults].sort((a, b) => {
-        const aTop = a.hits[0]?.score ?? 0;
-        const bTop = b.hits[0]?.score ?? 0;
-        const aWeight = (a.provider === "qmd" ? 4 : 0) + (a.fallbackUsed ? 0 : 1);
-        const bWeight = (b.provider === "qmd" ? 4 : 0) + (b.fallbackUsed ? 0 : 1);
-        return bTop + bWeight - (aTop + aWeight);
-      })[0] ?? searchResults[0]!;
-    const lowConfidenceMode =
-      mergedHits.length === 0 || normalizeHitConfidence(mergedHits[0]) < 0.45;
-
-    const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
-    const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent);
-    const memoryPreview: Array<{ path: string; content: string }> = [];
-    for (const relativePath of selectedMemoryFiles) {
-      const absolutePath = path.resolve(memoryRoot, relativePath);
-      const content = await readTextFileSafe(absolutePath);
-      if (!content) {
-        continue;
+      if (linkedFlows.length > 0) {
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: "linked front-back flow evidence prepared",
+          metadata: {
+            round,
+            count: linkedFlows.length,
+            topRoutes: linkedFlows.slice(0, 3).map((item) => item.routePath ?? item.screenCode ?? item.apiUrl)
+          }
+        });
       }
-      memoryPreview.push({
-        path: relativePath,
-        content
+
+      const downstream =
+        crossLayerFlowQuestion && linkedFlows.length > 0
+          ? await traceLinkedFlowDownstream({
+              workspaceDir: project.workspaceDir,
+              linkedFlowEvidence: linkedFlows,
+              structure: structureSnapshot
+                ? {
+                    entries: structureSnapshot.entries
+                  }
+                : undefined
+            })
+          : [];
+      if (downstream.length > 0) {
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: "downstream service trace prepared",
+          metadata: {
+            round,
+            count: downstream.length,
+            phases: downstream.map((item) => item.phase)
+          }
+        });
+      }
+
+      const bestSearch =
+        [...results].sort((a, b) => {
+          const aTop = a.hits[0]?.score ?? 0;
+          const bTop = b.hits[0]?.score ?? 0;
+          const aWeight = (a.provider === "qmd" ? 4 : 0) + (a.fallbackUsed ? 0 : 1);
+          const bWeight = (b.provider === "qmd" ? 4 : 0) + (b.fallbackUsed ? 0 : 1);
+          return bTop + bWeight - (aTop + aWeight);
+        })[0] ?? results[0]!;
+      const lowConfidenceMode =
+        merged.length === 0 || normalizeHitConfidence(merged[0]) < 0.45;
+
+      return {
+        matchedLearnedKnowledge: matchedKnowledge,
+        questionCapabilityTags: questionTags,
+        expandedQueries: queries,
+        searchResults: results,
+        mergedHits: merged,
+        mergedCodeHits: mergedCode,
+        hydratedEvidence: hydrated,
+        linkedEaiEvidence: linkedEai,
+        linkedFlowEvidence: linkedFlows,
+        downstreamFlowTraces: downstream,
+        bestSearch,
+        lowConfidenceMode,
+        memoryPreview: await loadAskMemoryPreview()
+      };
+    };
+
+    const summarizeRetryBundle = (bundle: {
+      expandedQueries: string[];
+      matchedLearnedKnowledge: LearnedKnowledgeMatch[];
+      mergedHits: ProjectSearchHit[];
+      hydratedEvidence: AskHydratedEvidenceItem[];
+      linkedFlowEvidence: Array<{
+        routePath?: string;
+        screenCode?: string;
+        apiUrl: string;
+        backendControllerMethod: string;
+      }>;
+      linkedEaiEvidence: Array<{ interfaceId: string }>;
+      downstreamFlowTraces: Array<{ phase: string; serviceMethod: string }>;
+    }) =>
+      summarizeAskRetryEvidence({
+        queryCandidates: bundle.expandedQueries,
+        matchedKnowledgeIds: bundle.matchedLearnedKnowledge.map((item) => item.id),
+        mergedHitPaths: bundle.mergedHits.map((item) => item.path),
+        hydratedPaths: bundle.hydratedEvidence.map((item) => `${item.path}|${item.reason}`),
+        linkedFlowKeys: bundle.linkedFlowEvidence.map(
+          (item) =>
+            `${item.screenCode ?? item.routePath ?? "-"}|${item.apiUrl}|${item.backendControllerMethod}`
+        ),
+        linkedEaiIds: bundle.linkedEaiEvidence.map((item) => item.interfaceId),
+        downstreamKeys: bundle.downstreamFlowTraces.map((item) => `${item.phase}|${item.serviceMethod}`)
       });
-    }
+
+    let {
+      matchedLearnedKnowledge,
+      questionCapabilityTags,
+      expandedQueries,
+      searchResults,
+      mergedHits,
+      mergedCodeHits,
+      hydratedEvidence,
+      linkedEaiEvidence,
+      linkedFlowEvidence,
+      downstreamFlowTraces,
+      bestSearch,
+      lowConfidenceMode,
+      memoryPreview
+    } = await buildAskEvidenceBundle(1);
 
     const qualityFailures: string[] = [];
 
@@ -5393,13 +5488,21 @@ export async function askServerProject(options: {
       )
     );
 
+    const askRetryTargetConfidence = 0.65;
+    const askRetryMinConfidenceGain = 0.04;
+    let retryStopReason: string | undefined;
+    let previousAttemptConfidence: number | undefined;
+    let learnedKnowledgeObservedInLoop = false;
+
     if (deterministicCrossLayerGate && !deterministicCrossLayerGate.passed) {
       qualityFailures.push(...deterministicCrossLayerGate.failures);
     }
 
+    const deterministicCrossLayerConfidence = deterministicCrossLayerOutput?.confidence ?? 0;
     const acceptDeterministicCrossLayer =
       Boolean(deterministicCrossLayerOutput) &&
       Boolean(deterministicCrossLayerGate?.passed) &&
+      deterministicCrossLayerConfidence >= askRetryTargetConfidence &&
       (domainSpecificCrossLayerQuestion || downstreamFlowTraces.length > 0 || linkedFlowEvidence.length >= 4);
 
     if (acceptDeterministicCrossLayer) {
@@ -5562,12 +5665,127 @@ export async function askServerProject(options: {
           domainPacks: effectiveDomainPacks,
           questionTags: questionCapabilityTags
         });
-        if (gate.passed) {
+        const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
+
+        if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
+          learnedKnowledgeSnapshot = applyLearnedKnowledgeObservation({
+            snapshot: learnedKnowledgeSnapshot,
+            matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
+            successful: gate.passed,
+            question
+          });
+          await persistLearnedKnowledgeSnapshot(learnedKnowledgeSnapshot);
+          learnedKnowledgeObservedInLoop = true;
+        }
+
+        if (gate.passed && !confidenceBelowRetryThreshold) {
           passed = true;
           break;
         }
 
-        qualityFailures.push(...gate.failures);
+        if (!gate.passed) {
+          qualityFailures.push(...gate.failures);
+        }
+        if (gate.passed && confidenceBelowRetryThreshold) {
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "ask",
+            status: "info",
+            message: `answer confidence below retry target after attempt ${attempt}/${maxAttempts}`,
+            metadata: {
+              confidence: bestOutput.confidence,
+              retryTargetConfidence: askRetryTargetConfidence
+            }
+          });
+        }
+
+        const currentEvidenceState = summarizeRetryBundle({
+          expandedQueries,
+          matchedLearnedKnowledge,
+          mergedHits,
+          hydratedEvidence,
+          linkedFlowEvidence,
+          linkedEaiEvidence,
+          downstreamFlowTraces
+        });
+
+        const nextBundle =
+          attempt < maxAttempts
+            ? await buildAskEvidenceBundle(attempt + 1)
+            : null;
+        const nextEvidenceState = nextBundle
+          ? summarizeRetryBundle(nextBundle)
+          : currentEvidenceState;
+        const evidenceDelta = compareAskRetryEvidence(currentEvidenceState, nextEvidenceState);
+        const retryDecision = decideAskRetry({
+          attempt,
+          maxAttempts,
+          previousConfidence: previousAttemptConfidence,
+          currentConfidence: bestOutput.confidence,
+          evidenceDelta,
+          minConfidenceGain: askRetryMinConfidenceGain
+        });
+
+        retryStopReason = retryDecision.shouldRetry ? undefined : retryDecision.reason;
+
+        if (!retryDecision.shouldRetry) {
+          if (gate.passed) {
+            passed = true;
+          }
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "ask",
+            status: "info",
+            message: `ask retry stopped after attempt ${attempt}/${maxAttempts}`,
+            metadata: {
+              reason: retryDecision.reason,
+              gatePassed: gate.passed,
+              confidence: bestOutput.confidence,
+              confidenceGain: Number.isFinite(retryDecision.confidenceGain)
+                ? retryDecision.confidenceGain
+                : null,
+              evidenceChangeCount: evidenceDelta.changeCount,
+              evidenceReasons: evidenceDelta.reasons.slice(0, 12)
+            }
+          });
+          break;
+        }
+
+        const priorConfidenceForRetry = previousAttemptConfidence;
+        previousAttemptConfidence = bestOutput.confidence;
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: `ask retry continuing to round ${attempt + 1}/${maxAttempts}`,
+          metadata: {
+            confidence: bestOutput.confidence,
+            previousConfidence: priorConfidenceForRetry,
+            evidenceChangeCount: evidenceDelta.changeCount,
+            evidenceReasons: evidenceDelta.reasons.slice(0, 12)
+          }
+        });
+
+        if (nextBundle) {
+          ({
+            matchedLearnedKnowledge,
+            questionCapabilityTags,
+            expandedQueries,
+            searchResults,
+            mergedHits,
+            mergedCodeHits,
+            hydratedEvidence,
+            linkedEaiEvidence,
+            linkedFlowEvidence,
+            downstreamFlowTraces,
+            bestSearch,
+            lowConfidenceMode,
+            memoryPreview
+          } = nextBundle);
+        }
       }
     }
 
@@ -5592,6 +5810,7 @@ export async function askServerProject(options: {
       `- confidence: ${bestOutput.confidence.toFixed(2)}`,
       `- qualityGatePassed: ${passed}`,
       `- attempts: ${attempts}`,
+      `- retryStopReason: ${retryStopReason ?? "(none)"}`,
       ``,
       `## Answer`,
       bestOutput.answer,
@@ -5680,6 +5899,7 @@ export async function askServerProject(options: {
         frontBackGraphLoaded: Boolean(frontBackGraphSnapshot),
         frontBackLinkCount: frontBackGraphSnapshot?.links.length ?? 0,
         frontBackEvidenceUsedCount: linkedFlowEvidence.length,
+        retryStopReason,
         memoryFiles: [
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],
@@ -5689,7 +5909,7 @@ export async function askServerProject(options: {
       }
     };
 
-    if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
+    if (!learnedKnowledgeObservedInLoop && learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
       const updatedLearnedKnowledge = applyLearnedKnowledgeObservation({
         snapshot: learnedKnowledgeSnapshot,
         matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
