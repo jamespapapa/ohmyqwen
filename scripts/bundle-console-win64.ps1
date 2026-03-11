@@ -37,10 +37,7 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  Copy-IfExists -Source "console-next/.next/standalone/server.js" -Destination (Join-Path $StageDir "server.js")
-  Copy-IfExists -Source "console-next/.next/standalone/package.json" -Destination (Join-Path $StageDir "package.json")
-  Copy-IfExists -Source "console-next/.next/standalone/node_modules" -Destination (Join-Path $StageDir "node_modules")
-  Copy-IfExists -Source "console-next/.next/standalone/.next" -Destination (Join-Path $StageDir ".next")
+  node ./scripts/materialize-tree.mjs "console-next/.next/standalone" $StageDir
   Copy-IfExists -Source "console-next/.next/static" -Destination (Join-Path $StageDir ".next/static")
   Copy-IfExists -Source "console-next/public" -Destination (Join-Path $StageDir "public")
   Copy-IfExists -Source "console-next/README.md" -Destination (Join-Path $StageDir "README.md")
