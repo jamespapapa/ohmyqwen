@@ -7,6 +7,15 @@ STAGE_DIR="$RELEASE_DIR/ohmyqwen-offline"
 VERSION="$(node -e "console.log(require('./package.json').version)")"
 ARCHIVE_NAME="ohmyqwen-offline-v${VERSION}.tar.gz"
 
+copy_if_exists() {
+  local src="$1"
+  local dest="$2"
+  if [ -e "$src" ]; then
+    mkdir -p "$(dirname "$dest")"
+    cp -R "$src" "$dest"
+  fi
+}
+
 cd "$ROOT_DIR"
 
 pnpm run build
@@ -14,27 +23,34 @@ pnpm run build
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
 
-cp -R dist "$STAGE_DIR/"
-cp -R docs "$STAGE_DIR/"
-cp -R schemas "$STAGE_DIR/"
-cp -R samples "$STAGE_DIR/"
-cp -R src "$STAGE_DIR/"
-cp -R tests "$STAGE_DIR/"
-cp -R vendor "$STAGE_DIR/"
-cp -R node_modules "$STAGE_DIR/"
+copy_if_exists "package.json" "$STAGE_DIR/package.json"
+copy_if_exists "pnpm-lock.yaml" "$STAGE_DIR/pnpm-lock.yaml"
+copy_if_exists "README.md" "$STAGE_DIR/README.md"
+copy_if_exists "dist" "$STAGE_DIR/dist"
+copy_if_exists "config" "$STAGE_DIR/config"
+copy_if_exists "vendor/qmd/dist" "$STAGE_DIR/vendor/qmd/dist"
+
+pnpm install --prod --frozen-lockfile --dir "$STAGE_DIR"
+
 if [ -d ".ohmyqwen/runtime/qmd/models" ]; then
   mkdir -p "$STAGE_DIR/.ohmyqwen/runtime/qmd"
   cp -R ".ohmyqwen/runtime/qmd/models" "$STAGE_DIR/.ohmyqwen/runtime/qmd/"
 fi
-cp package.json "$STAGE_DIR/"
-cp pnpm-lock.yaml "$STAGE_DIR/"
-cp tsconfig.json "$STAGE_DIR/"
-cp README.md "$STAGE_DIR/"
-cp .gitignore "$STAGE_DIR/"
 
 if [ -n "${OHMYQWEN_NODE_RUNTIME_DIR:-}" ] && [ -d "${OHMYQWEN_NODE_RUNTIME_DIR}" ]; then
   cp -R "${OHMYQWEN_NODE_RUNTIME_DIR}" "$STAGE_DIR/node-runtime"
 fi
+
+cat > "$STAGE_DIR/serve-ohmyqwen.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$ROOT_DIR/node-runtime/bin/node" ]; then
+  exec "$ROOT_DIR/node-runtime/bin/node" "$ROOT_DIR/dist/cli.js" serve
+fi
+exec node "$ROOT_DIR/dist/cli.js" serve
+EOF
+chmod +x "$STAGE_DIR/serve-ohmyqwen.sh"
 
 (
   cd "$RELEASE_DIR"

@@ -11,6 +11,21 @@ $PackageJson = Get-Content (Join-Path $RootDir "package.json") | ConvertFrom-Jso
 $Version = $PackageJson.version
 $ArchiveName = "ohmyqwen-offline-win64-v$Version.zip"
 
+function Copy-IfExists {
+  param(
+    [string]$Source,
+    [string]$Destination
+  )
+
+  if (Test-Path $Source) {
+    $parent = Split-Path -Parent $Destination
+    if ($parent) {
+      New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    Copy-Item -Recurse -Force $Source $Destination
+  }
+}
+
 Push-Location $RootDir
 try {
   pnpm run build
@@ -20,16 +35,22 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  foreach ($entry in @("dist", "docs", "schemas", "samples", "src", "tests", "vendor", "node_modules")) {
-    if (Test-Path $entry) {
-      Copy-Item -Recurse -Force $entry $StageDir
-    }
+  foreach ($file in @("package.json", "pnpm-lock.yaml", "README.md")) {
+    Copy-IfExists -Source $file -Destination (Join-Path $StageDir $file)
   }
 
-  foreach ($file in @("package.json", "pnpm-lock.yaml", "tsconfig.json", "README.md", ".gitignore")) {
-    if (Test-Path $file) {
-      Copy-Item -Force $file $StageDir
-    }
+  foreach ($dir in @("dist", "config")) {
+    Copy-IfExists -Source $dir -Destination (Join-Path $StageDir $dir)
+  }
+
+  Copy-IfExists -Source "vendor/qmd/dist" -Destination (Join-Path $StageDir "vendor/qmd/dist")
+
+  Push-Location $StageDir
+  try {
+    pnpm install --prod --frozen-lockfile
+  }
+  finally {
+    Pop-Location
   }
 
   $ModelsDir = Join-Path $RootDir ".ohmyqwen/runtime/qmd/models"
@@ -42,6 +63,29 @@ try {
   if ($env:OHMYQWEN_NODE_RUNTIME_DIR -and (Test-Path $env:OHMYQWEN_NODE_RUNTIME_DIR)) {
     Copy-Item -Recurse -Force $env:OHMYQWEN_NODE_RUNTIME_DIR (Join-Path $StageDir "node-runtime")
   }
+
+  $ServeCmd = @'
+@echo off
+setlocal
+if exist "%~dp0node-runtime\node.exe" (
+  "%~dp0node-runtime\node.exe" "%~dp0dist\cli.js" serve
+) else (
+  node "%~dp0dist\cli.js" serve
+)
+'@
+  Set-Content -Path (Join-Path $StageDir "serve-ohmyqwen.cmd") -Value $ServeCmd -Encoding ascii
+
+  $ServePs1 = @'
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$bundledNode = Join-Path $root "node-runtime/node.exe"
+if (Test-Path $bundledNode) {
+  & $bundledNode (Join-Path $root "dist/cli.js") serve
+} else {
+  node (Join-Path $root "dist/cli.js") serve
+}
+'@
+  Set-Content -Path (Join-Path $StageDir "serve-ohmyqwen.ps1") -Value $ServePs1 -Encoding utf8
 
   if (-not (Test-Path $ReleaseDir)) {
     New-Item -ItemType Directory -Force -Path $ReleaseDir | Out-Null
