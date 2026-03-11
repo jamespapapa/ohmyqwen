@@ -1,9 +1,9 @@
 {
-  "defaultModelId": "qwen3-235b-a22b",
+  "defaultModelId": "Qwen3-235B-A22B-Instruct-2507-FP8",
   "continuationUsageRatio": 0.5,
   "models": [
     {
-      "id": "qwen3-235b-a22b",
+      "id": "Qwen3-235B-A22B-Instruct-2507-FP8",
       "label": "Qwen3 235B A22B",
       "contextWindowTokens": 32768,
       "maxOutputTokens": 4096

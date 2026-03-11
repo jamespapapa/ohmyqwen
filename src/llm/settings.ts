@@ -15,7 +15,7 @@ const LlmRetryPolicySchema = z.object({
 });
 
 const LlmRuntimeSettingsSchema = z.object({
-  defaultModelId: z.string().min(1).default("qwen3-235b-a22b"),
+  defaultModelId: z.string().min(1).default("Qwen3-235B-A22B-Instruct-2507-FP8"),
   continuationUsageRatio: z.number().min(0.2).max(0.9).default(0.5),
   models: z.array(LlmModelProfileSchema).min(1),
   retryPolicy: LlmRetryPolicySchema.default({
@@ -29,11 +29,11 @@ export type LlmRetryPolicy = z.infer<typeof LlmRetryPolicySchema>;
 export type LlmRuntimeSettings = z.infer<typeof LlmRuntimeSettingsSchema>;
 
 const DEFAULT_SETTINGS: LlmRuntimeSettings = {
-  defaultModelId: "qwen3-235b-a22b",
+  defaultModelId: "Qwen3-235B-A22B-Instruct-2507-FP8",
   continuationUsageRatio: 0.5,
   models: [
     {
-      id: "qwen3-235b-a22b",
+      id: "Qwen3-235B-A22B-Instruct-2507-FP8",
       label: "Qwen3 235B A22B",
       contextWindowTokens: 32768,
       maxOutputTokens: 4096

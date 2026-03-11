@@ -27,7 +27,7 @@ node-runtime\node.exe dist\cli.js serve
 
 ```env
 OHMYQWEN_LLM_BASE_URL=https://api.t.drt.samsunglife.kr/llmproxy/v1/
-OHMYQWEN_LLM_MODEL=qwen3-235b-a22b
+OHMYQWEN_LLM_MODEL=Qwen3-235B-A22B-Instruct-2507-FP8
 OHMYQWEN_LLM_ENDPOINT_KIND=openai
 ```
 
