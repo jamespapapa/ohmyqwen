@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install console dependencies
+        run: pnpm --dir console-next install --frozen-lockfile
+
       - name: Test
         run: pnpm test
 
@@ -45,6 +48,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Build console
+        run: pnpm ui:build
 
       - name: Check qmd offline runtime health (models optional)
         if: ${{ !inputs.require_models }}
@@ -67,11 +73,22 @@ jobs:
         shell: pwsh
         run: ./scripts/bundle-offline-win64.ps1
 
-      - name: Upload bundle artifact
+      - name: Build Windows console offline bundle
+        shell: pwsh
+        run: ./scripts/bundle-console-win64.ps1
+
+      - name: Upload backend bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ohmyqwen-offline-win64
+          name: ohmyqwen-offline-win64-backend
           path: release/ohmyqwen-offline-win64-v*.zip
+          if-no-files-found: error
+
+      - name: Upload frontend bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohmyqwen-offline-win64-frontend
+          path: release/ohmyqwen-console-offline-win64-v*.zip
           if-no-files-found: error
 
       - name: Job summary
@@ -82,6 +99,7 @@ jobs:
 
           - require_models: ${{ inputs.require_models }}
           - include_node_runtime: ${{ inputs.include_node_runtime }}
-          - artifact: `ohmyqwen-offline-win64`
-          - download from the workflow run page
+          - backend artifact: `ohmyqwen-offline-win64-backend`
+          - frontend artifact: `ohmyqwen-offline-win64-frontend`
+          - download both from the workflow run page
           "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
