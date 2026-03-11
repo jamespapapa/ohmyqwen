@@ -157,6 +157,13 @@ Windows 최종 산출물은 반드시 Windows x64 환경에서 설치된 native 
 - `pnpm qmd:health`
 - `pnpm verify:offline:win64`
 
+GitHub Actions:
+
+- workflow: `.github/workflows/win64-offline-bundle.yml`
+- manual trigger: `Actions -> win64-offline-bundle -> Run workflow`
+- 기본값은 `require_models=false` 이므로 모델 없이도 Windows x64 빌드/패키징 경로를 점검할 수 있다.
+- 모델까지 포함해 full query/rerank readiness를 확인하려면 모델 파일을 repo 또는 runner 작업공간에 준비한 뒤 `require_models=true`로 실행한다.
+
 ## 원칙
 
 1. 외부 설치 의존 제거
