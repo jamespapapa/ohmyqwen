@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $RootDir = Split-Path -Parent $PSScriptRoot
 $ConsoleDir = Join-Path $RootDir "console-next"
@@ -36,7 +37,10 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  Copy-IfExists -Source "console-next/.next/standalone/*" -Destination $StageDir
+  Copy-IfExists -Source "console-next/.next/standalone/server.js" -Destination (Join-Path $StageDir "server.js")
+  Copy-IfExists -Source "console-next/.next/standalone/package.json" -Destination (Join-Path $StageDir "package.json")
+  Copy-IfExists -Source "console-next/.next/standalone/node_modules" -Destination (Join-Path $StageDir "node_modules")
+  Copy-IfExists -Source "console-next/.next/standalone/.next" -Destination (Join-Path $StageDir ".next")
   Copy-IfExists -Source "console-next/.next/static" -Destination (Join-Path $StageDir ".next/static")
   Copy-IfExists -Source "console-next/public" -Destination (Join-Path $StageDir "public")
   Copy-IfExists -Source "console-next/README.md" -Destination (Join-Path $StageDir "README.md")
@@ -66,6 +70,7 @@ if exist "%~dp0node-runtime\node.exe" (
 
   $ServePs1 = @'
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $env:PORT) { $env:PORT = "3005" }
 if (-not $env:BACKEND_BASE_URL) { $env:BACKEND_BASE_URL = "http://127.0.0.1:4311" }
@@ -85,7 +90,12 @@ if (Test-Path $bundledNode) {
   if (Test-Path $ArchivePath) {
     Remove-Item -Force $ArchivePath
   }
-  Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ArchivePath -Force
+  [System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $StageDir,
+    $ArchivePath,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false
+  )
 
   Write-Host "Created frontend offline bundle: $ArchivePath"
   Write-Host "Closed network run:"

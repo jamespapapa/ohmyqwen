@@ -3,6 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $RootDir = Split-Path -Parent $PSScriptRoot
 $ReleaseDir = Join-Path $RootDir $OutputDir
@@ -94,7 +95,12 @@ if (Test-Path $bundledNode) {
   if (Test-Path $ArchivePath) {
     Remove-Item -Force $ArchivePath
   }
-  Compress-Archive -Path (Join-Path $StageDir "*") -DestinationPath $ArchivePath -Force
+  [System.IO.Compression.ZipFile]::CreateFromDirectory(
+    $StageDir,
+    $ArchivePath,
+    [System.IO.Compression.CompressionLevel]::Optimal,
+    $false
+  )
 
   Write-Host "Created offline bundle: $ArchivePath"
   Write-Host "Closed network run:"
