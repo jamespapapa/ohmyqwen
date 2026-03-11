@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { appendFailureSummary, failed, runQualityGates, summarizeFailures } from "../src/gates/verify.js";
 
 const tempDirs: string[] = [];
+const itPosix = process.platform === "win32" ? it.skip : it;
 
 afterEach(async () => {
   while (tempDirs.length > 0) {
@@ -215,7 +216,7 @@ describe("verify pipeline", () => {
     expect(output.gateResults[0]?.command).toBe("./gradlew");
   });
 
-  it("makes gradle wrapper executable before running", async () => {
+  itPosix("makes gradle wrapper executable before running", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-verify-gradle-chmod-"));
     tempDirs.push(workspace);
 

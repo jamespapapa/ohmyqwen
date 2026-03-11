@@ -75,12 +75,17 @@ export function isSafeQmdCommand(command: string): boolean {
     return false;
   }
 
-  if (trimmed === "qmd") {
+  if (["qmd", "qmd.exe", "qmd.cmd", "qmd.bat"].includes(trimmed.toLowerCase())) {
     return true;
   }
 
   const normalized = trimmed.replace(/\\/g, "/").toLowerCase();
-  return normalized.endsWith("/qmd") || normalized.endsWith("/qmd.exe");
+  return (
+    normalized.endsWith("/qmd") ||
+    normalized.endsWith("/qmd.exe") ||
+    normalized.endsWith("/qmd.cmd") ||
+    normalized.endsWith("/qmd.bat")
+  );
 }
 
 function normalizeOptionalPath(cwd: string, value?: string): string | undefined {
@@ -198,10 +203,12 @@ function extractJsonArray(text: string): unknown[] {
 
 async function runCommand(runtime: QmdCliRuntime, args: string[]): Promise<QmdCommandResult> {
   return new Promise<QmdCommandResult>((resolve, reject) => {
+    const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(runtime.command);
     const child = spawn(runtime.command, args, {
       cwd: runtime.cwd,
       env: runtime.env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: useShell
     });
 
     let stdout = "";

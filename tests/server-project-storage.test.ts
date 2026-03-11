@@ -63,11 +63,12 @@ describe("server project storage paths", () => {
 
     const workspaceDir = "/Users/jules/Desktop/work/untitle/dcp/dcp-services-mevelop";
     const projectHome = resolveServerProjectHome(workspaceDir);
+    const expectedProjectHome = path.resolve("/tmp/ohmyqwen-project-home");
 
-    expect(projectHome).toBe("/tmp/ohmyqwen-project-home");
-    expect(resolveServerProjectMemoryHome(workspaceDir)).toBe("/tmp/ohmyqwen-project-home/memory-cache");
+    expect(projectHome).toBe(expectedProjectHome);
+    expect(resolveServerProjectMemoryHome(workspaceDir)).toBe(path.resolve(expectedProjectHome, "memory-cache"));
     expect(resolveServerProjectContextCachePath(workspaceDir)).toBe(
-      "/tmp/ohmyqwen-project-home/.ohmyqwen/cache/context-index.json"
+      path.resolve(expectedProjectHome, ".ohmyqwen", "cache", "context-index.json")
     );
   });
 });

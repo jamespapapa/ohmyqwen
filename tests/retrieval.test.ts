@@ -20,6 +20,32 @@ function makeConfig() {
   return defaultRetrievalConfig();
 }
 
+async function writeFakeQmdCommand(workspace: string, programSource: string): Promise<string> {
+  const runnerPath = path.join(workspace, "fake-qmd.mjs");
+  await writeFile(runnerPath, programSource, "utf8");
+
+  if (process.platform === "win32") {
+    const commandPath = path.join(workspace, "qmd.cmd");
+    const nodePath = process.execPath.replace(/"/g, "\"\"");
+    await writeFile(
+      commandPath,
+      `@echo off\r\n"${nodePath}" "%~dp0fake-qmd.mjs" %*\r\n`,
+      "utf8"
+    );
+    return commandPath;
+  }
+
+  const commandPath = path.join(workspace, "qmd");
+  const nodePath = process.execPath.replace(/"/g, "\\\"");
+  await writeFile(
+    commandPath,
+    `#!/bin/sh\nexec "${nodePath}" "$(dirname "$0")/fake-qmd.mjs" "$@"\n`,
+    "utf8"
+  );
+  await chmod(commandPath, 0o755);
+  return commandPath;
+}
+
 describe("retrieval chain", () => {
   it("falls back to lexical when qmd fails", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-retrieval-fallback-"));
@@ -87,41 +113,35 @@ describe("retrieval chain", () => {
     await writeFile(path.join(workspace, "extra.ts"), "export const extraSignal = 2;", "utf8");
 
     const logPath = path.join(workspace, "qmd-args.log");
-    const fakeQmdPath = path.join(workspace, "qmd");
-    await writeFile(
-      fakeQmdPath,
-      `#!/bin/sh
-echo "$@" >> "${logPath}"
-if [ "$3" = "collection" ]; then
-  exit 0
-fi
-if [ "$3" = "update" ]; then
-  exit 0
-fi
-if [ "$3" = "query" ]; then
-  echo "query unavailable" 1>&2
-  exit 1
-fi
-if [ "$3" = "search" ]; then
-  cat <<'JSON'
-[
-  {
-    "docid": "#abc123",
-    "score": 8.4,
-    "file": "qmd://workspace/extra.ts",
-    "title": "extra",
-    "snippet": "export const extraSignal = 2;"
-  }
-]
-JSON
-  exit 0
-fi
-echo "unsupported command" 1>&2
-exit 1
-`,
-      "utf8"
+    const fakeQmdPath = await writeFakeQmdCommand(
+      workspace,
+      `import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, \`\${args.join(" ")}\\n\`);
+const mode = args[2];
+if (mode === "collection" || mode === "update") {
+  process.exit(0);
+}
+if (mode === "query") {
+  console.error("query unavailable");
+  process.exit(1);
+}
+if (mode === "search") {
+  process.stdout.write(JSON.stringify([
+    {
+      docid: "#abc123",
+      score: 8.4,
+      file: "qmd://workspace/extra.ts",
+      title: "extra",
+      snippet: "export const extraSignal = 2;"
+    }
+  ]));
+  process.exit(0);
+}
+console.error("unsupported command");
+process.exit(1);
+`
     );
-    await chmod(fakeQmdPath, 0o755);
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
@@ -161,47 +181,41 @@ exit 1
 
     const logPath = path.join(workspace, "qmd-retry.log");
     const countPath = path.join(workspace, "qmd-count.txt");
-    const fakeQmdPath = path.join(workspace, "qmd");
-    await writeFile(
-      fakeQmdPath,
-      `#!/bin/sh
-echo "$@" >> "${logPath}"
-if [ "$3" = "collection" ]; then
-  exit 0
-fi
-if [ "$3" = "update" ]; then
-  exit 0
-fi
-if [ "$3" = "query" ]; then
-  count=0
-  if [ -f "${countPath}" ]; then
-    count=$(cat "${countPath}")
-  fi
-  count=$((count + 1))
-  echo "$count" > "${countPath}"
-  if [ "$count" -eq 1 ]; then
-    echo "no result" 1>&2
-    exit 1
-  fi
-  cat <<'JSON'
-[
-  {
-    "docid": "#claim-1",
-    "score": 9.1,
-    "file": "qmd://workspace/claim.ts",
-    "title": "claim",
-    "snippet": "export const saveBenefitClaimDoc = 1;"
+    const fakeQmdPath = await writeFakeQmdCommand(
+      workspace,
+      `import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, \`\${args.join(" ")}\\n\`);
+const mode = args[2];
+if (mode === "collection" || mode === "update") {
+  process.exit(0);
+}
+if (mode === "query") {
+  let count = 0;
+  if (existsSync(${JSON.stringify(countPath)})) {
+    count = Number.parseInt(readFileSync(${JSON.stringify(countPath)}, "utf8"), 10) || 0;
   }
-]
-JSON
-  exit 0
-fi
-echo "unsupported command" 1>&2
-exit 1
-`,
-      "utf8"
+  count += 1;
+  writeFileSync(${JSON.stringify(countPath)}, String(count), "utf8");
+  if (count === 1) {
+    console.error("no result");
+    process.exit(1);
+  }
+  process.stdout.write(JSON.stringify([
+    {
+      docid: "#claim-1",
+      score: 9.1,
+      file: "qmd://workspace/claim.ts",
+      title: "claim",
+      snippet: "export const saveBenefitClaimDoc = 1;"
+    }
+  ]));
+  process.exit(0);
+}
+console.error("unsupported command");
+process.exit(1);
+`
     );
-    await chmod(fakeQmdPath, 0o755);
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
@@ -347,64 +361,49 @@ export async function queryRuntime(options) {
     await writeFile(path.join(workspace, "ClaimController.java"), "class ClaimController {}", "utf8");
 
     const logPath = path.join(workspace, "qmd-corpora.log");
-    const fakeQmdPath = path.join(workspace, "qmd");
-    await writeFile(
-      fakeQmdPath,
-      `#!/bin/sh
-echo "$@" >> "${logPath}"
-if [ "$3" = "collection" ]; then
-  exit 0
-fi
-if [ "$3" = "update" ]; then
-  exit 0
-fi
-if [ "$3" = "search" ]; then
-  collection=""
-  prev=""
-  for arg in "$@"; do
-    if [ "$prev" = "-c" ]; then
-      collection="$arg"
-      break
-    fi
-    prev="$arg"
-  done
-  if printf '%s' "$collection" | grep -q 'frontend-code'; then
-    cat <<'JSON'
-[
-  {
-    "docid": "#front-1",
-    "score": 0.61,
-    "file": "qmd://workspace-frontend-code/ClaimPage.vue",
-    "title": "ClaimPage",
-    "snippet": "button click submit"
+    const fakeQmdPath = await writeFakeQmdCommand(
+      workspace,
+      `import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, \`\${args.join(" ")}\\n\`);
+const mode = args[2];
+if (mode === "collection" || mode === "update") {
+  process.exit(0);
+}
+if (mode === "search") {
+  const collectionIndex = args.indexOf("-c");
+  const collection = collectionIndex >= 0 ? args[collectionIndex + 1] ?? "" : "";
+  if (collection.includes("frontend-code")) {
+    process.stdout.write(JSON.stringify([
+      {
+        docid: "#front-1",
+        score: 0.61,
+        file: "qmd://workspace-frontend-code/ClaimPage.vue",
+        title: "ClaimPage",
+        snippet: "button click submit"
+      }
+    ]));
+    process.exit(0);
   }
-]
-JSON
-    exit 0
-  fi
-  if printf '%s' "$collection" | grep -q 'backend-code'; then
-    cat <<'JSON'
-[
-  {
-    "docid": "#back-1",
-    "score": 0.89,
-    "file": "qmd://workspace-backend-code/ClaimController.java",
-    "title": "ClaimController",
-    "snippet": "post /claims"
+  if (collection.includes("backend-code")) {
+    process.stdout.write(JSON.stringify([
+      {
+        docid: "#back-1",
+        score: 0.89,
+        file: "qmd://workspace-backend-code/ClaimController.java",
+        title: "ClaimController",
+        snippet: "post /claims"
+      }
+    ]));
+    process.exit(0);
   }
-]
-JSON
-    exit 0
-  fi
-  echo '[]'
-  exit 0
-fi
-echo "unsupported command" 1>&2
-exit 1
-`,
-      "utf8"
+  process.stdout.write("[]");
+  process.exit(0);
+}
+console.error("unsupported command");
+process.exit(1);
+`
     );
-    await chmod(fakeQmdPath, 0o755);
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
@@ -447,54 +446,41 @@ exit 1
     await writeFile(path.join(workspace, "ClaimPage.vue"), "<template><button>claim</button></template>", "utf8");
 
     const logPath = path.join(workspace, "qmd-corpora-degrade.log");
-    const fakeQmdPath = path.join(workspace, "qmd");
-    await writeFile(
-      fakeQmdPath,
-      `#!/bin/sh
-echo "$@" >> "${logPath}"
-if [ "$3" = "collection" ]; then
-  exit 0
-fi
-if [ "$3" = "update" ]; then
-  exit 0
-fi
-if [ "$3" = "search" ]; then
-  collection=""
-  prev=""
-  for arg in "$@"; do
-    if [ "$prev" = "-c" ]; then
-      collection="$arg"
-      break
-    fi
-    prev="$arg"
-  done
-  if printf '%s' "$collection" | grep -q 'frontend-code'; then
-    cat <<'JSON'
-[
-  {
-    "docid": "#front-1",
-    "score": 0.74,
-    "file": "qmd://workspace-frontend-code/ClaimPage.vue",
-    "title": "ClaimPage",
-    "snippet": "button click submit"
+    const fakeQmdPath = await writeFakeQmdCommand(
+      workspace,
+      `import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, \`\${args.join(" ")}\\n\`);
+const mode = args[2];
+if (mode === "collection" || mode === "update") {
+  process.exit(0);
+}
+if (mode === "search") {
+  const collectionIndex = args.indexOf("-c");
+  const collection = collectionIndex >= 0 ? args[collectionIndex + 1] ?? "" : "";
+  if (collection.includes("frontend-code")) {
+    process.stdout.write(JSON.stringify([
+      {
+        docid: "#front-1",
+        score: 0.74,
+        file: "qmd://workspace-frontend-code/ClaimPage.vue",
+        title: "ClaimPage",
+        snippet: "button click submit"
+      }
+    ]));
+    process.exit(0);
   }
-]
-JSON
-    exit 0
-  fi
-  if printf '%s' "$collection" | grep -q 'backend-code'; then
-    echo "backend timeout" 1>&2
-    exit 1
-  fi
-  echo '[]'
-  exit 0
-fi
-echo "unsupported command" 1>&2
-exit 1
-`,
-      "utf8"
+  if (collection.includes("backend-code")) {
+    console.error("backend timeout");
+    process.exit(1);
+  }
+  process.stdout.write("[]");
+  process.exit(0);
+}
+console.error("unsupported command");
+process.exit(1);
+`
     );
-    await chmod(fakeQmdPath, 0o755);
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
@@ -528,41 +514,35 @@ exit 1
     await writeFile(path.join(workspace, "claim.ts"), "export const saveBenefitClaimDoc = 1;", "utf8");
 
     const logPath = path.join(workspace, "qmd-mode.log");
-    const fakeQmdPath = path.join(workspace, "qmd");
-    await writeFile(
-      fakeQmdPath,
-      `#!/bin/sh
-echo "$@" >> "${logPath}"
-if [ "$3" = "collection" ]; then
-  exit 0
-fi
-if [ "$3" = "update" ]; then
-  exit 0
-fi
-if [ "$3" = "query" ]; then
-  echo "query should not be called for long NL queries" 1>&2
-  exit 1
-fi
-if [ "$3" = "search" ]; then
-  cat <<'JSON'
-[
-  {
-    "docid": "#claim-1",
-    "score": 9.4,
-    "file": "qmd://workspace/claim.ts",
-    "title": "claim",
-    "snippet": "export const saveBenefitClaimDoc = 1;"
-  }
-]
-JSON
-  exit 0
-fi
-echo "unsupported command" 1>&2
-exit 1
-`,
-      "utf8"
+    const fakeQmdPath = await writeFakeQmdCommand(
+      workspace,
+      `import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, \`\${args.join(" ")}\\n\`);
+const mode = args[2];
+if (mode === "collection" || mode === "update") {
+  process.exit(0);
+}
+if (mode === "query") {
+  console.error("query should not be called for long NL queries");
+  process.exit(1);
+}
+if (mode === "search") {
+  process.stdout.write(JSON.stringify([
+    {
+      docid: "#claim-1",
+      score: 9.4,
+      file: "qmd://workspace/claim.ts",
+      title: "claim",
+      snippet: "export const saveBenefitClaimDoc = 1;"
+    }
+  ]));
+  process.exit(0);
+}
+console.error("unsupported command");
+process.exit(1);
+`
     );
-    await chmod(fakeQmdPath, 0o755);
 
     const config = makeConfig();
     config.providerPriority = ["qmd", "lexical"];
