@@ -64,6 +64,7 @@ PORT=3005
   $ServeCmd = @'
 @echo off
 setlocal
+cd /d "%~dp0"
 if "%PORT%"=="" set PORT=3005
 if "%BACKEND_BASE_URL%"=="" set BACKEND_BASE_URL=http://127.0.0.1:4311
 if exist "%~dp0node-runtime\node.exe" (
@@ -78,6 +79,7 @@ if exist "%~dp0node-runtime\node.exe" (
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $root
 if (-not $env:PORT) { $env:PORT = "3005" }
 if (-not $env:BACKEND_BASE_URL) { $env:BACKEND_BASE_URL = "http://127.0.0.1:4311" }
 $bundledNode = Join-Path $root "node-runtime/node.exe"

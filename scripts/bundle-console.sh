@@ -47,6 +47,7 @@ cat > "$STAGE_DIR/serve-console.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT_DIR"
 export PORT="${PORT:-3005}"
 export BACKEND_BASE_URL="${BACKEND_BASE_URL:-http://127.0.0.1:4311}"
 if [ -x "$ROOT_DIR/node-runtime/bin/node" ]; then

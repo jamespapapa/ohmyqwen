@@ -68,6 +68,7 @@ try {
   $ServeCmd = @'
 @echo off
 setlocal
+cd /d "%~dp0"
 if "%OHMYQWEN_SERVER_TRACE%"=="" set OHMYQWEN_SERVER_TRACE=1
 echo [serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=%OHMYQWEN_SERVER_TRACE%
 if exist "%~dp0node-runtime\node.exe" (
@@ -81,6 +82,7 @@ if exist "%~dp0node-runtime\node.exe" (
   $ServePs1 = @'
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $root
 if (-not $env:OHMYQWEN_SERVER_TRACE) { $env:OHMYQWEN_SERVER_TRACE = "1" }
 Write-Host "[serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=$env:OHMYQWEN_SERVER_TRACE"
 $bundledNode = Join-Path $root "node-runtime/node.exe"
