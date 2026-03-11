@@ -45,6 +45,8 @@ cat > "$STAGE_DIR/serve-ohmyqwen.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export OHMYQWEN_SERVER_TRACE="${OHMYQWEN_SERVER_TRACE:-1}"
+echo "[serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=${OHMYQWEN_SERVER_TRACE}"
 if [ -x "$ROOT_DIR/node-runtime/bin/node" ]; then
   exec "$ROOT_DIR/node-runtime/bin/node" "$ROOT_DIR/dist/cli.js" serve
 fi

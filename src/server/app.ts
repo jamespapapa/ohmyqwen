@@ -15,6 +15,28 @@ function serverTrace(message: string, payload?: Record<string, unknown>): void {
   process.stdout.write(`[server-trace] ${new Date().toISOString()} ${message}${suffix}\n`);
 }
 
+
+function summarizeValue(value: string | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return "<unset>";
+  }
+  return normalized;
+}
+
+function printStartupDiagnostics(host: string, port: number): void {
+  const lines = [
+    `[server-startup] ${new Date().toISOString()} pid=${process.pid} cwd=${process.cwd()}`,
+    `[server-startup] listen=http://${host}:${port} trace=${shouldTraceServer() ? "enabled" : "disabled"}`,
+    `[server-startup] llm endpointKind=${summarizeValue(process.env.OHMYQWEN_LLM_ENDPOINT_KIND ?? "auto")} model=${summarizeValue(process.env.OHMYQWEN_LLM_MODEL)} baseUrl=${summarizeValue(process.env.OHMYQWEN_LLM_BASE_URL)}`,
+    `[server-startup] tls rejectUnauthorized=${summarizeValue(process.env.NODE_TLS_REJECT_UNAUTHORIZED)} extraCa=${summarizeValue(process.env.NODE_EXTRA_CA_CERTS)}`
+  ];
+
+  for (const line of lines) {
+    process.stdout.write(`${line}\n`);
+  }
+}
+
 function sendText(res: ServerResponse, code: number, body: string, contentType: string): void {
   res.statusCode = code;
   res.setHeader("Content-Type", contentType);
@@ -123,6 +145,7 @@ export async function startServer(options?: { host?: string; port?: number }): P
     });
   });
 
+  printStartupDiagnostics(host, port);
   process.stdout.write(`ohmyqwen server listening on http://${host}:${port}\n`);
 
   await new Promise<void>(() => {

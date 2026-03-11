@@ -68,6 +68,8 @@ try {
   $ServeCmd = @'
 @echo off
 setlocal
+if "%OHMYQWEN_SERVER_TRACE%"=="" set OHMYQWEN_SERVER_TRACE=1
+echo [serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=%OHMYQWEN_SERVER_TRACE%
 if exist "%~dp0node-runtime\node.exe" (
   "%~dp0node-runtime\node.exe" "%~dp0dist\cli.js" serve
 ) else (
@@ -79,6 +81,8 @@ if exist "%~dp0node-runtime\node.exe" (
   $ServePs1 = @'
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $env:OHMYQWEN_SERVER_TRACE) { $env:OHMYQWEN_SERVER_TRACE = "1" }
+Write-Host "[serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=$env:OHMYQWEN_SERVER_TRACE"
 $bundledNode = Join-Path $root "node-runtime/node.exe"
 if (Test-Path $bundledNode) {
   & $bundledNode (Join-Path $root "dist/cli.js") serve
