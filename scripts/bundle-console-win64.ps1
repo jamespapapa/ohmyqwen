@@ -37,10 +37,19 @@ try {
   }
   New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
-  node ./scripts/materialize-tree.mjs "console-next/.next/standalone" $StageDir
-  Copy-IfExists -Source "console-next/.next/static" -Destination (Join-Path $StageDir ".next/static")
+  Copy-IfExists -Source "console-next/package.json" -Destination (Join-Path $StageDir "package.json")
+  Copy-IfExists -Source "console-next/next.config.mjs" -Destination (Join-Path $StageDir "next.config.mjs")
+  Copy-IfExists -Source "console-next/.next" -Destination (Join-Path $StageDir ".next")
   Copy-IfExists -Source "console-next/public" -Destination (Join-Path $StageDir "public")
   Copy-IfExists -Source "console-next/README.md" -Destination (Join-Path $StageDir "README.md")
+
+  Push-Location $StageDir
+  try {
+    npm install --omit=dev
+  }
+  finally {
+    Pop-Location
+  }
 
   if ($env:OHMYQWEN_NODE_RUNTIME_DIR -and (Test-Path $env:OHMYQWEN_NODE_RUNTIME_DIR)) {
     Copy-Item -Recurse -Force $env:OHMYQWEN_NODE_RUNTIME_DIR (Join-Path $StageDir "node-runtime")
@@ -58,9 +67,9 @@ setlocal
 if "%PORT%"=="" set PORT=3005
 if "%BACKEND_BASE_URL%"=="" set BACKEND_BASE_URL=http://127.0.0.1:4311
 if exist "%~dp0node-runtime\node.exe" (
-  "%~dp0node-runtime\node.exe" "%~dp0server.js"
+  "%~dp0node-runtime\node.exe" "%~dp0node_modules\next\dist\bin\next" start -p %PORT%
 ) else (
-  node "%~dp0server.js"
+  node "%~dp0node_modules\next\dist\bin\next" start -p %PORT%
 )
 '@
   Set-Content -Path (Join-Path $StageDir "serve-console.cmd") -Value $ServeCmd -Encoding ascii
@@ -73,9 +82,9 @@ if (-not $env:PORT) { $env:PORT = "3005" }
 if (-not $env:BACKEND_BASE_URL) { $env:BACKEND_BASE_URL = "http://127.0.0.1:4311" }
 $bundledNode = Join-Path $root "node-runtime/node.exe"
 if (Test-Path $bundledNode) {
-  & $bundledNode (Join-Path $root "server.js")
+  & $bundledNode (Join-Path $root "node_modules/next/dist/bin/next") "start" "-p" $env:PORT
 } else {
-  node (Join-Path $root "server.js")
+  node (Join-Path $root "node_modules/next/dist/bin/next") start -p $env:PORT
 }
 '@
   Set-Content -Path (Join-Path $StageDir "serve-console.ps1") -Value $ServePs1 -Encoding utf8
