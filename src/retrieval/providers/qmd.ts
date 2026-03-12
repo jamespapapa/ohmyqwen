@@ -18,7 +18,7 @@ function toRetrievalHits(
     path: hit.path,
     score: hit.score,
     reasons: unique([
-      "qmd-cli",
+      "qmd-runtime",
       hit.docid ? `docid=${hit.docid}` : "",
       hit.title ? `title=${hit.title}` : "",
       hit.context ? `context=${hit.context}` : "",

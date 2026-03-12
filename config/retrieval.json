@@ -28,7 +28,7 @@
   },
   "lifecycle": {
     "chunkVersion": "v1",
-    "retrievalVersion": "v3-qmd-cli",
+    "retrievalVersion": "v6-qmd-internal-runtime",
     "autoReindexOnStale": true
   },
   "qmd": {

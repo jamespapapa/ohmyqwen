@@ -70,7 +70,13 @@ try {
 setlocal
 cd /d "%~dp0"
 if "%OHMYQWEN_SERVER_TRACE%"=="" set OHMYQWEN_SERVER_TRACE=1
+if "%OHMYQWEN_QMD_RUNTIME_ROOT%"=="" set OHMYQWEN_QMD_RUNTIME_ROOT=%~dp0.ohmyqwen\runtime\qmd
+if "%OHMYQWEN_QMD_VENDOR_ROOT%"=="" set OHMYQWEN_QMD_VENDOR_ROOT=%~dp0vendor\qmd
+if "%OHMYQWEN_QMD_MODELS_DIR%"=="" set OHMYQWEN_QMD_MODELS_DIR=%~dp0.ohmyqwen\runtime\qmd\models
 echo [serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=%OHMYQWEN_SERVER_TRACE%
+echo [serve-ohmyqwen] OHMYQWEN_QMD_RUNTIME_ROOT=%OHMYQWEN_QMD_RUNTIME_ROOT%
+echo [serve-ohmyqwen] OHMYQWEN_QMD_VENDOR_ROOT=%OHMYQWEN_QMD_VENDOR_ROOT%
+echo [serve-ohmyqwen] OHMYQWEN_QMD_MODELS_DIR=%OHMYQWEN_QMD_MODELS_DIR%
 if exist "%~dp0node-runtime\node.exe" (
   "%~dp0node-runtime\node.exe" "%~dp0dist\cli.js" serve
 ) else (
@@ -84,7 +90,13 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 if (-not $env:OHMYQWEN_SERVER_TRACE) { $env:OHMYQWEN_SERVER_TRACE = "1" }
+if (-not $env:OHMYQWEN_QMD_RUNTIME_ROOT) { $env:OHMYQWEN_QMD_RUNTIME_ROOT = (Join-Path $root ".ohmyqwen/runtime/qmd") }
+if (-not $env:OHMYQWEN_QMD_VENDOR_ROOT) { $env:OHMYQWEN_QMD_VENDOR_ROOT = (Join-Path $root "vendor/qmd") }
+if (-not $env:OHMYQWEN_QMD_MODELS_DIR) { $env:OHMYQWEN_QMD_MODELS_DIR = (Join-Path $root ".ohmyqwen/runtime/qmd/models") }
 Write-Host "[serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=$env:OHMYQWEN_SERVER_TRACE"
+Write-Host "[serve-ohmyqwen] OHMYQWEN_QMD_RUNTIME_ROOT=$env:OHMYQWEN_QMD_RUNTIME_ROOT"
+Write-Host "[serve-ohmyqwen] OHMYQWEN_QMD_VENDOR_ROOT=$env:OHMYQWEN_QMD_VENDOR_ROOT"
+Write-Host "[serve-ohmyqwen] OHMYQWEN_QMD_MODELS_DIR=$env:OHMYQWEN_QMD_MODELS_DIR"
 $bundledNode = Join-Path $root "node-runtime/node.exe"
 if (Test-Path $bundledNode) {
   & $bundledNode (Join-Path $root "dist/cli.js") serve

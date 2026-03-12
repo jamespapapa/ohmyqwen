@@ -791,6 +791,16 @@ function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
+async function resolveServerRetrievalConfig(
+  project: ServerProject,
+  stageTokenCaps: { PLAN: number; IMPLEMENT: number; VERIFY: number }
+): Promise<Awaited<ReturnType<typeof resolveRetrievalConfig>>> {
+  return resolveRetrievalConfig(
+    process.cwd(),
+    mergeRetrievalWithModelCaps(project.retrieval, stageTokenCaps)
+  );
+}
+
 async function syncInternalQmdProjectContexts(options: {
   project: ServerProject;
   retrievalConfig: Awaited<ReturnType<typeof resolveRetrievalConfig>>;
@@ -3687,10 +3697,7 @@ export async function warmupServerProjectIndex(options: {
     }
 
     const llmContext = await resolveProjectLlmContext(project);
-    const retrievalConfig = await resolveRetrievalConfig(
-      project.workspaceDir,
-      mergeRetrievalWithModelCaps(project.retrieval, llmContext.stageTokenCaps)
-    );
+    const retrievalConfig = await resolveServerRetrievalConfig(project, llmContext.stageTokenCaps);
     const inspection = await inspectContext({
       cwd: project.workspaceDir,
       cachePath: resolveServerProjectContextCachePath(project.workspaceDir),
@@ -4211,10 +4218,7 @@ export async function analyzeServerProject(options: {
     });
 
     const llmContext = await resolveProjectLlmContext(project);
-    const retrievalConfig = await resolveRetrievalConfig(
-      project.workspaceDir,
-      mergeRetrievalWithModelCaps(project.retrieval, llmContext.stageTokenCaps)
-    );
+    const retrievalConfig = await resolveServerRetrievalConfig(project, llmContext.stageTokenCaps);
     const llm = new OpenAICompatibleLlmClient({
       model: llmContext.model.id,
       maxTokens: llmContext.model.maxOutputTokens,
@@ -6094,7 +6098,7 @@ export async function searchServerProject(options: {
 
     const llmContext = await resolveProjectLlmContext(project);
     const retrievalConfig = await resolveRetrievalConfig(
-      project.workspaceDir,
+      process.cwd(),
       mergeRetrievalWithModelCaps(retrievalOverrides, llmContext.stageTokenCaps)
     );
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);

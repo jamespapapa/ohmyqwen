@@ -105,7 +105,7 @@ const DEFAULT_CONFIG: ResolvedRetrievalConfig = {
   },
   lifecycle: {
     chunkVersion: "v1",
-    retrievalVersion: "v5-qmd-multicorpus",
+    retrievalVersion: "v6-qmd-internal-runtime",
     autoReindexOnStale: true
   },
   qmd: {
@@ -234,6 +234,32 @@ function normalizeOptionalPath(value: string | undefined): string | undefined {
     return undefined;
   }
   return trimmed;
+}
+
+function absolutizeOptionalPath(baseDir: string, value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return path.isAbsolute(trimmed) ? path.resolve(trimmed) : path.resolve(baseDir, trimmed);
+}
+
+function absolutizeQmdPaths(
+  baseDir: string,
+  qmd: ResolvedRetrievalConfig["qmd"]
+): ResolvedRetrievalConfig["qmd"] {
+  return {
+    ...qmd,
+    runtimeRoot: absolutizeOptionalPath(baseDir, qmd.runtimeRoot),
+    vendorRoot: absolutizeOptionalPath(baseDir, qmd.vendorRoot),
+    modelsDir: absolutizeOptionalPath(baseDir, qmd.modelsDir),
+    embedModelPath: absolutizeOptionalPath(baseDir, qmd.embedModelPath),
+    rerankModelPath: absolutizeOptionalPath(baseDir, qmd.rerankModelPath),
+    generateModelPath: absolutizeOptionalPath(baseDir, qmd.generateModelPath),
+    configDir: absolutizeOptionalPath(baseDir, qmd.configDir),
+    cacheHome: absolutizeOptionalPath(baseDir, qmd.cacheHome),
+    indexPath: absolutizeOptionalPath(baseDir, qmd.indexPath)
+  };
 }
 
 function parseQmdQueryMode(
@@ -410,6 +436,7 @@ export async function resolveRetrievalConfig(
     config = mergeConfig(config, overrides);
   }
 
+  config.qmd = absolutizeQmdPaths(cwd, config.qmd);
   config.providerPriority = uniqueProviders(config.providerPriority);
 
   return config;

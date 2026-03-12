@@ -47,7 +47,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 export OHMYQWEN_SERVER_TRACE="${OHMYQWEN_SERVER_TRACE:-1}"
+export OHMYQWEN_QMD_RUNTIME_ROOT="${OHMYQWEN_QMD_RUNTIME_ROOT:-$ROOT_DIR/.ohmyqwen/runtime/qmd}"
+export OHMYQWEN_QMD_VENDOR_ROOT="${OHMYQWEN_QMD_VENDOR_ROOT:-$ROOT_DIR/vendor/qmd}"
+export OHMYQWEN_QMD_MODELS_DIR="${OHMYQWEN_QMD_MODELS_DIR:-$ROOT_DIR/.ohmyqwen/runtime/qmd/models}"
 echo "[serve-ohmyqwen] OHMYQWEN_SERVER_TRACE=${OHMYQWEN_SERVER_TRACE}"
+echo "[serve-ohmyqwen] OHMYQWEN_QMD_RUNTIME_ROOT=${OHMYQWEN_QMD_RUNTIME_ROOT}"
+echo "[serve-ohmyqwen] OHMYQWEN_QMD_VENDOR_ROOT=${OHMYQWEN_QMD_VENDOR_ROOT}"
+echo "[serve-ohmyqwen] OHMYQWEN_QMD_MODELS_DIR=${OHMYQWEN_QMD_MODELS_DIR}"
 if [ -x "$ROOT_DIR/node-runtime/bin/node" ]; then
   exec "$ROOT_DIR/node-runtime/bin/node" "$ROOT_DIR/dist/cli.js" serve
 fi
