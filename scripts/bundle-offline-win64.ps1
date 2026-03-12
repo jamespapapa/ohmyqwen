@@ -48,7 +48,7 @@ try {
 
   Push-Location $StageDir
   try {
-    pnpm install --prod --frozen-lockfile
+    npm install --omit=dev
   }
   finally {
     Pop-Location

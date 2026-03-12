@@ -30,7 +30,9 @@ copy_if_exists "dist" "$STAGE_DIR/dist"
 copy_if_exists "config" "$STAGE_DIR/config"
 copy_if_exists "vendor/qmd/dist" "$STAGE_DIR/vendor/qmd/dist"
 
-pnpm install --prod --frozen-lockfile --dir "$STAGE_DIR"
+pushd "$STAGE_DIR" >/dev/null
+npm install --omit=dev
+popd >/dev/null
 
 if [ -d ".ohmyqwen/runtime/qmd/models" ]; then
   mkdir -p "$STAGE_DIR/.ohmyqwen/runtime/qmd"
