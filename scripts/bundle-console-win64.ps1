@@ -113,7 +113,7 @@ if (Test-Path $bundledNode) {
     Write-Host "  .\\serve-console.cmd"
   }
   else {
-    Write-Host "  node server.js"
+    Write-Host "  node .\\node_modules\\next\\dist\\bin\\next start -p 3005"
   }
 }
 finally {

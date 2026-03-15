@@ -14,8 +14,9 @@
 
 ## 현재 상태
 
-- 현재 통합은 `src/retrieval/qmd-cli.ts` 기반 외부 프로세스 호출이다.
-- 실제 사용은 `search` 중심이며, `embed`, `context`, 장기 세션형 `query` 파이프라인은 온전히 활용하지 못한다.
+- 현재 기본 통합은 **internal-runtime** 이다.
+- 외부 CLI는 호환/회귀 테스트용으로만 남아 있으며, 기본 경로는 `src/retrieval/qmd-internal.ts` + `vendor/qmd/dist/runtime.js`를 사용한다.
+- 런타임 경로는 app-owned `.ohmyqwen/runtime/qmd/*` 아래로 고정한다.
 - qmd 원본은 `vendor/qmd/`로 프로젝트 내부에 포함했다.
   - upstream source: `40610c3aa65d9d399ebb188a7e4930f6628ae51c`
 
@@ -23,11 +24,9 @@
 
 현재 구조는 다음 한계를 가진다.
 
-1. 외부 실행파일 설치 필요
-2. subprocess 기반이라 모델/session 재사용이 약함
-3. `qmd embed` lifecycle 미통합
-4. qmd context tree 미활용
-5. Windows x64 폐쇄망 번들링 기준이 아직 없음
+1. ask/analyze 전 경로에서 incremental embed / context sync / rerank 활용을 더 일반화해야 함
+2. broad query에서 search 편향을 줄이고 full query pipeline 활용도를 높여야 함
+3. Windows x64 폐쇄망 번들 smoke test 자동화를 더 강화해야 함
 
 ## 타깃 아키텍처
 
@@ -35,7 +34,8 @@
 
 - `vendor/qmd/` : upstream snapshot
 - `src/retrieval/qmd-runtime.ts` : app 내부에서 사용할 런타임 경로 계약
-- 이후 단계에서 `src/retrieval/qmd-cli.ts`는 `src/retrieval/qmd-internal.ts`로 대체
+- `src/retrieval/qmd-internal.ts` : internal runtime adapter
+- `src/retrieval/qmd-cli.ts` : external CLI 호환/회귀용 adapter
 
 ### 2. 오프라인 런타임 루트
 
@@ -97,13 +97,13 @@
 
 - [x] `spawn("qmd", ...)` 제거를 기본 경로로 승격
 - [x] `createStore / hybridQuery / vectorSearchQuery` 직접 호출 경로 추가
-- [ ] internal status / index / embed API 정리
+- [x] internal status / index / embed API 기본 경로 정리
 
 ### Phase 3. Offline Hardening
 
-- [ ] `hf:` URI 제거 또는 override
-- [ ] local model manifest 도입
-- [ ] offline strict validation 추가
+- [x] local model path override surface 추가
+- [x] offline strict validation 추가
+- [ ] vendor/qmd 내부 기본 model URI를 local-model-first 기준으로 더 정리
 
 ### Phase 4. Lifecycle Integration
 
@@ -113,9 +113,9 @@
 
 ### Phase 5. Windows Bundle
 
-- [ ] Windows x64 빌드 파이프라인
+- [x] Windows x64 GitHub Actions 빌드 파이프라인
 - [x] 번들/런타임 검증 스크립트 추가
-- [ ] 폐쇄망 smoke test
+- [ ] 폐쇄망 smoke test 자동화 / 실행 리포트 정리
 
 ## 설정 키
 

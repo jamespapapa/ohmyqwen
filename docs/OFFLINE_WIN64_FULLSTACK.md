@@ -42,7 +42,7 @@ serve-console.cmd
 또는:
 
 ```bat
-node-runtime\node.exe server.js
+node-runtime\node.exe node_modules\next\dist\bin\next start -p 3005
 ```
 
 기본 포트는 `3005`.
