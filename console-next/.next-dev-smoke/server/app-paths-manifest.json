@@ -1,0 +1,23 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/domain-packs/[id]/route": "app/api/domain-packs/[id]/route.js",
+  "/api/fs/children/route": "app/api/fs/children/route.js",
+  "/api/domain-packs/route": "app/api/domain-packs/route.js",
+  "/api/llm/models/route": "app/api/llm/models/route.js",
+  "/api/presets/[id]/route": "app/api/presets/[id]/route.js",
+  "/api/presets/route": "app/api/presets/route.js",
+  "/api/projects/[id]/ask/route": "app/api/projects/[id]/ask/route.js",
+  "/api/projects/[id]/debug/route": "app/api/projects/[id]/debug/route.js",
+  "/api/projects/[id]/file/route": "app/api/projects/[id]/file/route.js",
+  "/api/projects/[id]/route": "app/api/projects/[id]/route.js",
+  "/api/projects/[id]/analyze/route": "app/api/projects/[id]/analyze/route.js",
+  "/api/projects/[id]/runs/route": "app/api/projects/[id]/runs/route.js",
+  "/api/projects/[id]/search/route": "app/api/projects/[id]/search/route.js",
+  "/api/projects/route": "app/api/projects/route.js",
+  "/api/runs/[id]/artifacts/route": "app/api/runs/[id]/artifacts/route.js",
+  "/api/projects/[id]/index/route": "app/api/projects/[id]/index/route.js",
+  "/api/runs/[id]/events/route": "app/api/runs/[id]/events/route.js",
+  "/api/runs/[id]/route": "app/api/runs/[id]/route.js",
+  "/api/runs/route": "app/api/runs/route.js",
+  "/page": "app/page.js"
+}

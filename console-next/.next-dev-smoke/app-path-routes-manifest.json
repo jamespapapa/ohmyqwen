@@ -1,0 +1,23 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/api/domain-packs/[id]/route": "/api/domain-packs/[id]",
+  "/api/fs/children/route": "/api/fs/children",
+  "/api/domain-packs/route": "/api/domain-packs",
+  "/api/llm/models/route": "/api/llm/models",
+  "/api/presets/[id]/route": "/api/presets/[id]",
+  "/api/presets/route": "/api/presets",
+  "/api/projects/[id]/ask/route": "/api/projects/[id]/ask",
+  "/api/projects/[id]/debug/route": "/api/projects/[id]/debug",
+  "/api/projects/[id]/file/route": "/api/projects/[id]/file",
+  "/api/projects/[id]/route": "/api/projects/[id]",
+  "/api/projects/[id]/analyze/route": "/api/projects/[id]/analyze",
+  "/api/projects/[id]/runs/route": "/api/projects/[id]/runs",
+  "/api/projects/[id]/search/route": "/api/projects/[id]/search",
+  "/api/projects/route": "/api/projects",
+  "/api/runs/[id]/artifacts/route": "/api/runs/[id]/artifacts",
+  "/api/projects/[id]/index/route": "/api/projects/[id]/index",
+  "/api/runs/[id]/events/route": "/api/runs/[id]/events",
+  "/api/runs/[id]/route": "/api/runs/[id]",
+  "/api/runs/route": "/api/runs",
+  "/page": "/"
+}
