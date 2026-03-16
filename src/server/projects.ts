@@ -73,10 +73,14 @@ import {
 } from "./knowledge-schema.js";
 import {
   buildRetrievalUnitMarkdown,
-  buildRetrievalUnitSnapshot
+  buildRetrievalUnitSnapshot,
+  rankRetrievalUnitsForQuestion,
+  RetrievalUnitSnapshotSchema,
+  type RetrievalUnitSnapshot
 } from "./retrieval-units.js";
 import {
   classifyAskQuestionType,
+  getAskQuestionTypeRetrievalContract,
   type AskQuestionType
 } from "./question-types.js";
 import {
@@ -364,6 +368,9 @@ export interface ProjectAskResponse {
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
     frontBackEvidenceUsedCount?: number;
+    retrievalUnitLoaded?: boolean;
+    retrievalUnitCount?: number;
+    matchedRetrievalUnitIds?: string[];
     retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
@@ -934,11 +941,13 @@ function compactQueryForSearch(query: string): string {
 function buildAskQueryCandidates(options: {
   question: string;
   strategy: AskStrategyType;
+  questionType?: AskQuestionType;
   targetSymbols?: string[];
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
   questionTags?: string[];
   learnedMatches?: LearnedKnowledgeMatch[];
+  retrievalUnitTerms?: string[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -955,9 +964,13 @@ function buildAskQueryCandidates(options: {
   const capabilityTerms = expandCapabilitySearchTerms(questionTags, {
     domainPacks: options.domainPacks
   }).slice(0, 8);
+  const retrievalContract = getAskQuestionTypeRetrievalContract(
+    options.questionType ?? classifyAskQuestionType({ question, strategy: options.strategy, moduleCandidates }).type
+  );
   const learnedTerms = unique(
     (options.learnedMatches ?? []).flatMap((item) => [item.label, ...item.searchTerms])
   ).slice(0, 10);
+  const retrievalUnitTerms = unique(options.retrievalUnitTerms ?? []).slice(0, 10);
 
   const candidates = [
     question,
@@ -985,6 +998,12 @@ function buildAskQueryCandidates(options: {
   }
   if (learnedTerms.length > 0) {
     candidates.push(`${learnedTerms.join(" ")} ${compact}`.trim());
+  }
+  if (retrievalContract.queryHints.length > 0) {
+    candidates.push(`${compact} ${retrievalContract.queryHints.join(" ")}`.trim());
+  }
+  if (retrievalUnitTerms.length > 0) {
+    candidates.push(`${retrievalUnitTerms.join(" ")} ${compact}`.trim());
   }
 
   if (hasInsuranceClaim) {
@@ -2257,6 +2276,19 @@ async function readLearnedKnowledgeSnapshot(memoryRoot: string): Promise<Learned
   try {
     const raw = await fs.readFile(learnedKnowledgeSnapshotPath(memoryRoot), "utf8");
     return LearnedKnowledgeSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function retrievalUnitSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, RETRIEVAL_UNITS_MEMORY_DIR, "latest.json");
+}
+
+async function readRetrievalUnitSnapshot(memoryRoot: string): Promise<RetrievalUnitSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(retrievalUnitSnapshotPath(memoryRoot), "utf8");
+    return RetrievalUnitSnapshotSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
   }
@@ -3644,10 +3676,12 @@ async function collectMemoryMarkdownFiles(memoryRoot: string, maxFiles = 300): P
 
 function selectAskMemoryFiles(
   paths: string[],
-  intent?: { methodFocused: boolean; architectureFocused: boolean; moduleFlowFocused: boolean; crossLayerFocused: boolean }
+  intent?: { methodFocused: boolean; architectureFocused: boolean; moduleFlowFocused: boolean; crossLayerFocused: boolean },
+  questionType?: AskQuestionType
 ): string[] {
   const normalized = paths.map((item) => toForwardSlash(item));
-  const preferredOrder = intent?.crossLayerFocused
+  const retrievalContract = questionType ? getAskQuestionTypeRetrievalContract(questionType) : null;
+  const preferredOrder = retrievalContract?.preferredMemoryFiles ?? (intent?.crossLayerFocused
     ? [
         "front-back-graph/latest.md",
         "front-catalog/latest.md",
@@ -3673,7 +3707,7 @@ function selectAskMemoryFiles(
         "eai-dictionary/latest.md",
         "eai-dictionary/maintenance-guide.md",
         "query-reports/latest.md"
-      ];
+      ]);
 
   const selected: string[] = [];
   for (const preferred of preferredOrder) {
@@ -5338,6 +5372,20 @@ export async function askServerProject(options: {
       });
     }
     let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
+    const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
+    if (retrievalUnitSnapshot) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "ask",
+        status: "info",
+        message: "loaded cached retrieval units for ask",
+        metadata: {
+          unitCount: retrievalUnitSnapshot.summary.unitCount,
+          topDomains: retrievalUnitSnapshot.summary.topDomains.slice(0, 5).map((item) => item.id)
+        }
+      });
+    }
     if (!learnedKnowledgeSnapshot && (frontBackGraphSnapshot || structureSnapshot)) {
       learnedKnowledgeSnapshot = computeLearnedKnowledgeSnapshot({
         generatedAt: nowIso(),
@@ -5380,7 +5428,7 @@ export async function askServerProject(options: {
     });
     const loadAskMemoryPreview = async () => {
       const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
-      const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent);
+      const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent, questionTypeDecision.type);
       const preview: Array<{ path: string; content: string }> = [];
       for (const relativePath of selectedMemoryFiles) {
         const absolutePath = path.resolve(memoryRoot, relativePath);
@@ -5414,6 +5462,27 @@ export async function askServerProject(options: {
     const buildAskEvidenceBundle = async (round: number) => {
       const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
       const questionTags = unique([...baseQuestionCapabilityTags, ...matchedKnowledge.map((item) => item.id)]);
+      const questionType = classifyAskQuestionType({
+        question,
+        strategy: strategyDecision.strategy,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        questionTags,
+        matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
+      });
+      const rankedRetrievalUnits = retrievalUnitSnapshot
+        ? rankRetrievalUnitsForQuestion({
+            snapshot: retrievalUnitSnapshot,
+            question,
+            questionType: questionType.type,
+            questionTags,
+            matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
+            moduleCandidates: strategyDecision.moduleCandidates,
+            limit: 6
+          })
+        : [];
+      const retrievalUnitTerms = unique(
+        rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 4))
+      ).slice(0, 12);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
@@ -5426,20 +5495,24 @@ export async function askServerProject(options: {
           activeDomainIds: activeDomainPacks.map((item) => item.id),
           matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
           matchedLearnedKnowledgeIds: matchedKnowledge.map((item) => item.id),
+          matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
           lockedDomainIds: domainSelection.lockedDomainIds,
           effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
-          questionCapabilityTags: questionTags
+          questionCapabilityTags: questionTags,
+          questionType: questionType.type
         }
       });
 
       const queries = buildAskQueryCandidates({
         question,
         strategy: strategyDecision.strategy,
+        questionType: questionType.type,
         targetSymbols: strategyDecision.targetSymbols,
         moduleCandidates: strategyDecision.moduleCandidates,
         domainPacks: effectiveDomainPacks,
         questionTags,
-        learnedMatches: matchedKnowledge
+        learnedMatches: matchedKnowledge,
+        retrievalUnitTerms
       });
       const results: ProjectSearchResult[] = [];
       for (const [index, expandedQuery] of queries.entries()) {
@@ -5643,6 +5716,8 @@ export async function askServerProject(options: {
 
       return {
         matchedLearnedKnowledge: matchedKnowledge,
+        matchedRetrievalUnits: rankedRetrievalUnits,
+        questionTypeDecision: questionType,
         questionCapabilityTags: questionTags,
         expandedQueries: queries,
         searchResults: results,
@@ -5661,6 +5736,7 @@ export async function askServerProject(options: {
     const summarizeRetryBundle = (bundle: {
       expandedQueries: string[];
       matchedLearnedKnowledge: LearnedKnowledgeMatch[];
+      matchedRetrievalUnits: Array<{ unit: { id: string } }>;
       mergedHits: ProjectSearchHit[];
       hydratedEvidence: AskHydratedEvidenceItem[];
       linkedFlowEvidence: Array<{
@@ -5674,7 +5750,10 @@ export async function askServerProject(options: {
     }) =>
       summarizeAskRetryEvidence({
         queryCandidates: bundle.expandedQueries,
-        matchedKnowledgeIds: bundle.matchedLearnedKnowledge.map((item) => item.id),
+        matchedKnowledgeIds: [
+          ...bundle.matchedLearnedKnowledge.map((item) => item.id),
+          ...bundle.matchedRetrievalUnits.map((item) => item.unit.id)
+        ],
         mergedHitPaths: bundle.mergedHits.map((item) => item.path),
         hydratedPaths: bundle.hydratedEvidence.map((item) => `${item.path}|${item.reason}`),
         linkedFlowKeys: bundle.linkedFlowEvidence.map(
@@ -5687,6 +5766,8 @@ export async function askServerProject(options: {
 
     let {
       matchedLearnedKnowledge,
+      matchedRetrievalUnits,
+      questionTypeDecision: initialQuestionTypeDecision,
       questionCapabilityTags,
       expandedQueries,
       searchResults,
@@ -5700,13 +5781,7 @@ export async function askServerProject(options: {
       lowConfidenceMode,
       memoryPreview
     } = await buildAskEvidenceBundle(1);
-    questionTypeDecision = classifyAskQuestionType({
-      question,
-      strategy: strategyDecision.strategy,
-      moduleCandidates: strategyDecision.moduleCandidates,
-      questionTags: questionCapabilityTags,
-      matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
-    });
+    questionTypeDecision = initialQuestionTypeDecision;
 
     const qualityFailures: string[] = [];
 
@@ -5745,7 +5820,10 @@ export async function askServerProject(options: {
           moduleCandidates: strategyDecision.moduleCandidates,
           domainPacks: effectiveDomainPacks,
           questionTags: questionCapabilityTags,
-          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+          matchedKnowledgeIds: [
+            ...matchedLearnedKnowledge.map((item) => item.id),
+            ...matchedRetrievalUnits.map((item) => item.unit.id)
+          ]
         })
       : null;
 
@@ -5863,6 +5941,7 @@ export async function askServerProject(options: {
               domainSelectionMode: domainSelection.mode,
               matchedDomains: domainSelection.matchedDomains.map((item) => item.id),
               matchedLearnedKnowledge: matchedLearnedKnowledge.map((item) => item.id),
+              matchedRetrievalUnits: matchedRetrievalUnits.map((item) => item.unit.id),
               lockedDomains: domainSelection.lockedDomainIds,
               effectiveDomains: effectiveDomainPacks.map((item) => item.id)
             },
@@ -5885,6 +5964,13 @@ export async function askServerProject(options: {
             linkedEaiEvidence,
             linkedFlowEvidence,
             downstreamFlowTraces,
+            retrievalUnitMatches: matchedRetrievalUnits.map((item) => ({
+              id: item.unit.id,
+              type: item.unit.type,
+              title: item.unit.title,
+              score: Number(item.score.toFixed(3)),
+              reasons: item.reasons.slice(0, 5)
+            })),
             learnedKnowledgeMatches: matchedLearnedKnowledge,
             memory: memoryPreview,
             instruction:
@@ -5942,7 +6028,10 @@ export async function askServerProject(options: {
           moduleCandidates: strategyDecision.moduleCandidates,
           domainPacks: effectiveDomainPacks,
           questionTags: questionCapabilityTags,
-          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+          matchedKnowledgeIds: [
+            ...matchedLearnedKnowledge.map((item) => item.id),
+            ...matchedRetrievalUnits.map((item) => item.unit.id)
+          ]
         });
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
@@ -5982,6 +6071,7 @@ export async function askServerProject(options: {
         const currentEvidenceState = summarizeRetryBundle({
           expandedQueries,
           matchedLearnedKnowledge,
+          matchedRetrievalUnits,
           mergedHits,
           hydratedEvidence,
           linkedFlowEvidence,
@@ -6051,6 +6141,8 @@ export async function askServerProject(options: {
         if (nextBundle) {
           ({
             matchedLearnedKnowledge,
+            matchedRetrievalUnits,
+            questionTypeDecision,
             questionCapabilityTags,
             expandedQueries,
             searchResults,
@@ -6090,6 +6182,7 @@ export async function askServerProject(options: {
       `- activeDomains: ${activeDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedDomains: ${domainSelection.matchedDomains.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedLearnedKnowledge: ${matchedLearnedKnowledge.map((item) => item.id).join(", ") || "(none)"}`,
+      `- matchedRetrievalUnits: ${matchedRetrievalUnits.map((item) => item.unit.id).join(", ") || "(none)"}`,
       `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
       `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
@@ -6141,6 +6234,14 @@ export async function askServerProject(options: {
         );
       }
     }
+    if (matchedRetrievalUnits.length > 0) {
+      reportLines.push("", "## Retrieval Unit Matches");
+      for (const item of matchedRetrievalUnits.slice(0, 6)) {
+        reportLines.push(
+          `- ${item.unit.id} | ${item.unit.type} | ${item.unit.title} | score=${item.score.toFixed(2)} | reasons=${item.reasons.join(", ") || "(none)"}`
+        );
+      }
+    }
     reportLines.push("");
 
     const queryReportFiles = await writeMemoryDocs({
@@ -6182,6 +6283,7 @@ export async function askServerProject(options: {
         activeDomainIds: activeDomainPacks.map((item) => item.id),
         matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
         matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+        matchedRetrievalUnitIds: matchedRetrievalUnits.map((item) => item.unit.id),
         lockedDomainIds: domainSelection.lockedDomainIds,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
@@ -6190,6 +6292,8 @@ export async function askServerProject(options: {
         frontBackGraphLoaded: Boolean(frontBackGraphSnapshot),
         frontBackLinkCount: frontBackGraphSnapshot?.links.length ?? 0,
         frontBackEvidenceUsedCount: linkedFlowEvidence.length,
+        retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+        retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
         retryStopReason,
         memoryFiles: [
           analysis.memoryFiles[0],

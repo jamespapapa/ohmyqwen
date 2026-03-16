@@ -42,6 +42,12 @@ export interface AskQuestionTypeContract {
   requireBusinessTraceDetail?: boolean;
 }
 
+export interface AskQuestionTypeRetrievalContract {
+  preferredMemoryFiles: string[];
+  preferredUnitTypes: Array<"symbol-block" | "module-overview" | "flow" | "knowledge-cluster" | "eai-link">;
+  queryHints: string[];
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -248,6 +254,106 @@ export function getAskQuestionTypeContract(type: AskQuestionType): AskQuestionTy
         requireCodeEvidence: true,
         requireCodeBodyEvidence: true,
         requireOverviewStructure: true
+      };
+  }
+}
+
+export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQuestionTypeRetrievalContract {
+  switch (type) {
+    case "cross_layer_flow":
+      return {
+        preferredMemoryFiles: [
+          "front-back-graph/latest.md",
+          "front-catalog/latest.md",
+          "retrieval-units/latest.md",
+          "learned-knowledge/latest.md",
+          "project-analysis/latest.md",
+          "structure-index/latest.md"
+        ],
+        preferredUnitTypes: ["flow", "knowledge-cluster", "module-overview"],
+        queryHints: ["frontend", "route", "api", "gateway", "controller", "service"]
+      };
+    case "symbol_deep_trace":
+      return {
+        preferredMemoryFiles: [
+          "structure-index/latest.md",
+          "retrieval-units/latest.md",
+          "learned-knowledge/latest.md",
+          "project-analysis/latest.md",
+          "eai-dictionary/latest.md"
+        ],
+        preferredUnitTypes: ["symbol-block", "eai-link", "flow"],
+        queryHints: ["callee", "calls", "downstream", "service", "dao", "eai"]
+      };
+    case "module_role_explanation":
+      return {
+        preferredMemoryFiles: [
+          "retrieval-units/latest.md",
+          "learned-knowledge/latest.md",
+          "project-analysis/latest.md",
+          "structure-index/latest.md"
+        ],
+        preferredUnitTypes: ["module-overview", "knowledge-cluster", "flow"],
+        queryHints: ["role", "responsibility", "dispatcher", "queue", "processor", "callback"]
+      };
+    case "process_or_batch_trace":
+      return {
+        preferredMemoryFiles: [
+          "retrieval-units/latest.md",
+          "structure-index/latest.md",
+          "learned-knowledge/latest.md",
+          "project-analysis/latest.md"
+        ],
+        preferredUnitTypes: ["flow", "module-overview", "knowledge-cluster", "symbol-block"],
+        queryHints: ["batch", "job", "step", "tasklet", "scheduler", "processor", "queue"]
+      };
+    case "channel_or_partner_integration":
+      return {
+        preferredMemoryFiles: [
+          "front-back-graph/latest.md",
+          "front-catalog/latest.md",
+          "retrieval-units/latest.md",
+          "learned-knowledge/latest.md",
+          "project-analysis/latest.md"
+        ],
+        preferredUnitTypes: ["flow", "knowledge-cluster", "module-overview"],
+        queryHints: ["channel", "partner", "bridge", "callback", "webhook", "integration"]
+      };
+    case "business_capability_trace":
+      return {
+        preferredMemoryFiles: [
+          "retrieval-units/latest.md",
+          "learned-knowledge/latest.md",
+          "structure-index/latest.md",
+          "project-analysis/latest.md",
+          "eai-dictionary/latest.md"
+        ],
+        preferredUnitTypes: ["flow", "symbol-block", "eai-link", "knowledge-cluster"],
+        queryHints: ["controller", "service", "orchestration", "mapper", "eai", "downstream"]
+      };
+    case "config_or_resource_explanation":
+      return {
+        preferredMemoryFiles: [
+          "project-profile/latest.md",
+          "retrieval-units/latest.md",
+          "eai-dictionary/latest.md",
+          "structure-index/latest.md"
+        ],
+        preferredUnitTypes: ["knowledge-cluster", "eai-link", "module-overview"],
+        queryHints: ["xml", "config", "resource", "properties", "applicationcontext"]
+      };
+    case "domain_capability_overview":
+      return {
+        preferredMemoryFiles: [
+          "project-analysis/latest.md",
+          "retrieval-units/latest.md",
+          "project-profile/latest.md",
+          "learned-knowledge/latest.md",
+          "structure-index/latest.md",
+          "eai-dictionary/latest.md"
+        ],
+        preferredUnitTypes: ["module-overview", "knowledge-cluster", "flow", "eai-link"],
+        queryHints: ["architecture", "module", "service", "domain", "capability", "overview"]
       };
   }
 }

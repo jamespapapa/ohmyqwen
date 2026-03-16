@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildRetrievalUnitMarkdown, buildRetrievalUnitSnapshot } from "../src/server/retrieval-units.js";
+import {
+  buildRetrievalUnitMarkdown,
+  buildRetrievalUnitSnapshot,
+  rankRetrievalUnitsForQuestion
+} from "../src/server/retrieval-units.js";
 import type { KnowledgeSchemaSnapshot } from "../src/server/knowledge-schema.js";
 
 const snapshot: KnowledgeSchemaSnapshot = {
@@ -399,5 +403,32 @@ describe("retrieval unit standardization", () => {
     expect(markdown).toContain("# Retrieval Units");
     expect(markdown).toContain("## Unit Types");
     expect(markdown).toContain("## Representative Units");
+  });
+
+  it("ranks flow units highest for channel integration questions", () => {
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: snapshot });
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: units,
+      question: "모니모 회원인증은 프론트에서 백엔드까지 어떻게 연동되는지 설명해줘.",
+      questionType: "channel_or_partner_integration",
+      questionTags: ["member-auth", "channel:monimo"],
+      matchedKnowledgeIds: ["channel:monimo"]
+    });
+
+    expect(ranked[0]?.unit.type).toBe("flow");
+    expect(ranked[0]?.unit.title).toContain("MDP-MYCER999999M");
+  });
+
+  it("ranks module overview units highest for module role questions", () => {
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: snapshot });
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: units,
+      question: "dcp-member 프로젝트는 어떤 역할을 하는가?",
+      questionType: "module_role_explanation",
+      moduleCandidates: ["dcp-member"]
+    });
+
+    expect(ranked[0]?.unit.type).toBe("module-overview");
+    expect(ranked[0]?.unit.title).toBe("dcp-member");
   });
 });

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { classifyAskQuestionType, getAskQuestionTypeContract } from "../src/server/question-types.js";
+import {
+  classifyAskQuestionType,
+  getAskQuestionTypeContract,
+  getAskQuestionTypeRetrievalContract
+} from "../src/server/question-types.js";
 
 describe("question types", () => {
   it("classifies explicit frontend-backend flow questions as cross_layer_flow", () => {
@@ -73,5 +77,20 @@ describe("question types", () => {
     expect(getAskQuestionTypeContract("cross_layer_flow").requireBusinessTraceDetail).toBe(true);
     expect(getAskQuestionTypeContract("symbol_deep_trace").requireTargetSymbolDetail).toBe(true);
     expect(getAskQuestionTypeContract("config_or_resource_explanation").requireCodeEvidence).toBe(false);
+  });
+
+  it("returns retrieval preferences per question type", () => {
+    const moduleRole = getAskQuestionTypeRetrievalContract("module_role_explanation");
+    expect(moduleRole.preferredMemoryFiles[0]).toBe("retrieval-units/latest.md");
+    expect(moduleRole.preferredUnitTypes).toContain("module-overview");
+    expect(moduleRole.queryHints).toContain("role");
+
+    const channel = getAskQuestionTypeRetrievalContract("channel_or_partner_integration");
+    expect(channel.preferredMemoryFiles.slice(0, 2)).toEqual([
+      "front-back-graph/latest.md",
+      "front-catalog/latest.md"
+    ]);
+    expect(channel.preferredUnitTypes).toContain("flow");
+    expect(channel.queryHints).toContain("callback");
   });
 });

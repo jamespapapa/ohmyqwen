@@ -6,6 +6,7 @@ import {
   type KnowledgeMetadata,
   type KnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
+import type { AskQuestionType } from "./question-types.js";
 
 const RetrievalUnitTypeSchema = z.enum([
   "symbol-block",
@@ -51,6 +52,11 @@ export const RetrievalUnitSnapshotSchema = z.object({
 
 export type RetrievalUnit = z.infer<typeof RetrievalUnitSchema>;
 export type RetrievalUnitSnapshot = z.infer<typeof RetrievalUnitSnapshotSchema>;
+export interface RankedRetrievalUnit {
+  unit: RetrievalUnit;
+  score: number;
+  reasons: string[];
+}
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
@@ -94,6 +100,16 @@ function summarizeUnitTypes(units: RetrievalUnit[]): Record<string, number> {
 
 function makeSearchText(parts: Array<string | undefined | null>): string[] {
   return unique(parts.filter((part): part is string => Boolean(part && part.trim())));
+}
+
+function toSearchTokens(input: string): string[] {
+  return unique(
+    input
+      .toLowerCase()
+      .replace(/[^a-z0-9가-힣_:/.-]+/gi, " ")
+      .split(/\s+/)
+      .filter((item) => item.length >= 2)
+  );
 }
 
 function labelForEntity(entity: KnowledgeEntity | undefined): string {
@@ -371,4 +387,103 @@ export function buildRetrievalUnitMarkdown(snapshot: RetrievalUnitSnapshot): str
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
+}
+
+export function rankRetrievalUnitsForQuestion(options: {
+  snapshot: RetrievalUnitSnapshot;
+  question: string;
+  questionType: AskQuestionType;
+  questionTags?: string[];
+  matchedKnowledgeIds?: string[];
+  moduleCandidates?: string[];
+  limit?: number;
+}): RankedRetrievalUnit[] {
+  const tokens = toSearchTokens(options.question);
+  const questionTags = unique(options.questionTags ?? []);
+  const knowledgeSignals = unique(options.matchedKnowledgeIds ?? []);
+  const moduleCandidates = unique(options.moduleCandidates ?? []).map((item) => item.toLowerCase());
+  const preferredTypeWeights: Record<AskQuestionType, Partial<Record<RetrievalUnit["type"], number>>> = {
+    cross_layer_flow: { flow: 4, "knowledge-cluster": 1.5, "module-overview": 1 },
+    business_capability_trace: { flow: 3, "symbol-block": 2.5, "eai-link": 2, "knowledge-cluster": 1 },
+    domain_capability_overview: { "module-overview": 3, "knowledge-cluster": 2.5, flow: 1.5, "eai-link": 1.5 },
+    module_role_explanation: { "module-overview": 4, "knowledge-cluster": 2, flow: 1 },
+    process_or_batch_trace: { flow: 3, "module-overview": 2, "symbol-block": 1.5, "knowledge-cluster": 1.5 },
+    channel_or_partner_integration: { flow: 4, "knowledge-cluster": 2.5, "module-overview": 1.5 },
+    config_or_resource_explanation: { "knowledge-cluster": 2, "eai-link": 1.5, "module-overview": 1 },
+    symbol_deep_trace: { "symbol-block": 4, "eai-link": 2, flow: 1.5 }
+  };
+
+  const results = options.snapshot.units.map((unit) => {
+    let score = unit.confidence * 2;
+    const reasons: string[] = [`base:${unit.confidence.toFixed(2)}`];
+
+    const typeBonus = preferredTypeWeights[options.questionType][unit.type] ?? 0;
+    if (typeBonus > 0) {
+      score += typeBonus;
+      reasons.push(`type:${unit.type}`);
+    }
+
+    const haystack = unique([unit.title, unit.summary, ...unit.searchText]).join(" ").toLowerCase();
+    const tokenMatches = tokens.filter((token) => haystack.includes(token));
+    if (tokenMatches.length > 0) {
+      score += tokenMatches.length * 0.9;
+      reasons.push(`tokens:${tokenMatches.slice(0, 4).join(",")}`);
+    }
+
+    const tagMatches = questionTags.filter(
+      (tag) => unit.domains.includes(tag) || unit.subdomains.includes(tag) || unit.channels.includes(tag) || unit.actions.includes(tag)
+    );
+    if (tagMatches.length > 0) {
+      score += tagMatches.length * 1.2;
+      reasons.push(`tags:${tagMatches.slice(0, 4).join(",")}`);
+    }
+
+    const normalizedKnowledgeSignals = knowledgeSignals.flatMap((item) =>
+      item.startsWith("channel:") || item.startsWith("module:") || item.startsWith("process:")
+        ? [item, item.split(":").slice(1).join(":")]
+        : [item]
+    );
+    const knowledgeMatches = normalizedKnowledgeSignals.filter((signal) => haystack.includes(signal.toLowerCase()));
+    if (knowledgeMatches.length > 0) {
+      score += knowledgeMatches.length * 1.3;
+      reasons.push(`knowledge:${knowledgeMatches.slice(0, 4).join(",")}`);
+    }
+
+    if (moduleCandidates.length > 0) {
+      const moduleMatched = moduleCandidates.some(
+        (candidate) =>
+          haystack.includes(candidate) ||
+          unit.evidencePaths.some((path) => path.toLowerCase().includes(candidate))
+      );
+      if (moduleMatched) {
+        score += 2.2;
+        reasons.push("module");
+      }
+    }
+
+    if (options.questionType === "channel_or_partner_integration" && unit.channels.length > 0) {
+      score += 1.5;
+      reasons.push(`channels:${unit.channels.slice(0, 3).join(",")}`);
+    }
+
+    if (options.questionType === "process_or_batch_trace" && (unit.processRoles.length > 0 || /batch|job|tasklet|step|scheduler|processor|queue/i.test(haystack))) {
+      score += 1.8;
+      reasons.push("process");
+    }
+
+    if (options.questionType === "module_role_explanation" && unit.moduleRoles.length > 0) {
+      score += 1.4;
+      reasons.push(`moduleRoles:${unit.moduleRoles.slice(0, 3).join(",")}`);
+    }
+
+    return {
+      unit,
+      score,
+      reasons
+    };
+  });
+
+  return results
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.unit.id.localeCompare(b.unit.id)))
+    .slice(0, options.limit ?? 8);
 }
