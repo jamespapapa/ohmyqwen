@@ -5,6 +5,7 @@ import { AnalyzeInputSchema, RunModeSchema } from "../core/types.js";
 import {
   analyzeServerProject,
   askServerProject,
+  executeServerProjectReplay,
   getServerLlmSettings,
   getServerDomainPack,
   getServerProject,
@@ -68,7 +69,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback"
+  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback" | "replay"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -692,6 +693,38 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
     } catch (error) {
       routeTrace("project/feedback:failure", {
         projectId: projectFeedbackId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectReplayId = matchProjectPath(pathname, "replay");
+  if (projectReplayId && method === "POST") {
+    routeTrace("project/replay:start", { projectId: projectReplayId });
+    try {
+      const payload = (await readJsonBody(req)) as {
+        limit?: number;
+        kinds?: Array<"ask" | "search">;
+      };
+      const result = await executeServerProjectReplay({
+        projectId: projectReplayId,
+        limit: payload.limit,
+        kinds: payload.kinds
+      });
+      routeTrace("project/replay:success", {
+        projectId: projectReplayId,
+        executedCount: result.executedCount,
+        totalCandidates: result.totalCandidates
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/replay:failure", {
+        projectId: projectReplayId,
         error: error instanceof Error ? error.message : String(error)
       });
       json(res, 400, {

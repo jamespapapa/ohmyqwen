@@ -526,6 +526,10 @@ export default function HomePage() {
   const [askDomainIds, setAskDomainIds] = useState([]);
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [replayLoading, setReplayLoading] = useState(false);
+  const [replayResult, setReplayResult] = useState(null);
   const [debugEvents, setDebugEvents] = useState([]);
   const [debugLoading, setDebugLoading] = useState(false);
   const [indexing, setIndexing] = useState(false);
@@ -1169,6 +1173,17 @@ export default function HomePage() {
     }
   }
 
+  async function refreshAnalysisSummary() {
+    if (!selectedProjectId) {
+      return;
+    }
+    const response = await getJson(`/api/projects/${selectedProjectId}/analyze`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    setAnalysisResult(response);
+  }
+
   async function onSearchProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -1277,6 +1292,76 @@ export default function HomePage() {
       setProjectMessage("");
     } finally {
       setAskLoading(false);
+    }
+  }
+
+  async function submitProjectFeedback({
+    kind,
+    prompt,
+    questionType,
+    matchedKnowledgeIds,
+    matchedRetrievalUnitIds,
+    verdict
+  }) {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    setFeedbackLoading(true);
+    setFeedbackMessage("");
+    setProjectError("");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/feedback`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind,
+          prompt,
+          questionType,
+          verdict,
+          matchedKnowledgeIds,
+          matchedRetrievalUnitIds
+        })
+      });
+      setFeedbackMessage(
+        `피드백 기록 완료: verdict=${response.artifact?.verdict || verdict}, learnedKnowledgeUpdated=${
+          response.learnedKnowledgeUpdated ? "yes" : "no"
+        }`
+      );
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }
+
+  async function onReplayProject() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    setReplayLoading(true);
+    setReplayResult(null);
+    setProjectError("");
+    setProjectMessage("replay queue 실행 중...");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/replay`, {
+        method: "POST",
+        body: JSON.stringify({
+          limit: 3
+        })
+      });
+      setReplayResult(response);
+      setProjectMessage(
+        `replay 완료: executed=${response.executedCount || 0}/${response.totalCandidates || 0}`
+      );
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReplayLoading(false);
     }
   }
 
@@ -1778,6 +1863,65 @@ export default function HomePage() {
                   provider={searchResult.provider}, fallback={searchResult.fallbackUsed ? "yes" : "no"}
                   {searchResult.modeUsed ? `, mode=${searchResult.modeUsed}` : ""}
                 </div>
+                <div className="hint" style={{ marginTop: 4 }}>
+                  questionType={searchResult.diagnostics?.questionType || "-"}
+                  {(searchResult.diagnostics?.matchedLearnedKnowledgeIds || []).length > 0
+                    ? ` · matchedKnowledge=${searchResult.diagnostics.matchedLearnedKnowledgeIds.join(",")}`
+                    : ""}
+                </div>
+                <div className="action-row" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "search",
+                        prompt: searchResult.query,
+                        questionType: searchResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: searchResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: searchResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "correct"
+                      })
+                    }
+                  >
+                    검색 정답
+                  </button>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "search",
+                        prompt: searchResult.query,
+                        questionType: searchResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: searchResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: searchResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "partial"
+                      })
+                    }
+                  >
+                    검색 부분정답
+                  </button>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "search",
+                        prompt: searchResult.query,
+                        questionType: searchResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: searchResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: searchResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "incorrect"
+                      })
+                    }
+                  >
+                    검색 오답
+                  </button>
+                </div>
                 <ul className="artifacts" style={{ marginTop: 6, maxHeight: 180 }}>
                   {(searchResult.hits || []).length === 0 ? (
                     <li>
@@ -1895,6 +2039,20 @@ export default function HomePage() {
                       {analysisResult.userFeedback
                         ? `total=${analysisResult.userFeedback.totalFeedback}, correct=${analysisResult.userFeedback.correctCount}, incorrect=${analysisResult.userFeedback.incorrectCount}`
                         : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>Replay 실행</span>
+                    <span>
+                      <button
+                        type="button"
+                        className="tiny secondary"
+                        style={{ width: "auto" }}
+                        onClick={onReplayProject}
+                        disabled={!selectedProjectId || replayLoading || !(analysisResult.evaluationReplay?.replayCandidateCount > 0)}
+                      >
+                        {replayLoading ? "실행 중" : "Top 3 replay"}
+                      </button>
                     </span>
                   </div>
                   <div className="report-row">
@@ -2204,6 +2362,59 @@ export default function HomePage() {
                       : ""}
                   </div>
                 ) : null}
+                <div className="action-row" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "ask",
+                        prompt: askResult.question || askQuestion,
+                        questionType: askResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: askResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: askResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "correct"
+                      })
+                    }
+                  >
+                    답변 정답
+                  </button>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "ask",
+                        prompt: askResult.question || askQuestion,
+                        questionType: askResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: askResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: askResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "partial"
+                      })
+                    }
+                  >
+                    답변 부분정답
+                  </button>
+                  <button
+                    type="button"
+                    className="tiny secondary"
+                    disabled={feedbackLoading}
+                    onClick={() =>
+                      submitProjectFeedback({
+                        kind: "ask",
+                        prompt: askResult.question || askQuestion,
+                        questionType: askResult.diagnostics?.questionType || "domain_capability_overview",
+                        matchedKnowledgeIds: askResult.diagnostics?.matchedLearnedKnowledgeIds || [],
+                        matchedRetrievalUnitIds: askResult.diagnostics?.matchedRetrievalUnitIds || [],
+                        verdict: "incorrect"
+                      })
+                    }
+                  >
+                    답변 오답
+                  </button>
+                </div>
                 <pre className="file-scroll-view" style={{ maxHeight: 240 }}>{askResult.answer}</pre>
                 <div className="label" style={{ marginTop: 8 }}>근거</div>
                 <ul className="reason-list">
@@ -2288,6 +2499,12 @@ export default function HomePage() {
             </div>
 
             {projectMessage ? <div className="hint">{projectMessage}</div> : null}
+            {feedbackMessage ? <div className="hint">{feedbackMessage}</div> : null}
+            {replayResult ? (
+              <div className="hint">
+                replay executed={replayResult.executedCount || 0}/{replayResult.totalCandidates || 0}
+              </div>
+            ) : null}
             {projectError ? <div className="error">{projectError}</div> : null}
             {error ? <div className="error">{error}</div> : null}
           </div>

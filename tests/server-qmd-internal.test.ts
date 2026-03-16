@@ -458,12 +458,67 @@ describe("server projects with vendored internal qmd runtime", () => {
       query: "loan runtime 모듈은 어떤 역할을 하는가?"
     });
     expect(roleSearch.diagnostics.questionType).toBe("module_role_explanation");
+    expect(roleSearch.diagnostics.matchedLearnedKnowledgeIds).toContain("module:loan-runtime");
 
     const roleSearch2 = await projectsModule.searchServerProject({
       projectId: project.id,
       query: "loan runtime 프로젝트는 어떤 역할을 하는가?"
     });
     expect(roleSearch2.diagnostics.questionType).toBe("module_role_explanation");
+    expect(roleSearch2.diagnostics.matchedLearnedKnowledgeIds).toContain("module:loan-runtime");
+
+    const replayPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "evaluation-replay",
+      "latest.json"
+    );
+    await writeFile(
+      replayPath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: "2026-03-16T00:00:03.000Z",
+          summary: {
+            totalArtifacts: 2,
+            askCount: 0,
+            searchCount: 2,
+            failedAskCount: 0,
+            staleBackedCount: 0,
+            topQuestionTypes: [{ id: "module_role_explanation", count: 2 }],
+            topFailureCodes: [],
+            averageRetrievalCoverage: 62,
+            averageQualityRisk: 18
+          },
+          replayCandidates: [
+            {
+              kind: "search",
+              projectId: project.id,
+              projectName: project.name,
+              questionOrQuery: "loan runtime 프로젝트는 어떤 역할을 하는가?",
+              questionType: "module_role_explanation",
+              score: 64,
+              reasons: ["manual-replay"],
+              generatedAt: "2026-03-16T00:00:03.000Z"
+            }
+          ]
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const replayExecution = await projectsModule.executeServerProjectReplay({
+      projectId: project.id,
+      limit: 1,
+      kinds: ["search"]
+    });
+    expect(replayExecution.totalCandidates).toBeGreaterThanOrEqual(1);
+    expect(replayExecution.executedCount).toBe(1);
+    expect(replayExecution.results[0]?.kind).toBe("search");
+    expect(replayExecution.results[0]?.provider).toBe("qmd");
 
     const promotionPath = path.join(
       appRoot,

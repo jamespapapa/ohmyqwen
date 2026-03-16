@@ -90,7 +90,8 @@ import {
   buildEvaluationReplayMarkdown,
   buildEvaluationReplaySnapshot,
   EvaluationReplaySnapshotSchema,
-  type EvaluationArtifact
+  type EvaluationArtifact,
+  type EvaluationReplaySnapshot
 } from "./evaluation-replay.js";
 import {
   buildEvaluationPromotionMarkdown,
@@ -217,6 +218,7 @@ export interface ProjectSearchResult {
     questionTypeReason?: string;
     retrievalUnitLoaded?: boolean;
     retrievalUnitCount?: number;
+    matchedLearnedKnowledgeIds?: string[];
     matchedRetrievalUnitIds?: string[];
     matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
     plannedQuery?: string;
@@ -469,6 +471,23 @@ export interface ProjectAskResponse {
     deterministicSymbol?: string;
     memoryFiles: string[];
   };
+}
+
+export interface ProjectReplayExecutionResult {
+  project: ServerProject;
+  executedAt: string;
+  totalCandidates: number;
+  executedCount: number;
+  results: Array<{
+    kind: "ask" | "search";
+    questionType: string;
+    prompt: string;
+    score: number;
+    qualityGatePassed?: boolean;
+    confidence?: number;
+    hitCount?: number;
+    provider?: "qmd" | "lexical";
+  }>;
 }
 
 export interface ServerLlmModelOption {
@@ -2843,6 +2862,15 @@ async function readEvaluationReplaySnapshot(memoryRoot: string): Promise<
         score: candidate.score
       }))
     };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readEvaluationReplaySnapshotFull(memoryRoot: string): Promise<EvaluationReplaySnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(evaluationReplaySnapshotPath(memoryRoot), "utf8");
+    return EvaluationReplaySnapshotSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
   }
@@ -7311,6 +7339,68 @@ export async function recordServerProjectFeedback(options: {
   };
 }
 
+export async function executeServerProjectReplay(options: {
+  projectId: string;
+  limit?: number;
+  kinds?: Array<"ask" | "search">;
+}): Promise<ProjectReplayExecutionResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const replaySnapshot = await readEvaluationReplaySnapshotFull(memoryRoot);
+  const kinds = new Set(options.kinds ?? ["ask", "search"]);
+  const candidates = (replaySnapshot?.replayCandidates ?? [])
+    .filter((candidate) => kinds.has(candidate.kind))
+    .slice(0, Math.max(1, Math.min(options.limit ?? 3, 10)));
+
+  const results: ProjectReplayExecutionResult["results"] = [];
+  for (const candidate of candidates) {
+    if (candidate.kind === "ask") {
+      const response = await askServerProject({
+        projectId: project.id,
+        question: candidate.questionOrQuery,
+        maxAttempts: 2,
+        deterministicOnly: false,
+        domainSelectionMode: "auto"
+      });
+      results.push({
+        kind: "ask",
+        questionType: response.diagnostics.questionType ?? candidate.questionType,
+        prompt: candidate.questionOrQuery,
+        score: candidate.score,
+        qualityGatePassed: response.qualityGatePassed,
+        confidence: response.confidence,
+        provider: response.retrieval.provider
+      });
+      continue;
+    }
+
+    const response = await searchServerProject({
+      projectId: project.id,
+      query: candidate.questionOrQuery
+    });
+    results.push({
+      kind: "search",
+      questionType: response.diagnostics.questionType ?? candidate.questionType,
+      prompt: candidate.questionOrQuery,
+      score: candidate.score,
+      hitCount: response.hits.length,
+      confidence: response.hits[0] ? normalizeHitConfidence(response.hits[0]) : 0,
+      provider: response.provider
+    });
+  }
+
+  return {
+    project,
+    executedAt: nowIso(),
+    totalCandidates: replaySnapshot?.replayCandidates.length ?? 0,
+    executedCount: results.length,
+    results
+  };
+}
+
 export async function searchServerProject(options: {
   projectId: string;
   query: string;
@@ -7529,6 +7619,7 @@ export async function searchServerProject(options: {
                 questionTypeReason: questionTypeDecision.reason,
                 retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
                 retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+                matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
                 matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
                 matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
                 plannedQuery
@@ -7586,6 +7677,7 @@ export async function searchServerProject(options: {
               questionTypeReason: questionTypeDecision.reason,
               retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
               retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+              matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
               matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
               matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
               plannedQuery
@@ -7646,6 +7738,7 @@ export async function searchServerProject(options: {
             questionTypeReason: questionTypeDecision.reason,
             retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
             retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+            matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
             matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
             matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
             plannedQuery
@@ -7700,6 +7793,7 @@ export async function searchServerProject(options: {
             questionTypeReason: questionTypeDecision.reason,
             retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
             retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+            matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
             matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
             matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
             plannedQuery
@@ -7749,6 +7843,7 @@ export async function searchServerProject(options: {
         questionTypeReason: questionTypeDecision.reason,
         retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
         retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+        matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
         matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
         plannedQuery
