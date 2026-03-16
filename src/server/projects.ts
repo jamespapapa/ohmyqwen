@@ -178,6 +178,14 @@ export interface ProjectSearchResult {
     qmdCorporaTried?: string[];
     qmdCorpusResults?: QmdCorpusAttempt[];
     fileCount?: number;
+    questionType?: AskQuestionType;
+    questionTypeConfidence?: number;
+    questionTypeReason?: string;
+    retrievalUnitLoaded?: boolean;
+    retrievalUnitCount?: number;
+    matchedRetrievalUnitIds?: string[];
+    matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
+    plannedQuery?: string;
   };
 }
 
@@ -206,6 +214,7 @@ export interface ProjectAnalysisResult {
     generatedAt: string;
     candidateCount: number;
     validatedCount: number;
+    staleCount: number;
     topCandidates: Array<{
       id: string;
       kind: string;
@@ -221,6 +230,7 @@ export interface ProjectAnalysisResult {
     edgeCount: number;
     validatedClusterCount: number;
     candidateClusterCount: number;
+    staleClusterCount: number;
     entityTypeCounts: Record<string, number>;
     edgeTypeCounts: Record<string, number>;
     topDomains: Array<{
@@ -371,6 +381,7 @@ export interface ProjectAskResponse {
     retrievalUnitLoaded?: boolean;
     retrievalUnitCount?: number;
     matchedRetrievalUnitIds?: string[];
+    matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
     retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
@@ -1017,6 +1028,54 @@ function buildAskQueryCandidates(options: {
   }
 
   return unique(candidates.filter(Boolean));
+}
+
+function buildSearchPlannedQuery(options: {
+  query: string;
+  questionType: AskQuestionType;
+  retrievalUnitTerms?: string[];
+}): string {
+  const contract = getAskQuestionTypeRetrievalContract(options.questionType);
+  const retrievalUnitTerms = unique(options.retrievalUnitTerms ?? []).slice(0, 6);
+  return unique([options.query, ...contract.queryHints.slice(0, 6), ...retrievalUnitTerms]).join(" ");
+}
+
+function rerankProjectSearchHitsWithRetrievalUnits(options: {
+  hits: ProjectSearchHit[];
+  rankedUnits: Array<{ unit: { id: string; title: string; summary: string; searchText: string[]; evidencePaths: string[] }; score: number }>;
+}): ProjectSearchHit[] {
+  if (options.rankedUnits.length === 0 || options.hits.length === 0) {
+    return options.hits;
+  }
+
+  return options.hits
+    .map((hit) => {
+      const normalizedPath = toForwardSlash(hit.path).toLowerCase();
+      const combinedText = `${hit.title ?? ""} ${hit.snippet ?? ""}`.toLowerCase();
+      let boostedScore = hit.score;
+      const extraReasons: string[] = [];
+
+      for (const ranked of options.rankedUnits.slice(0, 4)) {
+        const evidenceMatch = ranked.unit.evidencePaths.some((entry) => entry.toLowerCase().includes(normalizedPath));
+        const textMatch = [ranked.unit.title, ranked.unit.summary, ...ranked.unit.searchText].some((entry) =>
+          entry && combinedText.includes(entry.toLowerCase())
+        );
+        if (evidenceMatch) {
+          boostedScore += 1.4;
+          extraReasons.push(`retrieval-unit-path=${ranked.unit.id}`);
+        } else if (textMatch) {
+          boostedScore += 0.7;
+          extraReasons.push(`retrieval-unit-text=${ranked.unit.id}`);
+        }
+      }
+
+      return {
+        ...hit,
+        score: boostedScore,
+        reasons: unique([...(hit.reasons ?? []), ...extraReasons])
+      };
+    })
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)));
 }
 
 function isSearchableFile(filePath: string): boolean {
@@ -4395,6 +4454,7 @@ export async function analyzeServerProject(options: {
       learnedKnowledge: {
         candidateCount: learnedKnowledge.summary.candidateCount,
         validatedCount: learnedKnowledge.summary.validatedCount,
+        staleCount: learnedKnowledge.summary.staleCount,
         strongestCandidates: learnedKnowledge.candidates.slice(0, 12).map((candidate) => ({
           id: candidate.id,
           kind: candidate.kind,
@@ -4409,6 +4469,7 @@ export async function analyzeServerProject(options: {
         edgeCount: knowledgeSchema.summary.edgeCount,
         validatedClusterCount: knowledgeSchema.summary.validatedClusterCount,
         candidateClusterCount: knowledgeSchema.summary.candidateClusterCount,
+        staleClusterCount: knowledgeSchema.summary.staleClusterCount,
         entityTypeCounts: knowledgeSchema.summary.entityTypeCounts,
         edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
         topDomains: knowledgeSchema.summary.topDomains.slice(0, 8),
@@ -4643,6 +4704,7 @@ export async function analyzeServerProject(options: {
         generatedAt: learnedKnowledge.generatedAt,
         candidateCount: learnedKnowledge.summary.candidateCount,
         validatedCount: learnedKnowledge.summary.validatedCount,
+        staleCount: learnedKnowledge.summary.staleCount,
         topCandidates: learnedKnowledge.candidates.slice(0, 12).map((candidate) => ({
           id: candidate.id,
           kind: candidate.kind,
@@ -4658,6 +4720,7 @@ export async function analyzeServerProject(options: {
         edgeCount: knowledgeSchema.summary.edgeCount,
         validatedClusterCount: knowledgeSchema.summary.validatedClusterCount,
         candidateClusterCount: knowledgeSchema.summary.candidateClusterCount,
+        staleClusterCount: knowledgeSchema.summary.staleClusterCount,
         entityTypeCounts: knowledgeSchema.summary.entityTypeCounts,
         edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
         topDomains: knowledgeSchema.summary.topDomains.slice(0, 8)
@@ -4834,6 +4897,7 @@ function qualityGateForAsk(options: {
   domainPacks?: DomainPack[];
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
+  matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
 }): {
   passed: boolean;
   failures: string[];
@@ -4855,7 +4919,8 @@ function qualityGateForAsk(options: {
     moduleCandidates: options.moduleCandidates,
     domainPacks: options.domainPacks,
     questionTags: options.questionTags,
-    matchedKnowledgeIds: options.matchedKnowledgeIds
+    matchedKnowledgeIds: options.matchedKnowledgeIds,
+    matchedRetrievalUnitStatuses: options.matchedRetrievalUnitStatuses
   });
 }
 
@@ -5106,7 +5171,8 @@ export async function askServerProject(options: {
           question,
           hits: deterministicHits,
           strategy: strategyDecision.strategy,
-          questionType: questionTypeDecision.type
+          questionType: questionTypeDecision.type,
+          matchedRetrievalUnitStatuses: []
         });
 
         const deterministicReportLines: string[] = [
@@ -5496,6 +5562,7 @@ export async function askServerProject(options: {
           matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
           matchedLearnedKnowledgeIds: matchedKnowledge.map((item) => item.id),
           matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+          matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
           lockedDomainIds: domainSelection.lockedDomainIds,
           effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
           questionCapabilityTags: questionTags,
@@ -5823,7 +5890,8 @@ export async function askServerProject(options: {
           matchedKnowledgeIds: [
             ...matchedLearnedKnowledge.map((item) => item.id),
             ...matchedRetrievalUnits.map((item) => item.unit.id)
-          ]
+          ],
+          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus)
         })
       : null;
 
@@ -6031,7 +6099,8 @@ export async function askServerProject(options: {
           matchedKnowledgeIds: [
             ...matchedLearnedKnowledge.map((item) => item.id),
             ...matchedRetrievalUnits.map((item) => item.unit.id)
-          ]
+          ],
+          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus)
         });
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
@@ -6183,6 +6252,9 @@ export async function askServerProject(options: {
       `- matchedDomains: ${domainSelection.matchedDomains.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedLearnedKnowledge: ${matchedLearnedKnowledge.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedRetrievalUnits: ${matchedRetrievalUnits.map((item) => item.unit.id).join(", ") || "(none)"}`,
+      `- matchedRetrievalUnitStatuses: ${
+        matchedRetrievalUnits.map((item) => item.unit.validatedStatus).join(", ") || "(none)"
+      }`,
       `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
       `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
@@ -6284,6 +6356,7 @@ export async function askServerProject(options: {
         matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
         matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         matchedRetrievalUnitIds: matchedRetrievalUnits.map((item) => item.unit.id),
+        matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
         lockedDomainIds: domainSelection.lockedDomainIds,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
@@ -6411,6 +6484,40 @@ export async function searchServerProject(options: {
       process.cwd(),
       mergeRetrievalWithModelCaps(retrievalOverrides, llmContext.stageTokenCaps)
     );
+    const memoryRoot = resolveMemoryHome(project.workspaceDir);
+    const projectPreset = project.presetId ? await getProjectPresetById(project.presetId) : undefined;
+    const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
+    const learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
+    const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
+    const moduleCandidates = extractModuleCandidates(query);
+    const strategyDecision = classifyQuestionIntentFallback(query);
+    const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6);
+    const questionTags = extractQuestionCapabilityTags(query, {
+      domainPacks: activeDomainPacks
+    });
+    const questionTypeDecision = classifyAskQuestionType({
+      question: query,
+      strategy: strategyDecision.strategy,
+      moduleCandidates,
+      questionTags,
+      matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+    });
+    const rankedRetrievalUnits = retrievalUnitSnapshot
+      ? rankRetrievalUnitsForQuestion({
+          snapshot: retrievalUnitSnapshot,
+          question: query,
+          questionType: questionTypeDecision.type,
+          questionTags,
+          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+          moduleCandidates,
+          limit: 6
+        })
+      : [];
+    const plannedQuery = buildSearchPlannedQuery({
+      query,
+      questionType: questionTypeDecision.type,
+      retrievalUnitTerms: rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 3))
+    });
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
@@ -6418,7 +6525,7 @@ export async function searchServerProject(options: {
         const qmdResult = await runQmdMultiCorpusSearch({
           cwd: project.workspaceDir,
           signals: {
-            task: query
+            task: plannedQuery
           },
           config: retrievalConfig.qmd,
           timeoutMs: retrievalConfig.timeoutMs.qmd,
@@ -6462,7 +6569,7 @@ export async function searchServerProject(options: {
             const lexicalHits = await lexicalSearch({
               workspaceDir: project.workspaceDir,
               files,
-              query,
+              query: plannedQuery,
               limit
             });
             const response: ProjectSearchResult = {
@@ -6470,7 +6577,10 @@ export async function searchServerProject(options: {
               query,
               provider: "lexical",
               fallbackUsed: true,
-              hits: lexicalHits,
+              hits: rerankProjectSearchHitsWithRetrievalUnits({
+                hits: lexicalHits,
+                rankedUnits: rankedRetrievalUnits
+              }),
               diagnostics: {
                 qmdStatus: "empty",
                 qmdErrors: [
@@ -6483,7 +6593,15 @@ export async function searchServerProject(options: {
                 qmdCommand: retrievalConfig.qmd.command,
                 qmdCorporaTried: qmdResult.corporaTried,
                 qmdCorpusResults: qmdResult.corpusResults,
-                fileCount: files.length
+                fileCount: files.length,
+                questionType: questionTypeDecision.type,
+                questionTypeConfidence: questionTypeDecision.confidence,
+                questionTypeReason: questionTypeDecision.reason,
+                retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+                retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+                matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+                matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+                plannedQuery
               }
             };
             await appendProjectDebugEvent({
@@ -6507,7 +6625,10 @@ export async function searchServerProject(options: {
             provider: "qmd",
             fallbackUsed: false,
             modeUsed: qmdResult.mode,
-            hits: existingQmdHits,
+            hits: rerankProjectSearchHitsWithRetrievalUnits({
+              hits: existingQmdHits,
+              rankedUnits: rankedRetrievalUnits
+            }),
             diagnostics: {
               qmdStatus: qmdResult.status,
               qmdErrors: unique([
@@ -6523,7 +6644,15 @@ export async function searchServerProject(options: {
               qmdCommand: retrievalConfig.qmd.command,
               qmdCorporaTried: qmdResult.corporaTried,
               qmdCorpusResults: qmdResult.corpusResults,
-              fileCount: files.length
+              fileCount: files.length,
+              questionType: questionTypeDecision.type,
+              questionTypeConfidence: questionTypeDecision.confidence,
+              questionTypeReason: questionTypeDecision.reason,
+              retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+              retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+              matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+              matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+              plannedQuery
             }
           };
           await appendProjectDebugEvent({
@@ -6546,7 +6675,7 @@ export async function searchServerProject(options: {
         const lexicalHits = await lexicalSearch({
           workspaceDir: project.workspaceDir,
           files,
-          query,
+          query: plannedQuery,
           limit
         });
 
@@ -6555,7 +6684,10 @@ export async function searchServerProject(options: {
           query,
           provider: "lexical",
           fallbackUsed: true,
-          hits: lexicalHits,
+          hits: rerankProjectSearchHitsWithRetrievalUnits({
+            hits: lexicalHits,
+            rankedUnits: rankedRetrievalUnits
+          }),
           diagnostics: {
             qmdStatus: qmdResult.status,
             qmdErrors: qmdResult.errors,
@@ -6566,7 +6698,15 @@ export async function searchServerProject(options: {
             qmdCommand: retrievalConfig.qmd.command,
             qmdCorporaTried: qmdResult.corporaTried,
             qmdCorpusResults: qmdResult.corpusResults,
-            fileCount: files.length
+            fileCount: files.length,
+            questionType: questionTypeDecision.type,
+            questionTypeConfidence: questionTypeDecision.confidence,
+            questionTypeReason: questionTypeDecision.reason,
+            retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+            retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+            matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+            matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+            plannedQuery
           }
         };
         await appendProjectDebugEvent({
@@ -6588,7 +6728,7 @@ export async function searchServerProject(options: {
         const lexicalHits = await lexicalSearch({
           workspaceDir: project.workspaceDir,
           files,
-          query,
+          query: plannedQuery,
           limit
         });
 
@@ -6597,13 +6737,24 @@ export async function searchServerProject(options: {
           query,
           provider: "lexical",
           fallbackUsed: true,
-          hits: lexicalHits,
+          hits: rerankProjectSearchHitsWithRetrievalUnits({
+            hits: lexicalHits,
+            rankedUnits: rankedRetrievalUnits
+          }),
           diagnostics: {
             qmdStatus: "failed",
             qmdErrors: [error instanceof Error ? error.message : String(error)],
             qmdQueriesTried: [],
             qmdCommand: retrievalConfig.qmd.command,
-            fileCount: files.length
+            fileCount: files.length,
+            questionType: questionTypeDecision.type,
+            questionTypeConfidence: questionTypeDecision.confidence,
+            questionTypeReason: questionTypeDecision.reason,
+            retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+            retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+            matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+            matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+            plannedQuery
           }
         };
         await appendProjectDebugEvent({
@@ -6623,7 +6774,7 @@ export async function searchServerProject(options: {
     const lexicalHits = await lexicalSearch({
       workspaceDir: project.workspaceDir,
       files,
-      query,
+      query: plannedQuery,
       limit
     });
 
@@ -6632,10 +6783,21 @@ export async function searchServerProject(options: {
       query,
       provider: "lexical",
       fallbackUsed: false,
-      hits: lexicalHits,
+      hits: rerankProjectSearchHitsWithRetrievalUnits({
+        hits: lexicalHits,
+        rankedUnits: rankedRetrievalUnits
+      }),
       diagnostics: {
         qmdStatus: "skipped",
-        fileCount: files.length
+        fileCount: files.length,
+        questionType: questionTypeDecision.type,
+        questionTypeConfidence: questionTypeDecision.confidence,
+        questionTypeReason: questionTypeDecision.reason,
+        retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+        retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+        matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+        matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+        plannedQuery
       }
     };
     await appendProjectDebugEvent({

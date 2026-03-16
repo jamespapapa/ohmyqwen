@@ -272,4 +272,66 @@ describe("learned knowledge", () => {
       "graph:loan-credit-low-worker-request"
     );
   });
+
+  it("demotes repeatedly failing candidates to stale and excludes them from extracted tags", () => {
+    const snapshot = {
+      version: 1 as const,
+      generatedAt: "2026-03-10T00:00:00.000Z",
+      candidates: [
+        {
+          id: "channel:monimo",
+          kind: "channel" as const,
+          status: "candidate" as const,
+          label: "monimo channel",
+          description: "monimo login/auth integration",
+          tags: ["channel:monimo", "member-auth"],
+          aliases: ["모니모", "monimo"],
+          apiPrefixes: ["/member/monimo/registe"],
+          screenPrefixes: ["MDP-MYCER9999"],
+          controllerHints: ["RegisteUseDcpChnelController"],
+          serviceHints: ["EmbededMemberLoginService"],
+          pathHints: ["dcp-member", "monimo"],
+          searchTerms: ["모니모", "monimo", "/member/monimo/registe"],
+          evidence: ["MDP-MYCER999999M -> /gw/api/member/monimo/registe"],
+          score: 52,
+          counts: {
+            links: 1,
+            screens: 1,
+            backend: 1,
+            eai: 0,
+            uses: 0,
+            successes: 0,
+            failures: 0
+          },
+          firstSeenAt: "2026-03-10T00:00:00.000Z",
+          lastSeenAt: "2026-03-10T00:00:00.000Z"
+        }
+      ],
+      summary: {
+        candidateCount: 1,
+        validatedCount: 0,
+        staleCount: 0,
+        domainCount: 0,
+        moduleRoleCount: 0,
+        processCount: 0,
+        channelCount: 1,
+        strongestCandidates: ["channel:monimo"]
+      }
+    };
+
+    let next = snapshot;
+    for (let index = 0; index < 3; index += 1) {
+      next = applyLearnedKnowledgeObservation({
+        snapshot: next,
+        matchedCandidateIds: ["channel:monimo"],
+        successful: false,
+        question: "모니모 회원인증 연동"
+      });
+    }
+
+    const updated = next.candidates.find((candidate) => candidate.id === "channel:monimo");
+    expect(updated?.status).toBe("stale");
+    expect(next.summary.staleCount).toBeGreaterThanOrEqual(1);
+    expect(extractLearnedKnowledgeTagsFromTexts(["/member/monimo/registe"], next)).not.toContain("channel:monimo");
+  });
 });

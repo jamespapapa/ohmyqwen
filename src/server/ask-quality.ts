@@ -99,6 +99,7 @@ export function qualityGateForAskOutput(options: {
   domainPacks?: DomainPack[];
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
+  matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
 }): {
   passed: boolean;
   failures: string[];
@@ -206,6 +207,17 @@ export function qualityGateForAskOutput(options: {
         failures.push("missing-module-role-scope");
       }
     }
+  }
+
+  const matchedRetrievalUnitStatuses = options.matchedRetrievalUnitStatuses ?? [];
+  if (
+    matchedRetrievalUnitStatuses.length > 0 &&
+    matchedRetrievalUnitStatuses.every((status) => status === "stale") &&
+    ["module_role_explanation", "channel_or_partner_integration", "process_or_batch_trace", "domain_capability_overview"].includes(
+      questionType
+    )
+  ) {
+    failures.push("stale-retrieval-only");
   }
 
   if (questionType === "process_or_batch_trace") {

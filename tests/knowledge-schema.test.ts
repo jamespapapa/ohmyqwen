@@ -200,7 +200,7 @@ const learnedKnowledge: LearnedKnowledgeSnapshot = {
     {
       id: "module:dcp-async",
       kind: "module-role",
-      status: "candidate",
+      status: "stale",
       label: "async support",
       description: "async support module",
       tags: ["dcp-async"],
@@ -229,6 +229,7 @@ const learnedKnowledge: LearnedKnowledgeSnapshot = {
   summary: {
     candidateCount: 2,
     validatedCount: 1,
+    staleCount: 1,
     domainCount: 0,
     moduleRoleCount: 1,
     processCount: 0,
@@ -306,6 +307,7 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.summary.entityTypeCounts["knowledge-cluster"]).toBeGreaterThanOrEqual(3);
     expect(snapshot.summary.edgeTypeCounts["routes-to"]).toBeGreaterThanOrEqual(2);
     expect(snapshot.summary.edgeTypeCounts["uses-eai"]).toBeGreaterThanOrEqual(1);
+    expect(snapshot.summary.staleClusterCount).toBeGreaterThanOrEqual(1);
 
     expect(snapshot.entities.some((entity) => entity.id === "module:dcp-member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "route:/mo/login/monimo/MDP-MYCER999999M:src/views/login/MDP-MYCER999999M.vue")).toBe(true);

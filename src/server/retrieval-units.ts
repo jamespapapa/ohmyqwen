@@ -4,6 +4,7 @@ import {
   type KnowledgeEdge,
   type KnowledgeEntity,
   type KnowledgeMetadata,
+  type KnowledgeValidatedStatus,
   type KnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
 import type { AskQuestionType } from "./question-types.js";
@@ -22,6 +23,7 @@ const RetrievalUnitSchema = z.object({
   title: z.string().min(1),
   summary: z.string().default(""),
   confidence: z.number().min(0).max(1),
+  validatedStatus: z.enum(["candidate", "validated", "derived", "stale"]).default("derived"),
   entityIds: z.array(z.string().min(1)).default([]),
   edgeIds: z.array(z.string().min(1)).default([]),
   searchText: z.array(z.string().min(1)).default([]),
@@ -37,6 +39,7 @@ const RetrievalUnitSchema = z.object({
 const RetrievalUnitSummarySchema = z.object({
   unitCount: z.number().int().min(0),
   unitTypeCounts: z.record(z.string(), z.number().int().min(0)),
+  unitStatusCounts: z.record(z.string(), z.number().int().min(0)),
   topDomains: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   topChannels: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   topModuleRoles: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) }))
@@ -66,7 +69,23 @@ function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
 }
 
-function mergeMetadata(items: KnowledgeMetadata[]): Omit<RetrievalUnit, "id" | "type" | "title" | "summary" | "entityIds" | "edgeIds" | "searchText" | "confidence"> & { confidence: number } {
+function mergeValidatedStatus(items: KnowledgeMetadata[]): KnowledgeValidatedStatus {
+  if (items.some((item) => item.validatedStatus === "validated")) {
+    return "validated";
+  }
+  if (items.some((item) => item.validatedStatus === "derived")) {
+    return "derived";
+  }
+  if (items.some((item) => item.validatedStatus === "candidate")) {
+    return "candidate";
+  }
+  if (items.some((item) => item.validatedStatus === "stale")) {
+    return "stale";
+  }
+  return "derived";
+}
+
+function mergeMetadata(items: KnowledgeMetadata[]): Omit<RetrievalUnit, "id" | "type" | "title" | "summary" | "entityIds" | "edgeIds" | "searchText" | "confidence"> & { confidence: number; validatedStatus: KnowledgeValidatedStatus } {
   return {
     domains: unique(items.flatMap((item) => item.domains)),
     subdomains: unique(items.flatMap((item) => item.subdomains)),
@@ -75,7 +94,8 @@ function mergeMetadata(items: KnowledgeMetadata[]): Omit<RetrievalUnit, "id" | "
     moduleRoles: unique(items.flatMap((item) => item.moduleRoles)),
     processRoles: unique(items.flatMap((item) => item.processRoles)),
     evidencePaths: unique(items.flatMap((item) => item.evidencePaths).map(toForwardSlash)),
-    confidence: items.reduce((max, item) => Math.max(max, item.confidence), 0)
+    confidence: items.reduce((max, item) => Math.max(max, item.confidence), 0),
+    validatedStatus: mergeValidatedStatus(items)
   };
 }
 
@@ -94,6 +114,14 @@ function summarizeUnitTypes(units: RetrievalUnit[]): Record<string, number> {
   const counts = new Map<string, number>();
   for (const unit of units) {
     counts.set(unit.type, (counts.get(unit.type) ?? 0) + 1);
+  }
+  return Object.fromEntries(Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])));
+}
+
+function summarizeUnitStatuses(units: RetrievalUnit[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const unit of units) {
+    counts.set(unit.validatedStatus, (counts.get(unit.validatedStatus) ?? 0) + 1);
   }
   return Object.fromEntries(Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])));
 }
@@ -208,6 +236,7 @@ export function buildRetrievalUnitSnapshot(options: {
       summary: childSummary ? `${entity.label} contains ${childSummary}` : entity.summary,
       ...merged,
       confidence: Math.max(entity.metadata.confidence, 0.72),
+      validatedStatus: mergeValidatedStatus([entity.metadata, ...childEntities.map((child) => child.metadata)]),
       entityIds: ids([entity, ...childEntities]),
       edgeIds: ids(contains),
       searchText: makeSearchText([
@@ -253,6 +282,13 @@ export function buildRetrievalUnitSnapshot(options: {
             : `${labelForEntity(fromEntity)} -> ${apiEntity.label} -> ${controller.label}`,
         ...merged,
         confidence: Math.max(merged.confidence, 0.74),
+        validatedStatus: mergeValidatedStatus([
+          fromEntity.metadata,
+          apiEntity.metadata,
+          mappingEdge.metadata,
+          controller.metadata,
+          ...services.map((item) => item.metadata)
+        ]),
         entityIds: ids([fromEntity, apiEntity, controller, ...services]),
         edgeIds: ids([routeEdge, mappingEdge, ...controllerCalls]),
         searchText: makeSearchText([
@@ -288,6 +324,7 @@ export function buildRetrievalUnitSnapshot(options: {
       summary: `${fromEntity.label} uses ${toEntity.label}`,
       ...merged,
       confidence: Math.max(merged.confidence, 0.75),
+      validatedStatus: mergeValidatedStatus([fromEntity.metadata, toEntity.metadata, edge.metadata]),
       entityIds: ids([fromEntity, toEntity]),
       edgeIds: ids([edge]),
       searchText: makeSearchText([
@@ -324,6 +361,7 @@ export function buildRetrievalUnitSnapshot(options: {
           : entity.summary,
       ...merged,
       confidence: Math.max(merged.confidence, entity.metadata.confidence),
+      validatedStatus: entity.metadata.validatedStatus,
       entityIds: ids([entity, ...relatedEntities]),
       edgeIds: ids(relatedEdges),
       searchText: makeSearchText([
@@ -349,6 +387,7 @@ export function buildRetrievalUnitSnapshot(options: {
     summary: {
       unitCount: orderedUnits.length,
       unitTypeCounts: summarizeUnitTypes(orderedUnits),
+      unitStatusCounts: summarizeUnitStatuses(orderedUnits),
       topDomains: countTop(orderedUnits.flatMap((unit) => unit.domains)),
       topChannels: countTop(orderedUnits.flatMap((unit) => unit.channels)),
       topModuleRoles: countTop(orderedUnits.flatMap((unit) => unit.moduleRoles))
@@ -380,7 +419,7 @@ export function buildRetrievalUnitMarkdown(snapshot: RetrievalUnitSnapshot): str
   lines.push("");
   lines.push("## Representative Units");
   for (const unit of snapshot.units.slice(0, 24)) {
-    lines.push(`- [${unit.type}] ${unit.title} | confidence=${unit.confidence.toFixed(2)}`);
+    lines.push(`- [${unit.type}] ${unit.title} | status=${unit.validatedStatus} | confidence=${unit.confidence.toFixed(2)}`);
     if (unit.summary) {
       lines.push(`  - ${unit.summary}`);
     }
@@ -416,6 +455,16 @@ export function rankRetrievalUnitsForQuestion(options: {
   const results = options.snapshot.units.map((unit) => {
     let score = unit.confidence * 2;
     const reasons: string[] = [`base:${unit.confidence.toFixed(2)}`];
+    const lifecycleBonus =
+      unit.validatedStatus === "validated"
+        ? 1.5
+        : unit.validatedStatus === "derived"
+          ? 0.5
+          : unit.validatedStatus === "candidate"
+            ? -0.4
+            : -2.5;
+    score += lifecycleBonus;
+    reasons.push(`status:${unit.validatedStatus}`);
 
     const typeBonus = preferredTypeWeights[options.questionType][unit.type] ?? 0;
     if (typeBonus > 0) {
@@ -474,6 +523,16 @@ export function rankRetrievalUnitsForQuestion(options: {
     if (options.questionType === "module_role_explanation" && unit.moduleRoles.length > 0) {
       score += 1.4;
       reasons.push(`moduleRoles:${unit.moduleRoles.slice(0, 3).join(",")}`);
+    }
+
+    if (
+      unit.validatedStatus === "stale" &&
+      ["module_role_explanation", "channel_or_partner_integration", "process_or_batch_trace", "domain_capability_overview"].includes(
+        options.questionType
+      )
+    ) {
+      score -= 1.5;
+      reasons.push("stale-penalty");
     }
 
     return {

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 export const LearnedKnowledgeKindSchema = z.enum(["domain", "module-role", "process", "channel"]);
-export const LearnedKnowledgeStatusSchema = z.enum(["candidate", "validated"]);
+export const LearnedKnowledgeStatusSchema = z.enum(["candidate", "validated", "stale"]);
 
 export const LearnedKnowledgeCandidateSchema = z.object({
   id: z.string().min(1),
@@ -35,6 +35,7 @@ export const LearnedKnowledgeCandidateSchema = z.object({
 export const LearnedKnowledgeSummarySchema = z.object({
   candidateCount: z.number().int().min(0),
   validatedCount: z.number().int().min(0),
+  staleCount: z.number().int().min(0),
   domainCount: z.number().int().min(0),
   moduleRoleCount: z.number().int().min(0),
   processCount: z.number().int().min(0),
@@ -258,6 +259,14 @@ function computeCandidateScore(candidate: LearnedKnowledgeCandidate): number {
 function computeCandidateStatus(candidate: LearnedKnowledgeCandidate): LearnedKnowledgeStatus {
   const uses = candidate.counts.uses;
   const successRate = uses > 0 ? candidate.counts.successes / uses : 0;
+  const failureRate = uses > 0 ? candidate.counts.failures / uses : 0;
+  if (
+    uses >= 2 &&
+    candidate.counts.failures >= Math.max(2, candidate.counts.successes + 1) &&
+    (successRate <= 0.34 || failureRate >= 0.66)
+  ) {
+    return "stale";
+  }
   if (candidate.score >= 60 || candidate.counts.links >= 3 || (uses >= 2 && successRate >= 0.8)) {
     return "validated";
   }
@@ -292,9 +301,11 @@ function createCandidate(input: Omit<LearnedKnowledgeCandidate, "score" | "statu
 
 function summarize(candidates: LearnedKnowledgeCandidate[]) {
   const validated = candidates.filter((candidate) => candidate.status === "validated");
+  const stale = candidates.filter((candidate) => candidate.status === "stale");
   return {
     candidateCount: candidates.length,
     validatedCount: validated.length,
+    staleCount: stale.length,
     domainCount: candidates.filter((candidate) => candidate.kind === "domain").length,
     moduleRoleCount: candidates.filter((candidate) => candidate.kind === "module-role").length,
     processCount: candidates.filter((candidate) => candidate.kind === "process").length,
@@ -632,7 +643,7 @@ function scoreCandidateMatch(question: string, candidate: LearnedKnowledgeCandid
     ...candidate.pathHints
   ].map((item) => item.toLowerCase());
 
-  let score = candidate.status === "validated" ? 16 : 4;
+  let score = candidate.status === "validated" ? 16 : candidate.status === "candidate" ? 4 : -6;
   const reasons: string[] = [];
   for (const haystack of haystacks) {
     for (const token of tokens) {
@@ -702,6 +713,7 @@ export function extractLearnedKnowledgeTagsFromTexts(
   }
   const normalized = joined.toLowerCase();
   const direct = snapshot.candidates
+    .filter((candidate) => candidate.status !== "stale")
     .filter((candidate) =>
       [
         candidate.id,
@@ -716,7 +728,7 @@ export function extractLearnedKnowledgeTagsFromTexts(
       ].some((term) => term && normalized.includes(term.toLowerCase()))
     )
     .map((candidate) => candidate.id);
-  return unique([...direct, ...matchLearnedKnowledge(joined, snapshot, 8).map((item) => item.id)]);
+  return unique([...direct, ...matchLearnedKnowledge(joined, snapshot, 8).filter((item) => item.status !== "stale").map((item) => item.id)]);
 }
 
 export function applyLearnedKnowledgeObservation(options: {
@@ -760,6 +772,7 @@ export function buildLearnedKnowledgeMarkdown(snapshot: LearnedKnowledgeSnapshot
   lines.push(`- generatedAt: ${snapshot.generatedAt}`);
   lines.push(`- candidateCount: ${snapshot.summary.candidateCount}`);
   lines.push(`- validatedCount: ${snapshot.summary.validatedCount}`);
+  lines.push(`- staleCount: ${snapshot.summary.staleCount}`);
   lines.push(`- kinds: domain=${snapshot.summary.domainCount}, module-role=${snapshot.summary.moduleRoleCount}, process=${snapshot.summary.processCount}, channel=${snapshot.summary.channelCount}`);
   lines.push("");
   lines.push("## Top Candidates");

@@ -369,6 +369,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
     },
     validatedClusterCount: 2,
     candidateClusterCount: 0,
+    staleClusterCount: 0,
     activeDomainCount: 1,
     topDomains: [{ id: "member-auth", count: 7 }],
     topModules: [{ id: "dcp-member", count: 1 }]
@@ -403,6 +404,7 @@ describe("retrieval unit standardization", () => {
     expect(markdown).toContain("# Retrieval Units");
     expect(markdown).toContain("## Unit Types");
     expect(markdown).toContain("## Representative Units");
+    expect(markdown).toContain("status=");
   });
 
   it("ranks flow units highest for channel integration questions", () => {
@@ -430,5 +432,41 @@ describe("retrieval unit standardization", () => {
 
     expect(ranked[0]?.unit.type).toBe("module-overview");
     expect(ranked[0]?.unit.title).toBe("dcp-member");
+  });
+
+  it("preserves stale lifecycle status for stale learned-knowledge clusters and penalizes them", () => {
+    const staleSnapshot: KnowledgeSchemaSnapshot = {
+      ...snapshot,
+      entities: snapshot.entities.map((entity) =>
+        entity.id === "knowledge:candidate:channel:monimo"
+          ? {
+              ...entity,
+              metadata: {
+                ...entity.metadata,
+                validatedStatus: "stale" as const
+              },
+              summary: "stale monimo channel candidate"
+            }
+          : entity
+      )
+    };
+
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: staleSnapshot });
+    const staleKnowledgeUnit = units.units.find((unit) => unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
+    expect(staleKnowledgeUnit?.validatedStatus).toBe("stale");
+
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: units,
+      question: "모니모 회원인증은 프론트에서 백엔드까지 어떻게 연동되는지 설명해줘.",
+      questionType: "channel_or_partner_integration",
+      questionTags: ["member-auth", "channel:monimo"],
+      matchedKnowledgeIds: ["channel:monimo"]
+    });
+
+    const rankedFlow = ranked.find((item) => item.unit.type === "flow");
+    const rankedKnowledge = ranked.find((item) => item.unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
+    expect(rankedFlow).toBeDefined();
+    expect(rankedKnowledge).toBeDefined();
+    expect((rankedFlow?.score ?? 0)).toBeGreaterThan(rankedKnowledge?.score ?? 0);
   });
 });

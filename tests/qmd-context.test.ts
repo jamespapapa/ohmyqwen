@@ -54,6 +54,7 @@ describe("buildProjectQmdContextPayload", () => {
       learnedKnowledge: {
         candidateCount: 3,
         validatedCount: 1,
+        staleCount: 1,
         topCandidates: [
           {
             label: "irp-join",
@@ -68,6 +69,7 @@ describe("buildProjectQmdContextPayload", () => {
     expect(payload.globalContext).toContain("dcp-services");
     expect(payload.globalContext).toContain("active-domains: retire-pension");
     expect(payload.globalContext).toContain("front-back-graph: 1 frontend workspaces, 42 links");
+    expect(payload.globalContext).toContain("learned-knowledge: 3 candidates, 1 validated, 1 stale");
 
     expect(payload.contexts).toEqual(
       expect.arrayContaining([

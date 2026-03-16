@@ -517,4 +517,25 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("missing-process-callee-detail");
   });
 
+  it("fails explanatory answers when only stale retrieval units backed the answer", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "dcp-async는 비동기 지원과 관련되어 보인다.",
+        confidence: 0.78,
+        evidence: ["module evidence", "knowledge evidence"],
+        caveats: []
+      },
+      question: "dcp-async 프로젝트는 어떤 역할을 하는 것인가?",
+      hitPaths: [
+        "dcp-async/src/main/java/com/samsunglife/dcp/async/core/AsyncDispatcherManager.java"
+      ],
+      questionType: "module_role_explanation",
+      moduleCandidates: ["dcp-async"],
+      matchedRetrievalUnitStatuses: ["stale", "stale"]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("stale-retrieval-only");
+  });
+
 });

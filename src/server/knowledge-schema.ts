@@ -40,7 +40,7 @@ const KnowledgeSourceTypeSchema = z.enum([
   "derived"
 ]);
 
-const KnowledgeValidatedStatusSchema = z.enum(["candidate", "validated", "derived"]);
+const KnowledgeValidatedStatusSchema = z.enum(["candidate", "validated", "derived", "stale"]);
 
 const KnowledgeMetadataSchema = z.object({
   domains: z.array(z.string().min(1)).default([]),
@@ -81,6 +81,7 @@ const KnowledgeSchemaSummarySchema = z.object({
   edgeTypeCounts: z.record(z.string(), z.number().int().min(0)),
   validatedClusterCount: z.number().int().min(0),
   candidateClusterCount: z.number().int().min(0),
+  staleClusterCount: z.number().int().min(0),
   activeDomainCount: z.number().int().min(0),
   topDomains: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   topModules: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) }))
@@ -187,9 +188,13 @@ function mergeMetadata(left: KnowledgeMetadata, right: KnowledgeMetadata): Knowl
     validatedStatus:
       left.validatedStatus === "validated" || right.validatedStatus === "validated"
         ? "validated"
+        : left.validatedStatus === "derived" || right.validatedStatus === "derived"
+          ? "derived"
         : left.validatedStatus === "candidate" || right.validatedStatus === "candidate"
           ? "candidate"
-          : "derived"
+          : left.validatedStatus === "stale" || right.validatedStatus === "stale"
+            ? "stale"
+            : "derived"
   });
 }
 
@@ -1261,6 +1266,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       edgeTypeCounts: buildEdgeTypeCounts(orderedEdges),
       validatedClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "validated").length,
       candidateClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "candidate").length,
+      staleClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "stale").length,
       activeDomainCount: (options.domainPacks ?? []).length,
       topDomains: summarizeCounts(orderedEntities.flatMap((entity) => entity.metadata.domains)),
       topModules: summarizeCounts(
@@ -1282,6 +1288,7 @@ export function buildKnowledgeSchemaMarkdown(snapshot: KnowledgeSchemaSnapshot):
   lines.push(`- edgeCount: ${snapshot.summary.edgeCount}`);
   lines.push(`- validatedClusters: ${snapshot.summary.validatedClusterCount}`);
   lines.push(`- candidateClusters: ${snapshot.summary.candidateClusterCount}`);
+  lines.push(`- staleClusters: ${snapshot.summary.staleClusterCount}`);
   lines.push(`- activeDomains: ${snapshot.summary.activeDomainCount}`);
   lines.push("");
   lines.push("## Entity Types");

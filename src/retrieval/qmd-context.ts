@@ -35,6 +35,7 @@ export interface ProjectQmdContextInput {
   learnedKnowledge?: {
     candidateCount: number;
     validatedCount: number;
+    staleCount?: number;
     topCandidates: Array<{
       label: string;
       kind: string;
@@ -93,7 +94,7 @@ export function buildProjectQmdContextPayload(input: ProjectQmdContextInput): Pr
         ? `front-back-graph: ${input.frontBackGraph.workspaceCount} frontend workspaces, ${input.frontBackGraph.linkCount} links`
         : "",
       input.learnedKnowledge
-        ? `learned-knowledge: ${input.learnedKnowledge.candidateCount} candidates, ${input.learnedKnowledge.validatedCount} validated`
+        ? `learned-knowledge: ${input.learnedKnowledge.candidateCount} candidates, ${input.learnedKnowledge.validatedCount} validated, ${input.learnedKnowledge.staleCount ?? 0} stale`
         : "",
     ],
     10

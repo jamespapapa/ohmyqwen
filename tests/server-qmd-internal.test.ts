@@ -281,5 +281,14 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(ask.diagnostics.llmCallCount).toBeGreaterThan(0);
     expect(ask.diagnostics.questionType).toBe("domain_capability_overview");
     expect((ask.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
+
+    const roleSearch = await projectsModule.searchServerProject({
+      projectId: project.id,
+      query: "이 프로젝트는 어떤 역할을 하는가?"
+    });
+    expect(roleSearch.diagnostics.questionType).toBe("module_role_explanation");
+    expect(roleSearch.diagnostics.retrievalUnitLoaded).toBe(true);
+    expect((roleSearch.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
+    expect((roleSearch.diagnostics.matchedRetrievalUnitStatuses ?? []).length).toBeGreaterThan(0);
   });
 });
