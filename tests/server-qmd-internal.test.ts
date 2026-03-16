@@ -279,5 +279,6 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(ask.retrieval.provider).toBe("qmd");
     expect(ask.qualityGatePassed).toBe(true);
     expect(ask.diagnostics.llmCallCount).toBeGreaterThan(0);
+    expect(ask.diagnostics.questionType).toBe("domain_capability_overview");
   });
 });

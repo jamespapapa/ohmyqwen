@@ -76,6 +76,10 @@ import {
   buildRetrievalUnitSnapshot
 } from "./retrieval-units.js";
 import {
+  classifyAskQuestionType,
+  type AskQuestionType
+} from "./question-types.js";
+import {
   compareAskRetryEvidence,
   decideAskRetry,
   summarizeAskRetryEvidence
@@ -342,6 +346,9 @@ export interface ProjectAskResponse {
     llmCallCount: number;
     llmCallBudget: number;
     strategyType?: AskStrategyType;
+    questionType?: AskQuestionType;
+    questionTypeConfidence?: number;
+    questionTypeReason?: string;
     strategyConfidence?: number;
     strategyLlmUsed?: boolean;
     strategyReason?: string;
@@ -4778,6 +4785,7 @@ function qualityGateForAsk(options: {
   question: string;
   hits: ProjectSearchHit[];
   strategy?: AskStrategyType;
+  questionType?: AskQuestionType;
   hydratedEvidence?: AskHydratedEvidenceItem[];
   linkedEaiEvidence?: Array<{ interfaceId: string; interfaceName: string }>;
   linkedFlowEvidence?: Array<{
@@ -4791,6 +4799,7 @@ function qualityGateForAsk(options: {
   moduleCandidates?: string[];
   domainPacks?: DomainPack[];
   questionTags?: string[];
+  matchedKnowledgeIds?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -4800,6 +4809,7 @@ function qualityGateForAsk(options: {
     question: options.question,
     hitPaths: options.hits.map((hit) => hit.path),
     strategy: options.strategy,
+    questionType: options.questionType,
     hydratedEvidence: (options.hydratedEvidence ?? []).map((item) => ({
       path: item.path,
       reason: item.reason,
@@ -4810,7 +4820,8 @@ function qualityGateForAsk(options: {
     linkedFlowEvidence: options.linkedFlowEvidence,
     moduleCandidates: options.moduleCandidates,
     domainPacks: options.domainPacks,
-    questionTags: options.questionTags
+    questionTags: options.questionTags,
+    matchedKnowledgeIds: options.matchedKnowledgeIds
   });
 }
 
@@ -4942,6 +4953,11 @@ export async function askServerProject(options: {
       moduleCandidates: explicitModuleCandidates,
       llmUsed: false
     };
+    let questionTypeDecision = classifyAskQuestionType({
+      question,
+      strategy: strategyDecision.strategy,
+      moduleCandidates: explicitModuleCandidates
+    });
 
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
     await fs.mkdir(memoryRoot, { recursive: true });
@@ -4992,6 +5008,11 @@ export async function askServerProject(options: {
         moduleCandidates: explicitModuleCandidates,
         llmUsed: decided.llmUsed
       };
+      questionTypeDecision = classifyAskQuestionType({
+        question,
+        strategy: strategyDecision.strategy,
+        moduleCandidates: strategyDecision.moduleCandidates
+      });
       llmCallCount += decided.llmCalls;
       strategyUsedFallback = decided.usedFallback;
       await appendProjectDebugEvent({
@@ -5014,6 +5035,11 @@ export async function askServerProject(options: {
         moduleCandidates: explicitModuleCandidates,
         llmUsed: false
       };
+      questionTypeDecision = classifyAskQuestionType({
+        question,
+        strategy: strategyDecision.strategy,
+        moduleCandidates: strategyDecision.moduleCandidates
+      });
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
@@ -5044,7 +5070,9 @@ export async function askServerProject(options: {
             caveats: deterministic.caveats
           },
           question,
-          hits: deterministicHits
+          hits: deterministicHits,
+          strategy: strategyDecision.strategy,
+          questionType: questionTypeDecision.type
         });
 
         const deterministicReportLines: string[] = [
@@ -5103,6 +5131,9 @@ export async function askServerProject(options: {
             llmCallCount,
             llmCallBudget,
             strategyType: strategyDecision.strategy,
+            questionType: questionTypeDecision.type,
+            questionTypeConfidence: questionTypeDecision.confidence,
+            questionTypeReason: questionTypeDecision.reason,
             strategyConfidence: strategyDecision.confidence,
             strategyLlmUsed: strategyDecision.llmUsed,
             strategyReason: strategyDecision.reason,
@@ -5189,6 +5220,9 @@ export async function askServerProject(options: {
           llmCallCount,
           llmCallBudget,
           strategyType: strategyDecision.strategy,
+          questionType: questionTypeDecision.type,
+          questionTypeConfidence: questionTypeDecision.confidence,
+          questionTypeReason: questionTypeDecision.reason,
           strategyConfidence: strategyDecision.confidence,
           strategyLlmUsed: strategyDecision.llmUsed,
           strategyReason: strategyDecision.reason,
@@ -5666,6 +5700,13 @@ export async function askServerProject(options: {
       lowConfidenceMode,
       memoryPreview
     } = await buildAskEvidenceBundle(1);
+    questionTypeDecision = classifyAskQuestionType({
+      question,
+      strategy: strategyDecision.strategy,
+      moduleCandidates: strategyDecision.moduleCandidates,
+      questionTags: questionCapabilityTags,
+      matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+    });
 
     const qualityFailures: string[] = [];
 
@@ -5697,12 +5738,14 @@ export async function askServerProject(options: {
           question,
           hitPaths: mergedHits.map((hit) => hit.path),
           strategy: strategyDecision.strategy,
+          questionType: questionTypeDecision.type,
           hydratedEvidence,
           linkedEaiEvidence,
           linkedFlowEvidence,
           moduleCandidates: strategyDecision.moduleCandidates,
           domainPacks: effectiveDomainPacks,
-          questionTags: questionCapabilityTags
+          questionTags: questionCapabilityTags,
+          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
         })
       : null;
 
@@ -5740,7 +5783,8 @@ export async function askServerProject(options: {
         metadata: {
           linkedFlowEvidenceCount: linkedFlowEvidence.length,
           downstreamTraceCount: downstreamFlowTraces.length,
-          questionTags: questionCapabilityTags
+          questionTags: questionCapabilityTags,
+          questionType: questionTypeDecision.type
         }
       });
     } else {
@@ -5815,6 +5859,7 @@ export async function askServerProject(options: {
               requireModuleEvidence: strategyDecision.moduleCandidates.length > 0,
               moduleCandidates: strategyDecision.moduleCandidates,
               requireCrossLayerFlow: crossLayerFlowQuestion,
+              questionType: questionTypeDecision.type,
               domainSelectionMode: domainSelection.mode,
               matchedDomains: domainSelection.matchedDomains.map((item) => item.id),
               matchedLearnedKnowledge: matchedLearnedKnowledge.map((item) => item.id),
@@ -5843,10 +5888,18 @@ export async function askServerProject(options: {
             learnedKnowledgeMatches: matchedLearnedKnowledge,
             memory: memoryPreview,
             instruction:
-              intent.methodFocused
-                ? "메서드/호출흐름 질문입니다. 코드 파일 근거와 호출 순서를 우선 설명하세요."
-                : crossLayerFlowQuestion
+              questionTypeDecision.type === "symbol_deep_trace"
+                ? "특정 심볼/메서드 추적 질문입니다. target symbol -> direct callee -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 메서드를 최소 1개 이상 직접 언급하세요."
+                : questionTypeDecision.type === "cross_layer_flow"
                 ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요. 질문의 업무 capability(예: 보험금 청구)와 맞는 flow만 사용하고, 인접 업무 플로우로 대체하지 마세요."
+                : questionTypeDecision.type === "module_role_explanation"
+                ? "모듈 역할 설명 질문입니다. 이 모듈의 책임, 진입점, 핵심 클래스/서비스, 처리 대상, 외부 연계를 근거로 설명하세요. 단순 구조 나열이 아니라 무엇을 담당하는 프로젝트인지 명확히 써야 합니다."
+                : questionTypeDecision.type === "process_or_batch_trace"
+                ? "배치/프로세스 질문입니다. job/step/tasklet/dispatcher/queue/processor 등 실제 처리 구조와 순서를 근거 중심으로 설명하세요."
+                : questionTypeDecision.type === "channel_or_partner_integration"
+                ? "채널/제휴 연동 질문입니다. 채널 브릿지/콜백/API 진입점, controller/service, 외부 연계 경계를 명시하세요."
+                : questionTypeDecision.type === "domain_capability_overview"
+                ? "도메인 개요 질문입니다. 공통 기반, 주요 capability, 대표 서비스/모듈, 연계(EAI/DAO/async)를 분해해서 설명하세요."
                 : intent.moduleFlowFocused
                 ? "모듈 내부 탑다운 실행흐름 질문입니다. 반드시 moduleCandidates 범위 안에서 Entry point -> Controller -> Service method -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 서비스 메서드가 있으면 최소 1개 이상 직접 언급하세요. linkedEaiEvidence가 있으면 해당 interfaceId와 인터페이스명을 직접 연결해서 설명하세요. 확정 근거와 추정 범위를 분리하세요."
                 : lowConfidenceMode
@@ -5882,12 +5935,14 @@ export async function askServerProject(options: {
           question,
           hits: mergedHits,
           strategy: strategyDecision.strategy,
+          questionType: questionTypeDecision.type,
           hydratedEvidence,
           linkedEaiEvidence,
           linkedFlowEvidence,
           moduleCandidates: strategyDecision.moduleCandidates,
           domainPacks: effectiveDomainPacks,
-          questionTags: questionCapabilityTags
+          questionTags: questionCapabilityTags,
+          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
         });
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
@@ -6009,6 +6064,13 @@ export async function askServerProject(options: {
             lowConfidenceMode,
             memoryPreview
           } = nextBundle);
+          questionTypeDecision = classifyAskQuestionType({
+            question,
+            strategy: strategyDecision.strategy,
+            moduleCandidates: strategyDecision.moduleCandidates,
+            questionTags: questionCapabilityTags,
+            matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+          });
         }
       }
     }
@@ -6021,6 +6083,8 @@ export async function askServerProject(options: {
       `- askedAt: ${nowIso()}`,
       `- question: ${question}`,
       `- strategy: ${strategyDecision.strategy}`,
+      `- questionType: ${questionTypeDecision.type}`,
+      `- questionTypeConfidence: ${questionTypeDecision.confidence.toFixed(2)}`,
       `- strategyConfidence: ${strategyDecision.confidence.toFixed(2)}`,
       `- domainSelectionMode: ${domainSelection.mode}`,
       `- activeDomains: ${activeDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
@@ -6108,6 +6172,9 @@ export async function askServerProject(options: {
         llmCallCount,
         llmCallBudget,
         strategyType: strategyDecision.strategy,
+        questionType: questionTypeDecision.type,
+        questionTypeConfidence: questionTypeDecision.confidence,
+        questionTypeReason: questionTypeDecision.reason,
         strategyConfidence: strategyDecision.confidence,
         strategyLlmUsed: strategyDecision.llmUsed,
         strategyReason: strategyDecision.reason,
@@ -6167,6 +6234,7 @@ export async function askServerProject(options: {
         hitCount: response.retrieval.hitCount,
         llmCallCount: response.diagnostics.llmCallCount,
         strategy: response.diagnostics.strategyType,
+        questionType: response.diagnostics.questionType,
         moduleCandidates: response.diagnostics.scopeModules,
         hydratedEvidenceCount: response.diagnostics.hydratedEvidenceCount
       }

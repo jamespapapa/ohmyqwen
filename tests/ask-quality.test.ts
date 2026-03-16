@@ -419,4 +419,102 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("missing-specific-business-capability-detail");
   });
 
+  it("fails module-role answers when the answer omits the actual module responsibility", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "dcp-async는 여러 클래스가 있고 서비스/컨트롤러가 존재한다.",
+        confidence: 0.71,
+        evidence: ["module evidence", "service evidence"],
+        caveats: []
+      },
+      question: "dcp-async 프로젝트는 어떤 역할을 하는 것인가?",
+      hitPaths: [
+        "dcp-async/src/main/java/com/samsunglife/dcp/async/core/AsyncDispatcherManager.java",
+        "dcp-async/src/main/java/com/samsunglife/dcp/async/service/AsyncMsgService.java"
+      ],
+      strategy: "architecture_overview",
+      questionType: "module_role_explanation",
+      moduleCandidates: ["dcp-async"],
+      hydratedEvidence: [
+        {
+          path: "dcp-async/src/main/java/com/samsunglife/dcp/async/core/AsyncDispatcherManager.java",
+          reason: "callee:AsyncDispatcherManager.start",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-module-role-detail");
+  });
+
+  it("fails channel integration answers when channel boundary detail is omitted", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "회원인증은 백엔드 서비스에서 처리된다.",
+        confidence: 0.72,
+        evidence: ["member evidence", "controller evidence"],
+        caveats: []
+      },
+      question: "모니모 회원인증은 어떻게 연동되는지 설명해줘.",
+      hitPaths: [
+        "dcp-member/src/main/java/com/samsunglife/dcp/member/login/controller/EmbededMemberLoginController.java",
+        "dcp-async/src/main/java/com/samsunglife/dcp/async/controller/MonimoAsyncController.java"
+      ],
+      questionType: "channel_or_partner_integration",
+      questionTags: ["member-auth", "channel:monimo"],
+      matchedKnowledgeIds: ["channel:monimo"],
+      hydratedEvidence: [
+        {
+          path: "dcp-member/src/main/java/com/samsunglife/dcp/member/login/controller/EmbededMemberLoginController.java",
+          reason: "method:EmbededMemberLoginController.login",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      linkedFlowEvidence: [
+        {
+          apiUrl: "/gw/api/member/monimo/registe",
+          routePath: "/mo/login/MDP-MYCER999999M",
+          backendPath: "/member/monimo/registe",
+          backendControllerMethod: "RegisteUseDcpChnelController.registeMonimo"
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-channel-integration-detail");
+    expect(gate.failures).toContain("missing-channel-boundary-detail");
+  });
+
+  it("fails process questions when process structure detail is omitted", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "배치 로직은 서비스 메서드에서 처리된다.",
+        confidence: 0.69,
+        evidence: ["batch evidence", "service evidence"],
+        caveats: []
+      },
+      question: "대출 배치 job 이 어떤 step 과 tasklet 으로 처리되는지 설명해줘.",
+      hitPaths: [
+        "dcp-batch/src/main/java/com/acme/batch/LoanBatchJobConfig.java",
+        "dcp-batch/src/main/java/com/acme/batch/LoanBatchTasklet.java"
+      ],
+      questionType: "process_or_batch_trace",
+      hydratedEvidence: [
+        {
+          path: "dcp-batch/src/main/java/com/acme/batch/LoanBatchTasklet.java",
+          reason: "callee:LoanBatchTasklet.execute",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-process-structure-detail");
+    expect(gate.failures).toContain("missing-process-callee-detail");
+  });
+
 });
