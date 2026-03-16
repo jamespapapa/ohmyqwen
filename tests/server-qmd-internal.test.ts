@@ -281,6 +281,22 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(ask.diagnostics.llmCallCount).toBeGreaterThan(0);
     expect(ask.diagnostics.questionType).toBe("domain_capability_overview");
     expect((ask.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
+    expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-artifacts/latest.md"))).toBe(true);
+    const askEvaluationPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "evaluation-artifacts",
+      "latest.json"
+    );
+    const askEvaluation = JSON.parse(await readFile(askEvaluationPath, "utf8")) as {
+      kind?: string;
+      questionType?: string;
+      metrics?: { retrievalCoverageScore?: number };
+    };
+    expect(askEvaluation.kind).toBe("ask");
+    expect(askEvaluation.questionType).toBe("domain_capability_overview");
+    expect(Number(askEvaluation.metrics?.retrievalCoverageScore ?? 0)).toBeGreaterThan(0);
 
     const roleSearch = await projectsModule.searchServerProject({
       projectId: project.id,
@@ -290,5 +306,13 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(roleSearch.diagnostics.retrievalUnitLoaded).toBe(true);
     expect((roleSearch.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
     expect((roleSearch.diagnostics.matchedRetrievalUnitStatuses ?? []).length).toBeGreaterThan(0);
+    const searchEvaluation = JSON.parse(await readFile(askEvaluationPath, "utf8")) as {
+      kind?: string;
+      questionType?: string;
+      metrics?: { retrievalCoverageScore?: number };
+    };
+    expect(searchEvaluation.kind).toBe("search");
+    expect(searchEvaluation.questionType).toBe("module_role_explanation");
+    expect(Number(searchEvaluation.metrics?.retrievalCoverageScore ?? 0)).toBeGreaterThan(0);
   });
 });

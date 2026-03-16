@@ -79,6 +79,11 @@ import {
   type RetrievalUnitSnapshot
 } from "./retrieval-units.js";
 import {
+  buildEvaluationArtifactMarkdown,
+  buildProjectAskEvaluationArtifact,
+  buildProjectSearchEvaluationArtifact
+} from "./evaluation-artifacts.js";
+import {
   classifyAskQuestionType,
   getAskQuestionTypeRetrievalContract,
   type AskQuestionType
@@ -566,6 +571,7 @@ const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
 const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
 const QUERY_MEMORY_DIR = "query-reports";
+const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
@@ -2248,6 +2254,36 @@ async function writeMemoryJson(options: {
   const targetPath = path.resolve(groupRoot, options.fileName);
   await fs.writeFile(targetPath, `${JSON.stringify(options.payload, null, 2)}\n`, "utf8");
   return targetPath;
+}
+
+async function writeEvaluationArtifact(options: {
+  memoryRoot: string;
+  artifact:
+    | ReturnType<typeof buildProjectAskEvaluationArtifact>
+    | ReturnType<typeof buildProjectSearchEvaluationArtifact>;
+}): Promise<{ latestPath: string; snapshotPath: string; jsonPath: string; relativePaths: string[] }> {
+  const markdown = buildEvaluationArtifactMarkdown(options.artifact);
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: markdown
+  });
+  const jsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: options.artifact
+  });
+  return {
+    latestPath: docs.latestPath,
+    snapshotPath: docs.snapshotPath,
+    jsonPath,
+    relativePaths: [
+      ...docs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, jsonPath))
+    ]
+  };
 }
 
 function analysisSnapshotPath(memoryRoot: string): string {
@@ -5151,6 +5187,50 @@ export async function askServerProject(options: {
       });
     }
 
+    const persistAskEvaluationArtifact = async (input: {
+      response: Pick<ProjectAskResponse, "question" | "confidence" | "qualityGatePassed" | "attempts" | "evidence" | "caveats" | "retrieval" | "diagnostics">;
+      matchedRetrievalUnits?: Array<{ unit: { id: string; validatedStatus: "candidate" | "validated" | "derived" | "stale" } }>;
+      matchedLearnedKnowledgeIds?: string[];
+      activeDomainIds?: string[];
+      matchedDomainIds?: string[];
+      plannedQuery?: string;
+    }) => {
+      const artifact = buildProjectAskEvaluationArtifact({
+        generatedAt: nowIso(),
+        projectId: project.id,
+        projectName: project.name,
+        question: input.response.question,
+        strategyType: strategyDecision.strategy,
+        questionType: questionTypeDecision.type,
+        confidence: input.response.confidence,
+        qualityGatePassed: input.response.qualityGatePassed,
+        attempts: input.response.attempts,
+        llmCallCount: input.response.diagnostics.llmCallCount,
+        retrievalProvider: input.response.retrieval.provider,
+        retrievalFallbackUsed: input.response.retrieval.fallbackUsed,
+        retrievalHitCount: input.response.retrieval.hitCount,
+        retrievalTopConfidence: input.response.retrieval.topConfidence,
+        plannedQuery: input.plannedQuery ?? question,
+        matchedRetrievalUnitIds: (input.matchedRetrievalUnits ?? []).map((item) => item.unit.id),
+        matchedRetrievalUnitStatuses: (input.matchedRetrievalUnits ?? []).map((item) => item.unit.validatedStatus),
+        matchedKnowledgeIds: input.matchedLearnedKnowledgeIds ?? [],
+        activeDomainIds: input.activeDomainIds ?? [],
+        matchedDomainIds: input.matchedDomainIds ?? [],
+        qualityGateFailures: input.response.diagnostics.qualityGateFailures,
+        retryStopReason: input.response.diagnostics.retryStopReason,
+        evidenceCount: input.response.evidence.length,
+        caveatCount: input.response.caveats.length,
+        hydratedEvidenceCount: input.response.diagnostics.hydratedEvidenceCount ?? 0,
+        linkedFlowEvidenceCount: input.response.diagnostics.frontBackEvidenceUsedCount ?? 0,
+        linkedEaiEvidenceCount: input.response.diagnostics.linkedEaiEvidenceCount ?? 0,
+        downstreamTraceCount: input.response.diagnostics.downstreamTraceCount ?? 0
+      });
+      return writeEvaluationArtifact({
+        memoryRoot,
+        artifact
+      });
+    };
+
     const intent = strategyToIntent(strategyDecision.strategy);
 
     if (structureSnapshot) {
@@ -5247,6 +5327,16 @@ export async function askServerProject(options: {
             ])
           }
         };
+        const evaluationFiles = await persistAskEvaluationArtifact({
+          response,
+          plannedQuery: question
+        });
+        response.diagnostics.memoryFiles = unique([
+          ...response.diagnostics.memoryFiles,
+          evaluationFiles.latestPath,
+          evaluationFiles.snapshotPath,
+          evaluationFiles.jsonPath
+        ]);
 
         await appendProjectDebugEvent({
           timestamp: nowIso(),
@@ -5332,6 +5422,16 @@ export async function askServerProject(options: {
           memoryFiles: unique([...structureMemoryFiles, queryReportFiles.latestPath, queryReportFiles.snapshotPath])
         }
       };
+      const evaluationFiles = await persistAskEvaluationArtifact({
+        response,
+        plannedQuery: question
+      });
+      response.diagnostics.memoryFiles = unique([
+        ...response.diagnostics.memoryFiles,
+        evaluationFiles.latestPath,
+        evaluationFiles.snapshotPath,
+        evaluationFiles.jsonPath
+      ]);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
@@ -6376,6 +6476,20 @@ export async function askServerProject(options: {
         ]
       }
     };
+    const askEvaluationFiles = await persistAskEvaluationArtifact({
+      response,
+      matchedRetrievalUnits,
+      matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+      activeDomainIds: activeDomainPacks.map((item) => item.id),
+      matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+      plannedQuery: expandedQueries[0] ?? question
+    });
+    response.diagnostics.memoryFiles = unique([
+      ...response.diagnostics.memoryFiles,
+      askEvaluationFiles.latestPath,
+      askEvaluationFiles.snapshotPath,
+      askEvaluationFiles.jsonPath
+    ]);
 
     if (!learnedKnowledgeObservedInLoop && learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
       const updatedLearnedKnowledge = applyLearnedKnowledgeObservation({
@@ -6518,6 +6632,28 @@ export async function searchServerProject(options: {
       questionType: questionTypeDecision.type,
       retrievalUnitTerms: rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 3))
     });
+    const persistSearchEvaluationArtifact = async (response: ProjectSearchResult) => {
+      const artifact = buildProjectSearchEvaluationArtifact({
+        generatedAt: nowIso(),
+        projectId: project.id,
+        projectName: project.name,
+        query,
+        questionType: questionTypeDecision.type,
+        questionTypeConfidence: questionTypeDecision.confidence,
+        questionTypeReason: questionTypeDecision.reason,
+        provider: response.provider,
+        fallbackUsed: response.fallbackUsed,
+        hitCount: response.hits.length,
+        topConfidence: response.hits[0] ? normalizeHitConfidence(response.hits[0]) : 0,
+        plannedQuery,
+        matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+        matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus)
+      });
+      await writeEvaluationArtifact({
+        memoryRoot,
+        artifact
+      });
+    };
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
@@ -6616,6 +6752,7 @@ export async function searchServerProject(options: {
                 corporaTried: qmdResult.corporaTried
               }
             });
+            await persistSearchEvaluationArtifact(response);
             return response;
           }
 
@@ -6669,6 +6806,7 @@ export async function searchServerProject(options: {
               corporaTried: qmdResult.corporaTried
             }
           });
+          await persistSearchEvaluationArtifact(response);
           return response;
         }
 
@@ -6723,6 +6861,7 @@ export async function searchServerProject(options: {
             hitCount: response.hits.length
           }
         });
+        await persistSearchEvaluationArtifact(response);
         return response;
       } catch (error) {
         const lexicalHits = await lexicalSearch({
@@ -6767,6 +6906,7 @@ export async function searchServerProject(options: {
             hitCount: response.hits.length
           }
         });
+        await persistSearchEvaluationArtifact(response);
         return response;
       }
     }
@@ -6810,6 +6950,7 @@ export async function searchServerProject(options: {
         hitCount: response.hits.length
       }
     });
+    await persistSearchEvaluationArtifact(response);
     return response;
   } catch (error) {
     await appendProjectDebugEvent({
