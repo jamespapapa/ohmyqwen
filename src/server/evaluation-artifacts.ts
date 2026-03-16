@@ -64,7 +64,8 @@ export const ProjectSearchEvaluationArtifactSchema = EvaluationArtifactBaseSchem
   provider: z.enum(["qmd", "lexical"]),
   fallbackUsed: z.boolean(),
   hitCount: z.number().int().min(0),
-  topConfidence: z.number().min(0).max(1)
+  topConfidence: z.number().min(0).max(1),
+  matchedKnowledgeIds: z.array(z.string().min(1)).default([])
 });
 
 export type RetrievalUnitStatus = z.infer<typeof RetrievalUnitStatusSchema>;
@@ -254,6 +255,7 @@ export function buildProjectSearchEvaluationArtifact(input: {
   hitCount: number;
   topConfidence: number;
   plannedQuery?: string;
+  matchedKnowledgeIds?: string[];
   matchedRetrievalUnitIds?: string[];
   matchedRetrievalUnitStatuses?: RetrievalUnitStatus[];
 }): ProjectSearchEvaluationArtifact {
@@ -273,6 +275,7 @@ export function buildProjectSearchEvaluationArtifact(input: {
     hitCount: input.hitCount,
     topConfidence: input.topConfidence,
     plannedQuery: input.plannedQuery ?? "",
+    matchedKnowledgeIds: input.matchedKnowledgeIds ?? [],
     matchedRetrievalUnitIds: input.matchedRetrievalUnitIds ?? [],
     matchedRetrievalUnitStatuses: input.matchedRetrievalUnitStatuses ?? [],
     metrics: {

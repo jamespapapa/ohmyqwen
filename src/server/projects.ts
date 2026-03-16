@@ -59,6 +59,7 @@ import {
   resolveQuestionCapabilityTags
 } from "./flow-capabilities.js";
 import {
+  applyLearnedKnowledgePromotionActions,
   applyLearnedKnowledgeObservation,
   buildLearnedKnowledgeMarkdown,
   computeLearnedKnowledgeSnapshot,
@@ -72,10 +73,12 @@ import {
   buildKnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
 import {
+  buildRetrievalUnitSupportCandidates,
   buildRetrievalUnitMarkdown,
   buildRetrievalUnitSnapshot,
   rankRetrievalUnitsForQuestion,
   RetrievalUnitSnapshotSchema,
+  type RankedRetrievalUnit,
   type RetrievalUnitSnapshot
 } from "./retrieval-units.js";
 import {
@@ -86,13 +89,29 @@ import {
 import {
   buildEvaluationReplayMarkdown,
   buildEvaluationReplaySnapshot,
+  EvaluationReplaySnapshotSchema,
   type EvaluationArtifact
 } from "./evaluation-replay.js";
+import {
+  buildEvaluationPromotionMarkdown,
+  buildEvaluationPromotionSnapshot,
+  EvaluationPromotionSnapshotSchema
+} from "./evaluation-promotions.js";
 import {
   buildEvaluationTrendMarkdown,
   buildEvaluationTrendSnapshot,
   EvaluationTrendSnapshotSchema
 } from "./evaluation-trends.js";
+import {
+  buildProjectFeedbackArtifact,
+  buildProjectFeedbackMarkdown,
+  buildProjectFeedbackSummaryMarkdown,
+  buildProjectFeedbackSummarySnapshot,
+  deriveFeedbackPromotionActions,
+  ProjectFeedbackArtifactSchema,
+  ProjectFeedbackSummarySnapshotSchema,
+  type ProjectFeedbackArtifact
+} from "./project-feedback.js";
 import {
   classifyAskQuestionType,
   getAskQuestionTypeRetrievalContract,
@@ -282,6 +301,36 @@ export interface ProjectAnalysisResult {
       total: number;
       averageQualityRisk: number;
       averageRetrievalCoverage: number;
+    }>;
+  };
+  evaluationReplay?: {
+    generatedAt: string;
+    totalArtifacts: number;
+    failedAskCount: number;
+    staleBackedCount: number;
+    replayCandidateCount: number;
+    topQuestionTypes: Array<{
+      id: string;
+      count: number;
+    }>;
+  };
+  evaluationPromotions?: {
+    generatedAt: string;
+    totalActions: number;
+    promoteCount: number;
+    staleCount: number;
+    highestPriorityCandidateId: string;
+  };
+  userFeedback?: {
+    generatedAt: string;
+    totalFeedback: number;
+    correctCount: number;
+    partialCount: number;
+    incorrectCount: number;
+    feedbackBackedKnowledgeCount: number;
+    topQuestionTypes: Array<{
+      questionType: string;
+      count: number;
     }>;
   };
   eaiCatalog?: {
@@ -602,6 +651,8 @@ const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
 const EVALUATION_TREND_MEMORY_DIR = "evaluation-trends";
+const EVALUATION_PROMOTION_MEMORY_DIR = "evaluation-promotions";
+const USER_FEEDBACK_MEMORY_DIR = "user-feedback";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
@@ -1112,6 +1163,32 @@ function rerankProjectSearchHitsWithRetrievalUnits(options: {
       };
     })
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)));
+}
+
+function mergeRetrievalUnitSupportHits(options: {
+  hits: ProjectSearchHit[];
+  rankedUnits: RankedRetrievalUnit[];
+  source: "qmd" | "lexical";
+  limit: number;
+}): ProjectSearchHit[] {
+  const baseHits = options.hits.slice(0, options.limit);
+  const supports = buildRetrievalUnitSupportCandidates({
+    rankedUnits: options.rankedUnits,
+    existingPaths: baseHits.map((hit) => hit.path),
+    limit: Math.max(0, options.limit - baseHits.length)
+  }).map(
+    (candidate) =>
+      ({
+        path: candidate.path,
+        score: candidate.score,
+        source: options.source,
+        reasons: candidate.reasons,
+        title: candidate.title,
+        snippet: candidate.summary
+      }) as ProjectSearchHit
+  );
+
+  return [...baseHits, ...supports];
 }
 
 function isSearchableFile(filePath: string): boolean {
@@ -2424,6 +2501,179 @@ async function writeEvaluationArtifact(options: {
   };
 }
 
+async function writeEvaluationPromotionArtifacts(options: {
+  memoryRoot: string;
+  snapshot: ReturnType<typeof buildEvaluationPromotionSnapshot>;
+}): Promise<{ latestPath: string; snapshotPath: string; jsonPath: string; relativePaths: string[] }> {
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_PROMOTION_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildEvaluationPromotionMarkdown(options.snapshot)
+  });
+  const jsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_PROMOTION_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: options.snapshot
+  });
+  return {
+    latestPath: docs.latestPath,
+    snapshotPath: docs.snapshotPath,
+    jsonPath,
+    relativePaths: [
+      ...docs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, jsonPath))
+    ]
+  };
+}
+
+async function writeUserFeedbackArtifacts(options: {
+  memoryRoot: string;
+  artifact: ProjectFeedbackArtifact;
+}): Promise<{
+  latestPath: string;
+  snapshotPath: string;
+  jsonPath: string;
+  jsonSnapshotPath: string;
+  summaryLatestPath: string;
+  summarySnapshotPath: string;
+  summaryJsonPath: string;
+  relativePaths: string[];
+}> {
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildProjectFeedbackMarkdown(options.artifact)
+  });
+  const jsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: options.artifact
+  });
+  const jsonSnapshotPath = await writeSnapshotMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    payload: options.artifact
+  });
+  const historicalArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    limit: 120,
+    parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
+  });
+  const summarySnapshot = buildProjectFeedbackSummarySnapshot({
+    generatedAt: nowIso(),
+    artifacts: historicalArtifacts
+  });
+  const summaryDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    latestFileName: "summary.md",
+    content: buildProjectFeedbackSummaryMarkdown(summarySnapshot)
+  });
+  const summaryJsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    fileName: "summary.json",
+    payload: summarySnapshot
+  });
+  return {
+    latestPath: docs.latestPath,
+    snapshotPath: docs.snapshotPath,
+    jsonPath,
+    jsonSnapshotPath,
+    summaryLatestPath: summaryDocs.latestPath,
+    summarySnapshotPath: summaryDocs.snapshotPath,
+    summaryJsonPath,
+    relativePaths: [
+      ...docs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, jsonPath)),
+      toForwardSlash(path.relative(options.memoryRoot, jsonSnapshotPath)),
+      ...summaryDocs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, summaryJsonPath))
+    ]
+  };
+}
+
+async function persistLearnedKnowledgeSnapshot(
+  memoryRoot: string,
+  snapshot: LearnedKnowledgeSnapshot
+): Promise<string[]> {
+  const learnedKnowledgeDocs = await writeMemoryDocs({
+    memoryRoot,
+    groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildLearnedKnowledgeMarkdown(snapshot)
+  });
+  const learnedKnowledgeJsonPath = await writeMemoryJson({
+    memoryRoot,
+    groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: snapshot
+  });
+  return [
+    learnedKnowledgeDocs.latestPath,
+    learnedKnowledgeDocs.snapshotPath,
+    learnedKnowledgeJsonPath
+  ];
+}
+
+async function applyEvaluationPromotionLoop(options: {
+  memoryRoot: string;
+  learnedKnowledgeSnapshot?: LearnedKnowledgeSnapshot;
+  focusCandidateIds?: string[];
+}): Promise<{
+  nextSnapshot?: LearnedKnowledgeSnapshot;
+  promotionFiles: string[];
+}> {
+  if (!options.learnedKnowledgeSnapshot) {
+    return { nextSnapshot: undefined, promotionFiles: [] };
+  }
+  const historicalArtifacts = await readRecentMemoryJsonSnapshots<EvaluationArtifact>({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    limit: 160,
+    parse: (value) => value as EvaluationArtifact
+  });
+  const promotionSnapshot = buildEvaluationPromotionSnapshot({
+    generatedAt: nowIso(),
+    learnedKnowledge: options.learnedKnowledgeSnapshot,
+    artifacts: historicalArtifacts
+  });
+  const promotionFiles = await writeEvaluationPromotionArtifacts({
+    memoryRoot: options.memoryRoot,
+    snapshot: promotionSnapshot
+  });
+
+  const focusSet = new Set(options.focusCandidateIds ?? []);
+  const relevantActions = promotionSnapshot.actions.filter((action) => focusSet.size === 0 || focusSet.has(action.candidateId));
+  if (relevantActions.length === 0) {
+    return {
+      nextSnapshot: options.learnedKnowledgeSnapshot,
+      promotionFiles: [promotionFiles.latestPath, promotionFiles.snapshotPath, promotionFiles.jsonPath]
+    };
+  }
+
+  const nextSnapshot = applyLearnedKnowledgePromotionActions({
+    snapshot: options.learnedKnowledgeSnapshot,
+    generatedAt: nowIso(),
+    actions: relevantActions
+  });
+  const learnedKnowledgeFiles = await persistLearnedKnowledgeSnapshot(options.memoryRoot, nextSnapshot);
+  return {
+    nextSnapshot,
+    promotionFiles: [
+      promotionFiles.latestPath,
+      promotionFiles.snapshotPath,
+      promotionFiles.jsonPath,
+      ...learnedKnowledgeFiles
+    ]
+  };
+}
+
 function analysisSnapshotPath(memoryRoot: string): string {
   return path.resolve(memoryRoot, ANALYSIS_MEMORY_DIR, "latest.json");
 }
@@ -2442,24 +2692,29 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
       return undefined;
     }
     const evaluationTrends = await readEvaluationTrendSnapshot(memoryRoot);
+    const evaluationReplay = await readEvaluationReplaySnapshot(memoryRoot);
+    const evaluationPromotions = await readEvaluationPromotionSnapshot(memoryRoot);
+    const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
     return {
       ...parsed,
-      evaluationTrends:
-        evaluationTrends && !parsed.evaluationTrends
-          ? {
-              generatedAt: evaluationTrends.generatedAt,
-              totalArtifacts: evaluationTrends.summary.totalArtifacts,
-              askCount: evaluationTrends.summary.askCount,
-              searchCount: evaluationTrends.summary.searchCount,
-              questionTypeCount: evaluationTrends.summary.questionTypeCount,
-              averageRetrievalCoverage: evaluationTrends.summary.averageRetrievalCoverage,
-              averageEvidenceStrength: evaluationTrends.summary.averageEvidenceStrength,
-              averageQualityRisk: evaluationTrends.summary.averageQualityRisk,
-              highestRiskQuestionType: evaluationTrends.summary.highestRiskQuestionType,
-              strongestCoverageQuestionType: evaluationTrends.summary.strongestCoverageQuestionType,
-              topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
-            }
-          : parsed.evaluationTrends,
+      evaluationTrends: parsed.evaluationTrends ?? (evaluationTrends
+        ? {
+            generatedAt: evaluationTrends.generatedAt,
+            totalArtifacts: evaluationTrends.summary.totalArtifacts,
+            askCount: evaluationTrends.summary.askCount,
+            searchCount: evaluationTrends.summary.searchCount,
+            questionTypeCount: evaluationTrends.summary.questionTypeCount,
+            averageRetrievalCoverage: evaluationTrends.summary.averageRetrievalCoverage,
+            averageEvidenceStrength: evaluationTrends.summary.averageEvidenceStrength,
+            averageQualityRisk: evaluationTrends.summary.averageQualityRisk,
+            highestRiskQuestionType: evaluationTrends.summary.highestRiskQuestionType,
+            strongestCoverageQuestionType: evaluationTrends.summary.strongestCoverageQuestionType,
+            topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
+          }
+        : undefined),
+      evaluationReplay: parsed.evaluationReplay ?? buildEvaluationReplaySummary(evaluationReplay),
+      evaluationPromotions: parsed.evaluationPromotions ?? buildEvaluationPromotionSummary(evaluationPromotions),
+      userFeedback: parsed.userFeedback ?? buildUserFeedbackSummary(userFeedback),
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
@@ -2550,6 +2805,114 @@ async function readEvaluationTrendSnapshot(memoryRoot: string): Promise<
   }
 }
 
+function evaluationReplaySnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, EVALUATION_REPLAY_MEMORY_DIR, "latest.json");
+}
+
+async function readEvaluationReplaySnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalArtifacts: number;
+        failedAskCount: number;
+        staleBackedCount: number;
+        topQuestionTypes: Array<{ id: string; count: number }>;
+      };
+      replayCandidates: Array<{
+        kind: string;
+        questionType: string;
+        score: number;
+      }>;
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(evaluationReplaySnapshotPath(memoryRoot), "utf8");
+    const parsed = EvaluationReplaySnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: {
+        totalArtifacts: parsed.summary.totalArtifacts,
+        failedAskCount: parsed.summary.failedAskCount,
+        staleBackedCount: parsed.summary.staleBackedCount,
+        topQuestionTypes: parsed.summary.topQuestionTypes
+      },
+      replayCandidates: parsed.replayCandidates.map((candidate) => ({
+        kind: candidate.kind,
+        questionType: candidate.questionType,
+        score: candidate.score
+      }))
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function evaluationPromotionSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, EVALUATION_PROMOTION_MEMORY_DIR, "latest.json");
+}
+
+async function readEvaluationPromotionSnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalActions: number;
+        promoteCount: number;
+        staleCount: number;
+        highestPriorityCandidateId: string;
+      };
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(evaluationPromotionSnapshotPath(memoryRoot), "utf8");
+    const parsed = EvaluationPromotionSnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: parsed.summary
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function userFeedbackSummarySnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, USER_FEEDBACK_MEMORY_DIR, "summary.json");
+}
+
+async function readUserFeedbackSummarySnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalFeedback: number;
+        correctCount: number;
+        partialCount: number;
+        incorrectCount: number;
+        feedbackBackedKnowledgeCount: number;
+        topQuestionTypes: Array<{ questionType: string; count: number }>;
+      };
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(userFeedbackSummarySnapshotPath(memoryRoot), "utf8");
+    const parsed = ProjectFeedbackSummarySnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: {
+        totalFeedback: parsed.summary.totalFeedback,
+        correctCount: parsed.summary.correctCount,
+        partialCount: parsed.summary.partialCount,
+        incorrectCount: parsed.summary.incorrectCount,
+        feedbackBackedKnowledgeCount: parsed.summary.feedbackBackedKnowledgeCount,
+        topQuestionTypes: parsed.summary.topQuestionTypes
+      }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 function frontBackGraphSnapshotPath(memoryRoot: string): string {
   return path.resolve(memoryRoot, FRONT_BACK_GRAPH_MEMORY_DIR, "latest.json");
 }
@@ -2624,6 +2987,87 @@ function buildFrontCatalogMarkdown(options: {
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
+}
+
+function buildEvaluationReplaySummary(
+  snapshot:
+    | {
+        generatedAt: string;
+        summary: {
+          totalArtifacts: number;
+          failedAskCount: number;
+          staleBackedCount: number;
+          topQuestionTypes: Array<{ id: string; count: number }>;
+        };
+        replayCandidates: Array<{ kind: string; questionType: string; score: number }>;
+      }
+    | undefined
+): ProjectAnalysisResult["evaluationReplay"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    totalArtifacts: snapshot.summary.totalArtifacts,
+    failedAskCount: snapshot.summary.failedAskCount,
+    staleBackedCount: snapshot.summary.staleBackedCount,
+    replayCandidateCount: snapshot.replayCandidates.length,
+    topQuestionTypes: snapshot.summary.topQuestionTypes.slice(0, 8)
+  };
+}
+
+function buildEvaluationPromotionSummary(
+  snapshot:
+    | {
+        generatedAt: string;
+        summary: {
+          totalActions: number;
+          promoteCount: number;
+          staleCount: number;
+          highestPriorityCandidateId: string;
+        };
+      }
+    | undefined
+): ProjectAnalysisResult["evaluationPromotions"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    totalActions: snapshot.summary.totalActions,
+    promoteCount: snapshot.summary.promoteCount,
+    staleCount: snapshot.summary.staleCount,
+    highestPriorityCandidateId: snapshot.summary.highestPriorityCandidateId
+  };
+}
+
+function buildUserFeedbackSummary(
+  snapshot:
+    | {
+        generatedAt: string;
+        summary: {
+          totalFeedback: number;
+          correctCount: number;
+          partialCount: number;
+          incorrectCount: number;
+          feedbackBackedKnowledgeCount: number;
+          topQuestionTypes: Array<{ questionType: string; count: number }>;
+        };
+      }
+    | undefined
+): ProjectAnalysisResult["userFeedback"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    totalFeedback: snapshot.summary.totalFeedback,
+    correctCount: snapshot.summary.correctCount,
+    partialCount: snapshot.summary.partialCount,
+    incorrectCount: snapshot.summary.incorrectCount,
+    feedbackBackedKnowledgeCount: snapshot.summary.feedbackBackedKnowledgeCount,
+    topQuestionTypes: snapshot.summary.topQuestionTypes.slice(0, 8)
+  };
 }
 
 function buildFrontBackGraphMarkdown(options: {
@@ -4911,6 +5355,9 @@ export async function analyzeServerProject(options: {
     }
 
     const evaluationTrends = await readEvaluationTrendSnapshot(memoryRoot);
+    const evaluationReplay = await readEvaluationReplaySnapshot(memoryRoot);
+    const evaluationPromotions = await readEvaluationPromotionSnapshot(memoryRoot);
+    const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
 
     const result: ProjectAnalysisResult = {
       project: warmup.project,
@@ -4985,6 +5432,9 @@ export async function analyzeServerProject(options: {
             topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
           }
         : undefined,
+      evaluationReplay: buildEvaluationReplaySummary(evaluationReplay),
+      evaluationPromotions: buildEvaluationPromotionSummary(evaluationPromotions),
+      userFeedback: buildUserFeedbackSummary(userFeedback),
       eaiCatalog: eaiEnabled
         ? {
             asOfDate: eaiAsOfDate,
@@ -5839,21 +6289,6 @@ export async function askServerProject(options: {
       return preview;
     };
 
-    const persistLearnedKnowledgeSnapshot = async (snapshot: LearnedKnowledgeSnapshot) => {
-      await writeMemoryDocs({
-        memoryRoot,
-        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
-        latestFileName: "latest.md",
-        content: buildLearnedKnowledgeMarkdown(snapshot)
-      });
-      await writeMemoryJson({
-        memoryRoot,
-        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
-        fileName: "latest.json",
-        payload: snapshot
-      });
-    };
-
     const buildAskEvidenceBundle = async (round: number) => {
       const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
       const questionTags = unique([...baseQuestionCapabilityTags, ...matchedKnowledge.map((item) => item.id)]);
@@ -6440,7 +6875,7 @@ export async function askServerProject(options: {
             successful: gate.passed,
             question
           });
-          await persistLearnedKnowledgeSnapshot(learnedKnowledgeSnapshot);
+          await persistLearnedKnowledgeSnapshot(memoryRoot, learnedKnowledgeSnapshot);
           learnedKnowledgeObservedInLoop = true;
         }
 
@@ -6726,25 +7161,30 @@ export async function askServerProject(options: {
       askEvaluationFiles.trendJsonPath
     ]);
 
-    if (!learnedKnowledgeObservedInLoop && learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
-      const updatedLearnedKnowledge = applyLearnedKnowledgeObservation({
-        snapshot: learnedKnowledgeSnapshot,
-        matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
-        successful: response.qualityGatePassed,
-        question
-      });
-      await writeMemoryDocs({
+    if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
+      if (!learnedKnowledgeObservedInLoop) {
+        learnedKnowledgeSnapshot = applyLearnedKnowledgeObservation({
+          snapshot: learnedKnowledgeSnapshot,
+          matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
+          successful: response.qualityGatePassed,
+          question
+        });
+        const learnedKnowledgeFiles = await persistLearnedKnowledgeSnapshot(memoryRoot, learnedKnowledgeSnapshot);
+        response.diagnostics.memoryFiles = unique([
+          ...response.diagnostics.memoryFiles,
+          ...learnedKnowledgeFiles
+        ]);
+      }
+      const promotionResult = await applyEvaluationPromotionLoop({
         memoryRoot,
-        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
-        latestFileName: "latest.md",
-        content: buildLearnedKnowledgeMarkdown(updatedLearnedKnowledge)
+        learnedKnowledgeSnapshot,
+        focusCandidateIds: matchedLearnedKnowledge.map((item) => item.id)
       });
-      await writeMemoryJson({
-        memoryRoot,
-        groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
-        fileName: "latest.json",
-        payload: updatedLearnedKnowledge
-      });
+      learnedKnowledgeSnapshot = promotionResult.nextSnapshot ?? learnedKnowledgeSnapshot;
+      response.diagnostics.memoryFiles = unique([
+        ...response.diagnostics.memoryFiles,
+        ...promotionResult.promotionFiles
+      ]);
     }
 
     await appendProjectDebugEvent({
@@ -6777,6 +7217,98 @@ export async function askServerProject(options: {
     });
     throw error;
   }
+}
+
+export async function recordServerProjectFeedback(options: {
+  projectId: string;
+  kind: "ask" | "search";
+  prompt: string;
+  questionType: string;
+  verdict: "correct" | "partial" | "incorrect";
+  matchedKnowledgeIds?: string[];
+  matchedRetrievalUnitIds?: string[];
+  notes?: string;
+}): Promise<{
+  artifact: ProjectFeedbackArtifact;
+  memoryFiles: string[];
+  learnedKnowledgeUpdated: boolean;
+}> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const prompt = options.prompt.trim();
+  if (!prompt) {
+    throw new Error("prompt is required");
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const artifact = buildProjectFeedbackArtifact({
+    generatedAt: nowIso(),
+    projectId: project.id,
+    projectName: project.name,
+    kind: options.kind,
+    prompt,
+    questionType: options.questionType,
+    verdict: options.verdict,
+    matchedKnowledgeIds: options.matchedKnowledgeIds ?? [],
+    matchedRetrievalUnitIds: options.matchedRetrievalUnitIds ?? [],
+    notes: options.notes
+  });
+  const feedbackFiles = await writeUserFeedbackArtifacts({
+    memoryRoot,
+    artifact
+  });
+
+  let learnedKnowledgeUpdated = false;
+  let learnedKnowledgeFiles: string[] = [];
+  let promotionFiles: string[] = [];
+  const learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
+  if (learnedKnowledgeSnapshot && artifact.matchedKnowledgeIds.length > 0) {
+    const actions = deriveFeedbackPromotionActions({
+      artifact,
+      learnedKnowledge: learnedKnowledgeSnapshot
+    });
+    if (actions.length > 0) {
+      const promotionSnapshot = EvaluationPromotionSnapshotSchema.parse({
+        version: 1,
+        generatedAt: artifact.generatedAt,
+        summary: {
+          totalActions: actions.length,
+          promoteCount: actions.filter((action) => action.targetStatus === "validated").length,
+          staleCount: actions.filter((action) => action.targetStatus === "stale").length,
+          candidateCount: actions.filter((action) => action.targetStatus === "candidate").length,
+          highestPriorityCandidateId: actions[0]?.candidateId ?? ""
+        },
+        actions
+      });
+      const promotionArtifacts = await writeEvaluationPromotionArtifacts({
+        memoryRoot,
+        snapshot: promotionSnapshot
+      });
+      promotionFiles = [
+        promotionArtifacts.latestPath,
+        promotionArtifacts.snapshotPath,
+        promotionArtifacts.jsonPath
+      ];
+      const nextSnapshot = applyLearnedKnowledgePromotionActions({
+        snapshot: learnedKnowledgeSnapshot,
+        generatedAt: artifact.generatedAt,
+        actions
+      });
+      learnedKnowledgeFiles = await persistLearnedKnowledgeSnapshot(memoryRoot, nextSnapshot);
+      learnedKnowledgeUpdated = true;
+    }
+  }
+
+  return {
+    artifact,
+    memoryFiles: unique([
+      ...feedbackFiles.relativePaths,
+      ...promotionFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file))),
+      ...learnedKnowledgeFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file)))
+    ]),
+    learnedKnowledgeUpdated
+  };
 }
 
 export async function searchServerProject(options: {
@@ -6836,7 +7368,7 @@ export async function searchServerProject(options: {
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
     const projectPreset = project.presetId ? await getProjectPresetById(project.presetId) : undefined;
     const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
-    const learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
+    let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
     const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
     const moduleCandidates = extractModuleCandidates(query);
     const strategyDecision = classifyQuestionIntentFallback(query);
@@ -6881,13 +7413,35 @@ export async function searchServerProject(options: {
         hitCount: response.hits.length,
         topConfidence: response.hits[0] ? normalizeHitConfidence(response.hits[0]) : 0,
         plannedQuery,
+        matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
         matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus)
       });
-      await writeEvaluationArtifact({
+      const evaluationFiles = await writeEvaluationArtifact({
         memoryRoot,
         artifact
       });
+      let learnedKnowledgeFiles: string[] = [];
+      if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
+        learnedKnowledgeSnapshot = applyLearnedKnowledgeObservation({
+          snapshot: learnedKnowledgeSnapshot,
+          matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
+          successful: response.hits.length > 0 && !response.fallbackUsed,
+          question: query
+        });
+        learnedKnowledgeFiles = await persistLearnedKnowledgeSnapshot(memoryRoot, learnedKnowledgeSnapshot);
+        const promotionResult = await applyEvaluationPromotionLoop({
+          memoryRoot,
+          learnedKnowledgeSnapshot,
+          focusCandidateIds: matchedLearnedKnowledge.map((item) => item.id)
+        });
+        learnedKnowledgeSnapshot = promotionResult.nextSnapshot ?? learnedKnowledgeSnapshot;
+        learnedKnowledgeFiles = unique([...learnedKnowledgeFiles, ...promotionResult.promotionFiles]);
+      }
+      return {
+        evaluationFiles,
+        learnedKnowledgeFiles
+      };
     };
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
@@ -6949,7 +7503,12 @@ export async function searchServerProject(options: {
               provider: "lexical",
               fallbackUsed: true,
               hits: rerankProjectSearchHitsWithRetrievalUnits({
-                hits: lexicalHits,
+                hits: mergeRetrievalUnitSupportHits({
+                  hits: lexicalHits,
+                  rankedUnits: rankedRetrievalUnits,
+                  source: "lexical",
+                  limit
+                }),
                 rankedUnits: rankedRetrievalUnits
               }),
               diagnostics: {
@@ -6998,7 +7557,12 @@ export async function searchServerProject(options: {
             fallbackUsed: false,
             modeUsed: qmdResult.mode,
             hits: rerankProjectSearchHitsWithRetrievalUnits({
-              hits: existingQmdHits,
+              hits: mergeRetrievalUnitSupportHits({
+                hits: existingQmdHits,
+                rankedUnits: rankedRetrievalUnits,
+                source: "qmd",
+                limit
+              }),
               rankedUnits: rankedRetrievalUnits
             }),
             diagnostics: {
@@ -7058,7 +7622,12 @@ export async function searchServerProject(options: {
           provider: "lexical",
           fallbackUsed: true,
           hits: rerankProjectSearchHitsWithRetrievalUnits({
-            hits: lexicalHits,
+            hits: mergeRetrievalUnitSupportHits({
+              hits: lexicalHits,
+              rankedUnits: rankedRetrievalUnits,
+              source: "lexical",
+              limit
+            }),
             rankedUnits: rankedRetrievalUnits
           }),
           diagnostics: {
@@ -7112,7 +7681,12 @@ export async function searchServerProject(options: {
           provider: "lexical",
           fallbackUsed: true,
           hits: rerankProjectSearchHitsWithRetrievalUnits({
-            hits: lexicalHits,
+            hits: mergeRetrievalUnitSupportHits({
+              hits: lexicalHits,
+              rankedUnits: rankedRetrievalUnits,
+              source: "lexical",
+              limit
+            }),
             rankedUnits: rankedRetrievalUnits
           }),
           diagnostics: {
@@ -7159,7 +7733,12 @@ export async function searchServerProject(options: {
       provider: "lexical",
       fallbackUsed: false,
       hits: rerankProjectSearchHitsWithRetrievalUnits({
-        hits: lexicalHits,
+        hits: mergeRetrievalUnitSupportHits({
+          hits: lexicalHits,
+          rankedUnits: rankedRetrievalUnits,
+          source: "lexical",
+          limit
+        }),
         rankedUnits: rankedRetrievalUnits
       }),
       diagnostics: {

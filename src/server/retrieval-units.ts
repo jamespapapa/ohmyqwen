@@ -61,6 +61,15 @@ export interface RankedRetrievalUnit {
   reasons: string[];
 }
 
+export interface RetrievalUnitSupportCandidate {
+  unitId: string;
+  path: string;
+  title: string;
+  summary: string;
+  score: number;
+  reasons: string[];
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -137,6 +146,15 @@ function toSearchTokens(input: string): string[] {
       .replace(/[^a-z0-9가-힣_:/.-]+/gi, " ")
       .split(/\s+/)
       .filter((item) => item.length >= 2)
+  );
+}
+
+function chooseSupportPath(evidencePaths: string[]): string | undefined {
+  const normalized = evidencePaths.map(toForwardSlash).filter(Boolean);
+  return (
+    normalized.find((entry) => /\/src\/|\.java$|\.kt$|\.ts$|\.tsx$|\.js$|\.jsx$|\.vue$|\.jsp$|\.xml$|\.yml$|\.yaml$|\.json$/i.test(entry)) ??
+    normalized.find((entry) => entry.includes("/")) ??
+    normalized[0]
   );
 }
 
@@ -545,4 +563,38 @@ export function rankRetrievalUnitsForQuestion(options: {
   return results
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.unit.id.localeCompare(b.unit.id)))
     .slice(0, options.limit ?? 8);
+}
+
+export function buildRetrievalUnitSupportCandidates(options: {
+  rankedUnits: RankedRetrievalUnit[];
+  existingPaths?: string[];
+  limit?: number;
+}): RetrievalUnitSupportCandidate[] {
+  const existing = new Set((options.existingPaths ?? []).map((item) => toForwardSlash(item).toLowerCase()));
+  const results: RetrievalUnitSupportCandidate[] = [];
+
+  for (const ranked of options.rankedUnits) {
+    const supportPath = chooseSupportPath(ranked.unit.evidencePaths);
+    if (!supportPath) {
+      continue;
+    }
+    const normalizedPath = supportPath.toLowerCase();
+    if (existing.has(normalizedPath)) {
+      continue;
+    }
+    existing.add(normalizedPath);
+    results.push({
+      unitId: ranked.unit.id,
+      path: supportPath,
+      title: ranked.unit.title,
+      summary: ranked.unit.summary,
+      score: Math.round((ranked.score * 0.35 + ranked.unit.confidence * 4) * 100) / 100,
+      reasons: unique([`retrieval-unit-derived=${ranked.unit.id}`, ...ranked.reasons.slice(0, 3)])
+    });
+    if (results.length >= (options.limit ?? 4)) {
+      break;
+    }
+  }
+
+  return results;
 }

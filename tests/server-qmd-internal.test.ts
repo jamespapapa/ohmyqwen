@@ -352,5 +352,173 @@ describe("server projects with vendored internal qmd runtime", () => {
     });
     expect(cachedAnalysis.evaluationTrends?.totalArtifacts).toBeGreaterThanOrEqual(2);
     expect((cachedAnalysis.evaluationTrends?.topQuestionTypes ?? []).length).toBeGreaterThan(0);
+    expect(cachedAnalysis.evaluationReplay?.totalArtifacts).toBeGreaterThanOrEqual(2);
+    expect(cachedAnalysis.evaluationPromotions?.totalActions ?? 0).toBeGreaterThanOrEqual(0);
+  });
+
+  it("promotes matched learned knowledge from accumulated search and ask evaluations", async () => {
+    const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-external-workspace-"));
+    tempDirs.push(appRoot, workspaceDir);
+
+    await writeFakeInternalQmdRuntime(appRoot);
+    await writeWorkspaceFixture(workspaceDir);
+    await mkdir(path.join(appRoot, ".ohmyqwen", "runtime", "qmd", "models"), { recursive: true });
+    await mkdir(path.join(appRoot, "config"), { recursive: true });
+
+    installFakeLlm();
+    process.chdir(appRoot);
+    process.env.OHMYQWEN_PROJECT_HOME = path.join(appRoot, ".project-home");
+    process.env.OHMYQWEN_SERVER_TRACE = "0";
+    process.env.OHMYQWEN_LLM_BASE_URL = "http://fake-llm.local/v1";
+    process.env.OHMYQWEN_LLM_MODEL = "Fake-Model";
+    process.env.OHMYQWEN_LLM_ENDPOINT_KIND = "openai";
+
+    const projectsModule = await import("../src/server/projects.js");
+
+    const project = await projectsModule.upsertServerProject({
+      name: "external-demo-promotion",
+      workspaceDir,
+      retrieval: {
+        qmd: {
+          integrationMode: "internal-runtime",
+          command: "definitely-missing-qmd"
+        }
+      }
+    });
+
+    await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+
+    const learnedKnowledgePath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "learned-knowledge",
+      "latest.json"
+    );
+    await mkdir(path.dirname(learnedKnowledgePath), { recursive: true });
+    await writeFile(
+      learnedKnowledgePath,
+      `${JSON.stringify(
+        {
+          version: 1,
+          generatedAt: "2026-03-16T00:00:00.000Z",
+          candidates: [
+            {
+              id: "module:loan-runtime",
+              kind: "module-role",
+              status: "candidate",
+              label: "loan runtime",
+              description: "",
+              tags: ["loan"],
+              aliases: ["loan runtime", "loan runtime 역할", "loan runtime 모듈"],
+              apiPrefixes: [],
+              screenPrefixes: [],
+              controllerHints: ["LoanController"],
+              serviceHints: ["LoanService"],
+              pathHints: ["src"],
+              searchTerms: ["loan runtime", "loan", "controller", "service"],
+              evidence: ["src/LoanController.java"],
+              score: 28,
+              counts: {
+                links: 1,
+                screens: 0,
+                backend: 1,
+                eai: 0,
+                uses: 0,
+                successes: 0,
+                failures: 0
+              },
+              firstSeenAt: "2026-03-16T00:00:00.000Z",
+              lastSeenAt: "2026-03-16T00:00:00.000Z"
+            }
+          ],
+          summary: {
+            candidateCount: 1,
+            validatedCount: 0,
+            staleCount: 0,
+            domainCount: 0,
+            moduleRoleCount: 1,
+            processCount: 0,
+            channelCount: 0,
+            strongestCandidates: ["module:loan-runtime"]
+          }
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const roleSearch = await projectsModule.searchServerProject({
+      projectId: project.id,
+      query: "loan runtime 모듈은 어떤 역할을 하는가?"
+    });
+    expect(roleSearch.diagnostics.questionType).toBe("module_role_explanation");
+
+    const roleSearch2 = await projectsModule.searchServerProject({
+      projectId: project.id,
+      query: "loan runtime 프로젝트는 어떤 역할을 하는가?"
+    });
+    expect(roleSearch2.diagnostics.questionType).toBe("module_role_explanation");
+
+    const promotionPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "evaluation-promotions",
+      "latest.json"
+    );
+    const promotions = JSON.parse(await readFile(promotionPath, "utf8")) as {
+      actions?: Array<{ candidateId?: string; targetStatus?: string }>;
+      summary?: { totalActions?: number };
+    };
+    expect(Array.isArray(promotions.actions)).toBe(true);
+    expect(Number(promotions.summary?.totalActions ?? 0)).toBeGreaterThanOrEqual(0);
+
+
+    await projectsModule.recordServerProjectFeedback({
+      projectId: project.id,
+      kind: "search",
+      prompt: "loan runtime 프로젝트는 어떤 역할을 하는가?",
+      questionType: "module_role_explanation",
+      verdict: "correct",
+      matchedKnowledgeIds: ["module:loan-runtime"],
+      matchedRetrievalUnitIds: ["unit:module:module:loan-runtime"],
+      notes: "사용자 확인 정답"
+    });
+
+    const feedbackPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "user-feedback",
+      "latest.json"
+    );
+    const feedback = JSON.parse(await readFile(feedbackPath, "utf8")) as {
+      verdict?: string;
+      matchedKnowledgeIds?: string[];
+    };
+    expect(feedback.verdict).toBe("correct");
+    expect(feedback.matchedKnowledgeIds).toContain("module:loan-runtime");
+
+    const updatedLearnedKnowledge = JSON.parse(await readFile(learnedKnowledgePath, "utf8")) as {
+      candidates?: Array<{ id?: string; status?: string; counts?: { uses?: number; successes?: number } }>;
+    };
+    const updatedCandidate = (updatedLearnedKnowledge.candidates ?? []).find((candidate) => candidate.id === "module:loan-runtime");
+    expect(updatedCandidate?.status).toBe("validated");
+    expect(Number(updatedCandidate?.counts?.uses ?? 0)).toBeGreaterThanOrEqual(2);
+    expect(Number(updatedCandidate?.counts?.successes ?? 0)).toBeGreaterThanOrEqual(2);
+
+    const cachedAfterFeedback = await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+    expect(cachedAfterFeedback.userFeedback?.totalFeedback).toBeGreaterThanOrEqual(1);
+    expect(cachedAfterFeedback.userFeedback?.correctCount).toBeGreaterThanOrEqual(1);
+    expect(cachedAfterFeedback.evaluationPromotions?.promoteCount).toBeGreaterThanOrEqual(1);
   });
 });

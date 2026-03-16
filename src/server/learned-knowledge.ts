@@ -65,6 +65,15 @@ export interface LearnedKnowledgeMatch {
   searchTerms: string[];
 }
 
+export interface LearnedKnowledgePromotionAction {
+  candidateId: string;
+  currentStatus: LearnedKnowledgeStatus;
+  targetStatus: LearnedKnowledgeStatus;
+  score: number;
+  reasons: string[];
+  confidence: number;
+}
+
 export interface LearnedKnowledgeFrontBackLinkLike {
   frontend: {
     screenCode?: string;
@@ -760,6 +769,48 @@ export function applyLearnedKnowledgeObservation(options: {
   return {
     version: 1,
     generatedAt: now,
+    candidates: nextCandidates.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.id.localeCompare(b.id))),
+    summary: summarize(nextCandidates)
+  };
+}
+
+export function applyLearnedKnowledgePromotionActions(options: {
+  snapshot: LearnedKnowledgeSnapshot;
+  generatedAt: string;
+  actions: LearnedKnowledgePromotionAction[];
+}): LearnedKnowledgeSnapshot {
+  const actionMap = new Map(options.actions.map((action) => [action.candidateId, action]));
+  const nextCandidates = options.snapshot.candidates.map((candidate) => {
+    const action = actionMap.get(candidate.id);
+    if (!action) {
+      return candidate;
+    }
+
+    const targetBoost =
+      action.targetStatus === "validated"
+        ? { uses: 2, successes: 2, failures: 0 }
+        : action.targetStatus === "stale"
+          ? { uses: 3, successes: 0, failures: 5 }
+          : { uses: 1, successes: 0, failures: 0 };
+
+    return normalizeCandidate({
+      ...candidate,
+      aliases: [...candidate.aliases, ...action.reasons],
+      searchTerms: [...candidate.searchTerms, ...action.reasons],
+      evidence: [...candidate.evidence, ...action.reasons.map((reason) => `promotion:${reason}`)],
+      counts: {
+        ...candidate.counts,
+        uses: candidate.counts.uses + targetBoost.uses,
+        successes: candidate.counts.successes + targetBoost.successes,
+        failures: candidate.counts.failures + targetBoost.failures
+      },
+      lastSeenAt: options.generatedAt
+    });
+  });
+
+  return {
+    version: 1,
+    generatedAt: options.generatedAt,
     candidates: nextCandidates.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.id.localeCompare(b.id))),
     summary: summarize(nextCandidates)
   };

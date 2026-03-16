@@ -14,6 +14,7 @@ import {
   listProjectDebugEvents,
   removeServerDomainPack,
   readServerProjectFile,
+  recordServerProjectFeedback,
   removeServerProject,
   removeServerProjectPreset,
   searchServerProject,
@@ -67,7 +68,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug"
+  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -650,6 +651,48 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         projectId: projectAskId,
         error: error instanceof Error ? error.message : String(error),
         tookMs: Date.now() - startedAt
+      });
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectFeedbackId = matchProjectPath(pathname, "feedback");
+  if (projectFeedbackId && method === "POST") {
+    routeTrace("project/feedback:start", { projectId: projectFeedbackId });
+    try {
+      const payload = (await readJsonBody(req)) as {
+        kind?: "ask" | "search";
+        prompt?: string;
+        questionType?: string;
+        verdict?: "correct" | "partial" | "incorrect";
+        matchedKnowledgeIds?: string[];
+        matchedRetrievalUnitIds?: string[];
+        notes?: string;
+      };
+      const result = await recordServerProjectFeedback({
+        projectId: projectFeedbackId,
+        kind: payload.kind ?? "ask",
+        prompt: payload.prompt ?? "",
+        questionType: payload.questionType ?? "domain_capability_overview",
+        verdict: payload.verdict ?? "partial",
+        matchedKnowledgeIds: payload.matchedKnowledgeIds ?? [],
+        matchedRetrievalUnitIds: payload.matchedRetrievalUnitIds ?? [],
+        notes: payload.notes
+      });
+      routeTrace("project/feedback:success", {
+        projectId: projectFeedbackId,
+        learnedKnowledgeUpdated: result.learnedKnowledgeUpdated,
+        matchedKnowledgeIds: result.artifact.matchedKnowledgeIds
+      });
+      json(res, 201, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/feedback:failure", {
+        projectId: projectFeedbackId,
+        error: error instanceof Error ? error.message : String(error)
       });
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)

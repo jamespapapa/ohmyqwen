@@ -1874,6 +1874,30 @@ export default function HomePage() {
                     </span>
                   </div>
                   <div className="report-row">
+                    <span>Replay 큐</span>
+                    <span>
+                      {analysisResult.evaluationReplay
+                        ? `artifacts=${analysisResult.evaluationReplay.totalArtifacts}, queue=${analysisResult.evaluationReplay.replayCandidateCount}, failedAsk=${analysisResult.evaluationReplay.failedAskCount}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>승격 액션</span>
+                    <span>
+                      {analysisResult.evaluationPromotions
+                        ? `total=${analysisResult.evaluationPromotions.totalActions}, promote=${analysisResult.evaluationPromotions.promoteCount}, stale=${analysisResult.evaluationPromotions.staleCount}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>사용자 피드백</span>
+                    <span>
+                      {analysisResult.userFeedback
+                        ? `total=${analysisResult.userFeedback.totalFeedback}, correct=${analysisResult.userFeedback.correctCount}, incorrect=${analysisResult.userFeedback.incorrectCount}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
                     <span>연결 Workspace</span>
                     <span>{selectedProject?.linkedWorkspaceDirs?.length ?? 0}개</span>
                   </div>
@@ -2037,6 +2061,25 @@ export default function HomePage() {
                             {shortText(entry.questionType, 28)} · total={entry.total}
                           </span>
                           <span>{entry.averageQualityRisk}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {(analysisResult.userFeedback?.topQuestionTypes || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      User Feedback
+                      {analysisResult.userFeedback
+                        ? ` · total=${analysisResult.userFeedback.totalFeedback} · incorrect=${analysisResult.userFeedback.incorrectCount}`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 150 }}>
+                      {analysisResult.userFeedback.topQuestionTypes.slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.questionType}-${index}`}>
+                          <span>{shortText(entry.questionType, 28)}</span>
+                          <span>{entry.count}</span>
                         </li>
                       ))}
                     </ul>

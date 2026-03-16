@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRetrievalUnitSupportCandidates,
   buildRetrievalUnitMarkdown,
   buildRetrievalUnitSnapshot,
   rankRetrievalUnitsForQuestion
@@ -468,5 +469,26 @@ describe("retrieval unit standardization", () => {
     expect(rankedFlow).toBeDefined();
     expect(rankedKnowledge).toBeDefined();
     expect((rankedFlow?.score ?? 0)).toBeGreaterThan(rankedKnowledge?.score ?? 0);
+  });
+
+  it("derives retrieval support candidates from top-ranked units using evidence paths", () => {
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: snapshot });
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: units,
+      question: "모니모 회원인증은 프론트에서 백엔드까지 어떻게 연동되는지 설명해줘.",
+      questionType: "channel_or_partner_integration",
+      questionTags: ["member-auth", "channel:monimo"],
+      matchedKnowledgeIds: ["channel:monimo"]
+    });
+
+    const supports = buildRetrievalUnitSupportCandidates({
+      rankedUnits: ranked,
+      existingPaths: ["src/views/login/MDP-MYCER999999M.vue"],
+      limit: 4
+    });
+
+    expect(supports.length).toBeGreaterThan(0);
+    expect(supports[0]?.reasons.some((reason) => reason.startsWith("retrieval-unit-derived="))).toBe(true);
+    expect(supports.some((item) => item.path.includes("RegisteUseDcpChnelController"))).toBe(true);
   });
 });
