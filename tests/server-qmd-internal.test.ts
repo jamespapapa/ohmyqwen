@@ -282,6 +282,7 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(ask.diagnostics.questionType).toBe("domain_capability_overview");
     expect((ask.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
     expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-artifacts/latest.md"))).toBe(true);
+    expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-replay/latest.md"))).toBe(true);
     const askEvaluationPath = path.join(
       appRoot,
       ".project-home",
@@ -314,5 +315,20 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(searchEvaluation.kind).toBe("search");
     expect(searchEvaluation.questionType).toBe("module_role_explanation");
     expect(Number(searchEvaluation.metrics?.retrievalCoverageScore ?? 0)).toBeGreaterThan(0);
+    const replayPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "evaluation-replay",
+      "latest.json"
+    );
+    const replay = JSON.parse(await readFile(replayPath, "utf8")) as {
+      summary?: { totalArtifacts?: number; askCount?: number; searchCount?: number };
+      replayCandidates?: Array<{ kind?: string }>;
+    };
+    expect(Number(replay.summary?.totalArtifacts ?? 0)).toBeGreaterThanOrEqual(2);
+    expect(Number(replay.summary?.askCount ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(replay.summary?.searchCount ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(replay.replayCandidates)).toBe(true);
   });
 });

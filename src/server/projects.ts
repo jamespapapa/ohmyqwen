@@ -84,6 +84,11 @@ import {
   buildProjectSearchEvaluationArtifact
 } from "./evaluation-artifacts.js";
 import {
+  buildEvaluationReplayMarkdown,
+  buildEvaluationReplaySnapshot,
+  type EvaluationArtifact
+} from "./evaluation-replay.js";
+import {
   classifyAskQuestionType,
   getAskQuestionTypeRetrievalContract,
   type AskQuestionType
@@ -572,6 +577,7 @@ const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
 const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
+const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
@@ -2256,12 +2262,62 @@ async function writeMemoryJson(options: {
   return targetPath;
 }
 
+async function writeSnapshotMemoryJson(options: {
+  memoryRoot: string;
+  groupDir: string;
+  payload: unknown;
+}): Promise<string> {
+  const groupRoot = path.resolve(options.memoryRoot, options.groupDir);
+  await fs.mkdir(groupRoot, { recursive: true });
+  const snapshotPath = path.resolve(groupRoot, `${formatTs(new Date())}-${randomUUID().slice(0, 8)}.json`);
+  await fs.writeFile(snapshotPath, `${JSON.stringify(options.payload, null, 2)}\n`, "utf8");
+  return snapshotPath;
+}
+
+async function readRecentMemoryJsonSnapshots<T>(options: {
+  memoryRoot: string;
+  groupDir: string;
+  limit?: number;
+  parse: (value: unknown) => T;
+}): Promise<T[]> {
+  const groupRoot = path.resolve(options.memoryRoot, options.groupDir);
+  try {
+    const entries = await fs.readdir(groupRoot, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json") && entry.name !== "latest.json")
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a))
+      .slice(0, options.limit ?? 100);
+    const results: T[] = [];
+    for (const fileName of files) {
+      try {
+        const raw = await fs.readFile(path.resolve(groupRoot, fileName), "utf8");
+        results.push(options.parse(JSON.parse(raw)));
+      } catch {
+        // ignore malformed historical snapshot
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 async function writeEvaluationArtifact(options: {
   memoryRoot: string;
   artifact:
     | ReturnType<typeof buildProjectAskEvaluationArtifact>
     | ReturnType<typeof buildProjectSearchEvaluationArtifact>;
-}): Promise<{ latestPath: string; snapshotPath: string; jsonPath: string; relativePaths: string[] }> {
+}): Promise<{
+  latestPath: string;
+  snapshotPath: string;
+  jsonPath: string;
+  jsonSnapshotPath: string;
+  replayLatestPath: string;
+  replaySnapshotPath: string;
+  replayJsonPath: string;
+  relativePaths: string[];
+}> {
   const markdown = buildEvaluationArtifactMarkdown(options.artifact);
   const docs = await writeMemoryDocs({
     memoryRoot: options.memoryRoot,
@@ -2275,13 +2331,47 @@ async function writeEvaluationArtifact(options: {
     fileName: "latest.json",
     payload: options.artifact
   });
+  const jsonSnapshotPath = await writeSnapshotMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    payload: options.artifact
+  });
+  const historicalArtifacts = await readRecentMemoryJsonSnapshots<EvaluationArtifact>({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    limit: 120,
+    parse: (value) => value as EvaluationArtifact
+  });
+  const replaySnapshot = buildEvaluationReplaySnapshot({
+    generatedAt: nowIso(),
+    artifacts: historicalArtifacts
+  });
+  const replayDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_REPLAY_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildEvaluationReplayMarkdown(replaySnapshot)
+  });
+  const replayJsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_REPLAY_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: replaySnapshot
+  });
   return {
     latestPath: docs.latestPath,
     snapshotPath: docs.snapshotPath,
     jsonPath,
+    jsonSnapshotPath,
+    replayLatestPath: replayDocs.latestPath,
+    replaySnapshotPath: replayDocs.snapshotPath,
+    replayJsonPath,
     relativePaths: [
       ...docs.relativePaths,
-      toForwardSlash(path.relative(options.memoryRoot, jsonPath))
+      toForwardSlash(path.relative(options.memoryRoot, jsonPath)),
+      toForwardSlash(path.relative(options.memoryRoot, jsonSnapshotPath)),
+      ...replayDocs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, replayJsonPath))
     ]
   };
 }
@@ -5335,7 +5425,10 @@ export async function askServerProject(options: {
           ...response.diagnostics.memoryFiles,
           evaluationFiles.latestPath,
           evaluationFiles.snapshotPath,
-          evaluationFiles.jsonPath
+          evaluationFiles.jsonPath,
+          evaluationFiles.replayLatestPath,
+          evaluationFiles.replaySnapshotPath,
+          evaluationFiles.replayJsonPath
         ]);
 
         await appendProjectDebugEvent({
@@ -5430,7 +5523,10 @@ export async function askServerProject(options: {
         ...response.diagnostics.memoryFiles,
         evaluationFiles.latestPath,
         evaluationFiles.snapshotPath,
-        evaluationFiles.jsonPath
+        evaluationFiles.jsonPath,
+        evaluationFiles.replayLatestPath,
+        evaluationFiles.replaySnapshotPath,
+        evaluationFiles.replayJsonPath
       ]);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
@@ -6488,7 +6584,10 @@ export async function askServerProject(options: {
       ...response.diagnostics.memoryFiles,
       askEvaluationFiles.latestPath,
       askEvaluationFiles.snapshotPath,
-      askEvaluationFiles.jsonPath
+      askEvaluationFiles.jsonPath,
+      askEvaluationFiles.replayLatestPath,
+      askEvaluationFiles.replaySnapshotPath,
+      askEvaluationFiles.replayJsonPath
     ]);
 
     if (!learnedKnowledgeObservedInLoop && learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
