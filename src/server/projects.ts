@@ -89,6 +89,11 @@ import {
   type EvaluationArtifact
 } from "./evaluation-replay.js";
 import {
+  buildEvaluationTrendMarkdown,
+  buildEvaluationTrendSnapshot,
+  EvaluationTrendSnapshotSchema
+} from "./evaluation-trends.js";
+import {
   classifyAskQuestionType,
   getAskQuestionTypeRetrievalContract,
   type AskQuestionType
@@ -259,6 +264,24 @@ export interface ProjectAnalysisResult {
     topChannels: Array<{
       id: string;
       count: number;
+    }>;
+  };
+  evaluationTrends?: {
+    generatedAt: string;
+    totalArtifacts: number;
+    askCount: number;
+    searchCount: number;
+    questionTypeCount: number;
+    averageRetrievalCoverage: number;
+    averageEvidenceStrength: number;
+    averageQualityRisk: number;
+    highestRiskQuestionType: string;
+    strongestCoverageQuestionType: string;
+    topQuestionTypes: Array<{
+      questionType: string;
+      total: number;
+      averageQualityRisk: number;
+      averageRetrievalCoverage: number;
     }>;
   };
   eaiCatalog?: {
@@ -578,6 +601,7 @@ const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
 const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
+const EVALUATION_TREND_MEMORY_DIR = "evaluation-trends";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
@@ -2316,6 +2340,9 @@ async function writeEvaluationArtifact(options: {
   replayLatestPath: string;
   replaySnapshotPath: string;
   replayJsonPath: string;
+  trendLatestPath: string;
+  trendSnapshotPath: string;
+  trendJsonPath: string;
   relativePaths: string[];
 }> {
   const markdown = buildEvaluationArtifactMarkdown(options.artifact);
@@ -2358,6 +2385,22 @@ async function writeEvaluationArtifact(options: {
     fileName: "latest.json",
     payload: replaySnapshot
   });
+  const trendSnapshot = buildEvaluationTrendSnapshot({
+    generatedAt: nowIso(),
+    artifacts: historicalArtifacts
+  });
+  const trendDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_TREND_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildEvaluationTrendMarkdown(trendSnapshot)
+  });
+  const trendJsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: EVALUATION_TREND_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: trendSnapshot
+  });
   return {
     latestPath: docs.latestPath,
     snapshotPath: docs.snapshotPath,
@@ -2366,12 +2409,17 @@ async function writeEvaluationArtifact(options: {
     replayLatestPath: replayDocs.latestPath,
     replaySnapshotPath: replayDocs.snapshotPath,
     replayJsonPath,
+    trendLatestPath: trendDocs.latestPath,
+    trendSnapshotPath: trendDocs.snapshotPath,
+    trendJsonPath,
     relativePaths: [
       ...docs.relativePaths,
       toForwardSlash(path.relative(options.memoryRoot, jsonPath)),
       toForwardSlash(path.relative(options.memoryRoot, jsonSnapshotPath)),
       ...replayDocs.relativePaths,
-      toForwardSlash(path.relative(options.memoryRoot, replayJsonPath))
+      toForwardSlash(path.relative(options.memoryRoot, replayJsonPath)),
+      ...trendDocs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, trendJsonPath))
     ]
   };
 }
@@ -2393,8 +2441,25 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
     if (ageMs > Math.max(30_000, ANALYSIS_CACHE_MAX_AGE_MS)) {
       return undefined;
     }
+    const evaluationTrends = await readEvaluationTrendSnapshot(memoryRoot);
     return {
       ...parsed,
+      evaluationTrends:
+        evaluationTrends && !parsed.evaluationTrends
+          ? {
+              generatedAt: evaluationTrends.generatedAt,
+              totalArtifacts: evaluationTrends.summary.totalArtifacts,
+              askCount: evaluationTrends.summary.askCount,
+              searchCount: evaluationTrends.summary.searchCount,
+              questionTypeCount: evaluationTrends.summary.questionTypeCount,
+              averageRetrievalCoverage: evaluationTrends.summary.averageRetrievalCoverage,
+              averageEvidenceStrength: evaluationTrends.summary.averageEvidenceStrength,
+              averageQualityRisk: evaluationTrends.summary.averageQualityRisk,
+              highestRiskQuestionType: evaluationTrends.summary.highestRiskQuestionType,
+              strongestCoverageQuestionType: evaluationTrends.summary.strongestCoverageQuestionType,
+              topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
+            }
+          : parsed.evaluationTrends,
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
@@ -2434,6 +2499,51 @@ async function readEaiDictionarySnapshot(memoryRoot: string): Promise<{
       interfaceCount: Number(parsed.interfaceCount ?? parsed.entries?.length ?? 0),
       manualOverridesApplied: parsed.manualOverridesApplied,
       entries: Array.isArray(parsed.entries) ? parsed.entries : []
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function evaluationTrendSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, EVALUATION_TREND_MEMORY_DIR, "latest.json");
+}
+
+async function readEvaluationTrendSnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalArtifacts: number;
+        askCount: number;
+        searchCount: number;
+        questionTypeCount: number;
+        averageRetrievalCoverage: number;
+        averageEvidenceStrength: number;
+        averageQualityRisk: number;
+        highestRiskQuestionType: string;
+        strongestCoverageQuestionType: string;
+      };
+      byQuestionType: Array<{
+        questionType: string;
+        total: number;
+        averageQualityRisk: number;
+        averageRetrievalCoverage: number;
+      }>;
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(evaluationTrendSnapshotPath(memoryRoot), "utf8");
+    const parsed = EvaluationTrendSnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: parsed.summary,
+      byQuestionType: parsed.byQuestionType.map((entry) => ({
+        questionType: entry.questionType,
+        total: entry.total,
+        averageQualityRisk: entry.averageQualityRisk,
+        averageRetrievalCoverage: entry.averageRetrievalCoverage
+      }))
     };
   } catch {
     return undefined;
@@ -4800,6 +4910,8 @@ export async function analyzeServerProject(options: {
       });
     }
 
+    const evaluationTrends = await readEvaluationTrendSnapshot(memoryRoot);
+
     const result: ProjectAnalysisResult = {
       project: warmup.project,
       analyzedAt,
@@ -4858,6 +4970,21 @@ export async function analyzeServerProject(options: {
         topDomains: retrievalUnits.summary.topDomains.slice(0, 8),
         topChannels: retrievalUnits.summary.topChannels.slice(0, 8)
       },
+      evaluationTrends: evaluationTrends
+        ? {
+            generatedAt: evaluationTrends.generatedAt,
+            totalArtifacts: evaluationTrends.summary.totalArtifacts,
+            askCount: evaluationTrends.summary.askCount,
+            searchCount: evaluationTrends.summary.searchCount,
+            questionTypeCount: evaluationTrends.summary.questionTypeCount,
+            averageRetrievalCoverage: evaluationTrends.summary.averageRetrievalCoverage,
+            averageEvidenceStrength: evaluationTrends.summary.averageEvidenceStrength,
+            averageQualityRisk: evaluationTrends.summary.averageQualityRisk,
+            highestRiskQuestionType: evaluationTrends.summary.highestRiskQuestionType,
+            strongestCoverageQuestionType: evaluationTrends.summary.strongestCoverageQuestionType,
+            topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
+          }
+        : undefined,
       eaiCatalog: eaiEnabled
         ? {
             asOfDate: eaiAsOfDate,
@@ -5428,7 +5555,10 @@ export async function askServerProject(options: {
           evaluationFiles.jsonPath,
           evaluationFiles.replayLatestPath,
           evaluationFiles.replaySnapshotPath,
-          evaluationFiles.replayJsonPath
+          evaluationFiles.replayJsonPath,
+          evaluationFiles.trendLatestPath,
+          evaluationFiles.trendSnapshotPath,
+          evaluationFiles.trendJsonPath
         ]);
 
         await appendProjectDebugEvent({
@@ -5526,7 +5656,10 @@ export async function askServerProject(options: {
         evaluationFiles.jsonPath,
         evaluationFiles.replayLatestPath,
         evaluationFiles.replaySnapshotPath,
-        evaluationFiles.replayJsonPath
+        evaluationFiles.replayJsonPath,
+        evaluationFiles.trendLatestPath,
+        evaluationFiles.trendSnapshotPath,
+        evaluationFiles.trendJsonPath
       ]);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
@@ -6587,7 +6720,10 @@ export async function askServerProject(options: {
       askEvaluationFiles.jsonPath,
       askEvaluationFiles.replayLatestPath,
       askEvaluationFiles.replaySnapshotPath,
-      askEvaluationFiles.replayJsonPath
+      askEvaluationFiles.replayJsonPath,
+      askEvaluationFiles.trendLatestPath,
+      askEvaluationFiles.trendSnapshotPath,
+      askEvaluationFiles.trendJsonPath
     ]);
 
     if (!learnedKnowledgeObservedInLoop && learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {

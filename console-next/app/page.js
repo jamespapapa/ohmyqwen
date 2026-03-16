@@ -1866,6 +1866,14 @@ export default function HomePage() {
                     </span>
                   </div>
                   <div className="report-row">
+                    <span>평가 추세</span>
+                    <span>
+                      {analysisResult.evaluationTrends
+                        ? `artifacts=${analysisResult.evaluationTrends.totalArtifacts}, risk=${analysisResult.evaluationTrends.averageQualityRisk}, coverage=${analysisResult.evaluationTrends.averageRetrievalCoverage}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
                     <span>연결 Workspace</span>
                     <span>{selectedProject?.linkedWorkspaceDirs?.length ?? 0}개</span>
                   </div>
@@ -2006,6 +2014,29 @@ export default function HomePage() {
                             {shortText(candidate.label, 24)} · {candidate.kind} · {candidate.status}
                           </span>
                           <span>{candidate.score}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {(analysisResult.evaluationTrends?.topQuestionTypes || []).length > 0 ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Evaluation Trends
+                      {analysisResult.evaluationTrends
+                        ? ` · risk=${analysisResult.evaluationTrends.averageQualityRisk} · coverage=${analysisResult.evaluationTrends.averageRetrievalCoverage}`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 180 }}>
+                      {analysisResult.evaluationTrends.topQuestionTypes.slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.questionType}-${index}`}>
+                          <span
+                            title={`risk=${entry.averageQualityRisk} | coverage=${entry.averageRetrievalCoverage}`}
+                          >
+                            {shortText(entry.questionType, 28)} · total={entry.total}
+                          </span>
+                          <span>{entry.averageQualityRisk}</span>
                         </li>
                       ))}
                     </ul>

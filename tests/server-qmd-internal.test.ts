@@ -283,6 +283,7 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect((ask.diagnostics.matchedRetrievalUnitIds ?? []).length).toBeGreaterThan(0);
     expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-artifacts/latest.md"))).toBe(true);
     expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-replay/latest.md"))).toBe(true);
+    expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("evaluation-trends/latest.md"))).toBe(true);
     const askEvaluationPath = path.join(
       appRoot,
       ".project-home",
@@ -330,5 +331,26 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(Number(replay.summary?.askCount ?? 0)).toBeGreaterThanOrEqual(1);
     expect(Number(replay.summary?.searchCount ?? 0)).toBeGreaterThanOrEqual(1);
     expect(Array.isArray(replay.replayCandidates)).toBe(true);
+    const trendPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "evaluation-trends",
+      "latest.json"
+    );
+    const trends = JSON.parse(await readFile(trendPath, "utf8")) as {
+      summary?: { totalArtifacts?: number; questionTypeCount?: number };
+      byQuestionType?: Array<{ questionType?: string; total?: number }>;
+    };
+    expect(Number(trends.summary?.totalArtifacts ?? 0)).toBeGreaterThanOrEqual(2);
+    expect(Number(trends.summary?.questionTypeCount ?? 0)).toBeGreaterThanOrEqual(2);
+    expect((trends.byQuestionType ?? []).some((entry) => entry.questionType === "domain_capability_overview")).toBe(true);
+
+    const cachedAnalysis = await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+    expect(cachedAnalysis.evaluationTrends?.totalArtifacts).toBeGreaterThanOrEqual(2);
+    expect((cachedAnalysis.evaluationTrends?.topQuestionTypes ?? []).length).toBeGreaterThan(0);
   });
 });
