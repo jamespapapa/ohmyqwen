@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const originalCwd = process.cwd();
@@ -241,6 +241,20 @@ describe("server projects with vendored internal qmd runtime", () => {
     });
     expect(analysis.summary).toContain("LoanController orchestrates the sample project flow.");
     expect(analysis.diagnostics.llmCallCount).toBeGreaterThan(0);
+    expect(analysis.knowledgeSchema?.entityCount).toBeGreaterThan(0);
+    expect(analysis.knowledgeSchema?.edgeCount).toBeGreaterThan(0);
+    const knowledgeSchemaPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "knowledge-schema",
+      "latest.json"
+    );
+    const knowledgeSchema = JSON.parse(await readFile(knowledgeSchemaPath, "utf8")) as {
+      summary?: { entityCount?: number; edgeCount?: number };
+    };
+    expect(Number(knowledgeSchema.summary?.entityCount ?? 0)).toBeGreaterThan(0);
+    expect(Number(knowledgeSchema.summary?.edgeCount ?? 0)).toBeGreaterThan(0);
 
     const ask = await projectsModule.askServerProject({
       projectId: project.id,

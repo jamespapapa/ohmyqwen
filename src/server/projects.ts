@@ -68,6 +68,10 @@ import {
   type LearnedKnowledgeSnapshot
 } from "./learned-knowledge.js";
 import {
+  buildKnowledgeSchemaMarkdown,
+  buildKnowledgeSchemaSnapshot
+} from "./knowledge-schema.js";
+import {
   compareAskRetryEvidence,
   decideAskRetry,
   summarizeAskRetryEvidence
@@ -199,6 +203,19 @@ export interface ProjectAnalysisResult {
       searchTerms: string[];
     }>;
   };
+  knowledgeSchema?: {
+    generatedAt: string;
+    entityCount: number;
+    edgeCount: number;
+    validatedClusterCount: number;
+    candidateClusterCount: number;
+    entityTypeCounts: Record<string, number>;
+    edgeTypeCounts: Record<string, number>;
+    topDomains: Array<{
+      id: string;
+      count: number;
+    }>;
+  };
   eaiCatalog?: {
     asOfDate: string;
     interfaceCount: number;
@@ -280,6 +297,8 @@ export interface ProjectAnalysisResult {
     overallDomainMaturityScore?: number;
     learnedKnowledgeCount?: number;
     validatedKnowledgeCount?: number;
+    knowledgeSchemaEntityCount?: number;
+    knowledgeSchemaEdgeCount?: number;
   };
 }
 
@@ -501,6 +520,7 @@ const FRONT_CATALOG_MEMORY_DIR = "front-catalog";
 const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
 const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
 const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
+const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const QUERY_MEMORY_DIR = "query-reports";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -4125,6 +4145,17 @@ export async function analyzeServerProject(options: {
       },
       existing: priorLearnedKnowledge
     });
+    const knowledgeSchema = buildKnowledgeSchemaSnapshot({
+      generatedAt,
+      workspaceDir: project.workspaceDir,
+      structure: {
+        entries: structure.snapshot.entries
+      },
+      frontBackGraph,
+      eaiEntries,
+      learnedKnowledge,
+      domainPacks: activeDomainPacks
+    });
 
     if (projectPreset) {
       const presetMarkdown = buildProjectPresetMarkdown({
@@ -4179,6 +4210,23 @@ export async function analyzeServerProject(options: {
       learnedKnowledgeDocs.latestPath,
       learnedKnowledgeDocs.snapshotPath,
       learnedKnowledgeJsonPath
+    ];
+    const knowledgeSchemaDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: KNOWLEDGE_SCHEMA_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildKnowledgeSchemaMarkdown(knowledgeSchema)
+    });
+    const knowledgeSchemaJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: KNOWLEDGE_SCHEMA_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: knowledgeSchema
+    });
+    const knowledgeSchemaMemoryFiles = [
+      knowledgeSchemaDocs.latestPath,
+      knowledgeSchemaDocs.snapshotPath,
+      knowledgeSchemaJsonPath
     ];
 
     await appendProjectDebugEvent({
@@ -4275,6 +4323,16 @@ export async function analyzeServerProject(options: {
           score: candidate.score,
           searchTerms: candidate.searchTerms.slice(0, 6)
         }))
+      },
+      knowledgeSchema: {
+        entityCount: knowledgeSchema.summary.entityCount,
+        edgeCount: knowledgeSchema.summary.edgeCount,
+        validatedClusterCount: knowledgeSchema.summary.validatedClusterCount,
+        candidateClusterCount: knowledgeSchema.summary.candidateClusterCount,
+        entityTypeCounts: knowledgeSchema.summary.entityTypeCounts,
+        edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
+        topDomains: knowledgeSchema.summary.topDomains.slice(0, 8),
+        topModules: knowledgeSchema.summary.topModules.slice(0, 8)
       },
       indexed: {
         fileCount: files.length,
@@ -4415,7 +4473,9 @@ export async function analyzeServerProject(options: {
         projectPreset ? `projectPreset=${projectPreset.name}` : "",
         `eaiCatalogCount=${eaiEntries.length}`,
         `activeDomainCount=${activeDomainPacks.length}`,
-        `overallDomainMaturity=${domainMaturity.summary.overallScore}`
+        `overallDomainMaturity=${domainMaturity.summary.overallScore}`,
+        `knowledgeEntities=${knowledgeSchema.summary.entityCount}`,
+        `knowledgeEdges=${knowledgeSchema.summary.edgeCount}`
       ]).slice(0, 30)
     };
 
@@ -4443,7 +4503,8 @@ export async function analyzeServerProject(options: {
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
         ...domainMaturityMemoryFiles,
-        ...learnedKnowledgeMemoryFiles
+        ...learnedKnowledgeMemoryFiles,
+        ...knowledgeSchemaMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -4468,7 +4529,8 @@ export async function analyzeServerProject(options: {
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
         ...domainMaturityMemoryFiles,
-        ...learnedKnowledgeMemoryFiles
+        ...learnedKnowledgeMemoryFiles,
+        ...knowledgeSchemaMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -4492,6 +4554,16 @@ export async function analyzeServerProject(options: {
           score: candidate.score,
           searchTerms: candidate.searchTerms.slice(0, 6)
         }))
+      },
+      knowledgeSchema: {
+        generatedAt,
+        entityCount: knowledgeSchema.summary.entityCount,
+        edgeCount: knowledgeSchema.summary.edgeCount,
+        validatedClusterCount: knowledgeSchema.summary.validatedClusterCount,
+        candidateClusterCount: knowledgeSchema.summary.candidateClusterCount,
+        entityTypeCounts: knowledgeSchema.summary.entityTypeCounts,
+        edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
+        topDomains: knowledgeSchema.summary.topDomains.slice(0, 8)
       },
       eaiCatalog: eaiEnabled
         ? {
@@ -4579,7 +4651,9 @@ export async function analyzeServerProject(options: {
         activeDomainCount: activeDomainPacks.length,
         overallDomainMaturityScore: domainMaturity.summary.overallScore,
         learnedKnowledgeCount: learnedKnowledge.summary.candidateCount,
-        validatedKnowledgeCount: learnedKnowledge.summary.validatedCount
+        validatedKnowledgeCount: learnedKnowledge.summary.validatedCount,
+        knowledgeSchemaEntityCount: knowledgeSchema.summary.entityCount,
+        knowledgeSchemaEdgeCount: knowledgeSchema.summary.edgeCount
       }
     };
 
