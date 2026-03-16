@@ -54,6 +54,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 3. QMD를 외부 CLI가 아니라 **프로젝트 내부 런타임**으로 사용하고, 폐쇄망 Windows x64 환경에서 실행 가능하게 유지한다.
 4. 프로젝트 분석 품질은 **하드코딩된 도메인 분기**보다, 사전/그래프/후보지식/회귀테스트 축적을 통해 올린다.
 5. 외부 지원 없이도 폐쇄망 내부 Qwen3 기반으로 점진 강화될 수 있도록, **candidate -> validated knowledge 승격 구조**를 우선한다.
+6. 본격적인 RAG 구축은 **코드/구조/그래프/사전/운영기록을 하나의 knowledge schema 아래 통합**하는 방향으로 진행한다.
 
 ---
 
@@ -118,6 +119,23 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 4. replay / regression 기반 품질 향상 루프 강화
 5. 폐쇄망 운영 기록 기반 엔진 일반화
 
+### Phase 3 (다음 본공사)
+
+**목표:** `ohmyqwen`을 프로젝트 특화 RAG 플랫폼으로 승격
+
+**핵심 방향**
+
+- retrieval unit을 파일 중심에서 **entity / block / flow 중심**으로 전환
+- code / route / API / controller / service / EAI / batch / module-role을 **통합 knowledge schema**로 정리
+- candidate -> validated -> stale lifecycle을 정식 도입
+- 질문 유형별 retrieval contract와 quality gate를 분리
+- 운영 기록과 사용자 피드백을 replay / regression / pack 승격으로 연결
+
+**설계 문서 우선 참조**
+
+- `docs/OFFLINE_SELF_IMPROVEMENT_PROTOCOL.md`
+- `docs/RAG_MAIN_CONSTRUCTION_PLAN.md`
+
 ---
 
 ## 다음 세션 시작점
@@ -129,10 +147,16 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
    - replay / regression 축적
    - validated knowledge 승격
 
-2. **질문 품질 일반화**
+2. **RAG 본공사**
+   - knowledge schema 통합
+   - retrieval unit 표준화
+   - knowledge lifecycle 정식화
+   - 질문 유형별 retrieval / gate contract 정리
+
+3. **질문 품질 일반화**
    - 특정 도메인 하드코딩 축소
    - module-role / process-role / channel 질문 대응력 강화
 
-3. **오프라인 배포 안정화**
+4. **오프라인 배포 안정화**
    - Windows x64 bundle runtime 검증
    - qmd models / wrapper / frontend-backend startup 안정화
