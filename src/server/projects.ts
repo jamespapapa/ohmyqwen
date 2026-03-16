@@ -72,6 +72,10 @@ import {
   buildKnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
 import {
+  buildRetrievalUnitMarkdown,
+  buildRetrievalUnitSnapshot
+} from "./retrieval-units.js";
+import {
   compareAskRetryEvidence,
   decideAskRetry,
   summarizeAskRetryEvidence
@@ -216,6 +220,19 @@ export interface ProjectAnalysisResult {
       count: number;
     }>;
   };
+  retrievalUnits?: {
+    generatedAt: string;
+    unitCount: number;
+    unitTypeCounts: Record<string, number>;
+    topDomains: Array<{
+      id: string;
+      count: number;
+    }>;
+    topChannels: Array<{
+      id: string;
+      count: number;
+    }>;
+  };
   eaiCatalog?: {
     asOfDate: string;
     interfaceCount: number;
@@ -299,6 +316,7 @@ export interface ProjectAnalysisResult {
     validatedKnowledgeCount?: number;
     knowledgeSchemaEntityCount?: number;
     knowledgeSchemaEdgeCount?: number;
+    retrievalUnitCount?: number;
   };
 }
 
@@ -521,6 +539,7 @@ const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
 const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
 const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
 const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
+const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
 const QUERY_MEMORY_DIR = "query-reports";
 const STRUCTURE_MEMORY_DIR = "structure-index";
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -4156,6 +4175,9 @@ export async function analyzeServerProject(options: {
       learnedKnowledge,
       domainPacks: activeDomainPacks
     });
+    const retrievalUnits = buildRetrievalUnitSnapshot({
+      knowledgeSchema
+    });
 
     if (projectPreset) {
       const presetMarkdown = buildProjectPresetMarkdown({
@@ -4227,6 +4249,23 @@ export async function analyzeServerProject(options: {
       knowledgeSchemaDocs.latestPath,
       knowledgeSchemaDocs.snapshotPath,
       knowledgeSchemaJsonPath
+    ];
+    const retrievalUnitDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: RETRIEVAL_UNITS_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildRetrievalUnitMarkdown(retrievalUnits)
+    });
+    const retrievalUnitJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: RETRIEVAL_UNITS_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: retrievalUnits
+    });
+    const retrievalUnitMemoryFiles = [
+      retrievalUnitDocs.latestPath,
+      retrievalUnitDocs.snapshotPath,
+      retrievalUnitJsonPath
     ];
 
     await appendProjectDebugEvent({
@@ -4333,6 +4372,20 @@ export async function analyzeServerProject(options: {
         edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
         topDomains: knowledgeSchema.summary.topDomains.slice(0, 8),
         topModules: knowledgeSchema.summary.topModules.slice(0, 8)
+      },
+      retrievalUnits: {
+        unitCount: retrievalUnits.summary.unitCount,
+        unitTypeCounts: retrievalUnits.summary.unitTypeCounts,
+        topDomains: retrievalUnits.summary.topDomains.slice(0, 8),
+        topChannels: retrievalUnits.summary.topChannels.slice(0, 8),
+        topModuleRoles: retrievalUnits.summary.topModuleRoles.slice(0, 8),
+        representativeUnits: retrievalUnits.units.slice(0, 12).map((unit) => ({
+          id: unit.id,
+          type: unit.type,
+          title: unit.title,
+          confidence: unit.confidence,
+          searchText: unit.searchText.slice(0, 8)
+        }))
       },
       indexed: {
         fileCount: files.length,
@@ -4475,7 +4528,8 @@ export async function analyzeServerProject(options: {
         `activeDomainCount=${activeDomainPacks.length}`,
         `overallDomainMaturity=${domainMaturity.summary.overallScore}`,
         `knowledgeEntities=${knowledgeSchema.summary.entityCount}`,
-        `knowledgeEdges=${knowledgeSchema.summary.edgeCount}`
+        `knowledgeEdges=${knowledgeSchema.summary.edgeCount}`,
+        `retrievalUnits=${retrievalUnits.summary.unitCount}`
       ]).slice(0, 30)
     };
 
@@ -4504,7 +4558,8 @@ export async function analyzeServerProject(options: {
         ...frontBackMemoryFiles,
         ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
-        ...knowledgeSchemaMemoryFiles
+        ...knowledgeSchemaMemoryFiles,
+        ...retrievalUnitMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -4530,7 +4585,8 @@ export async function analyzeServerProject(options: {
         ...frontBackMemoryFiles,
         ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
-        ...knowledgeSchemaMemoryFiles
+        ...knowledgeSchemaMemoryFiles,
+        ...retrievalUnitMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -4564,6 +4620,13 @@ export async function analyzeServerProject(options: {
         entityTypeCounts: knowledgeSchema.summary.entityTypeCounts,
         edgeTypeCounts: knowledgeSchema.summary.edgeTypeCounts,
         topDomains: knowledgeSchema.summary.topDomains.slice(0, 8)
+      },
+      retrievalUnits: {
+        generatedAt,
+        unitCount: retrievalUnits.summary.unitCount,
+        unitTypeCounts: retrievalUnits.summary.unitTypeCounts,
+        topDomains: retrievalUnits.summary.topDomains.slice(0, 8),
+        topChannels: retrievalUnits.summary.topChannels.slice(0, 8)
       },
       eaiCatalog: eaiEnabled
         ? {
@@ -4653,7 +4716,8 @@ export async function analyzeServerProject(options: {
         learnedKnowledgeCount: learnedKnowledge.summary.candidateCount,
         validatedKnowledgeCount: learnedKnowledge.summary.validatedCount,
         knowledgeSchemaEntityCount: knowledgeSchema.summary.entityCount,
-        knowledgeSchemaEdgeCount: knowledgeSchema.summary.edgeCount
+        knowledgeSchemaEdgeCount: knowledgeSchema.summary.edgeCount,
+        retrievalUnitCount: retrievalUnits.summary.unitCount
       }
     };
 

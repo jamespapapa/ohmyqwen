@@ -243,6 +243,7 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(analysis.diagnostics.llmCallCount).toBeGreaterThan(0);
     expect(analysis.knowledgeSchema?.entityCount).toBeGreaterThan(0);
     expect(analysis.knowledgeSchema?.edgeCount).toBeGreaterThan(0);
+    expect(analysis.retrievalUnits?.unitCount).toBeGreaterThan(0);
     const knowledgeSchemaPath = path.join(
       appRoot,
       ".project-home",
@@ -255,6 +256,17 @@ describe("server projects with vendored internal qmd runtime", () => {
     };
     expect(Number(knowledgeSchema.summary?.entityCount ?? 0)).toBeGreaterThan(0);
     expect(Number(knowledgeSchema.summary?.edgeCount ?? 0)).toBeGreaterThan(0);
+    const retrievalUnitPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "retrieval-units",
+      "latest.json"
+    );
+    const retrievalUnits = JSON.parse(await readFile(retrievalUnitPath, "utf8")) as {
+      summary?: { unitCount?: number };
+    };
+    expect(Number(retrievalUnits.summary?.unitCount ?? 0)).toBeGreaterThan(0);
 
     const ask = await projectsModule.askServerProject({
       projectId: project.id,
