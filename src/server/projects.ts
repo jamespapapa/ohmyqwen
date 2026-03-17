@@ -195,7 +195,10 @@ import {
   summarizeAskRetryEvidence
 } from "./ask-retry.js";
 import { capAskConfidence } from "./ask-confidence.js";
-import { selectPreferredAskOutput } from "./ask-output-selection.js";
+import {
+  selectPreferredAskOutput,
+  type AskOutputReplayPressure
+} from "./ask-output-selection.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -648,6 +651,10 @@ export interface ProjectAskResponse {
     canonicalFlowCount?: number;
     droppedIncoherentFlowCount?: number;
     canonicalNamespaceCount?: number;
+    outputSelectionReason?: string;
+    replayPressureLevel?: "low" | "medium" | "high";
+    replayQuestionTypeCandidateCount?: number;
+    replayCanonicalIssueCount?: number;
     retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
@@ -3668,6 +3675,50 @@ async function readEvaluationReplaySnapshotFull(memoryRoot: string): Promise<Eva
   } catch {
     return undefined;
   }
+}
+
+function buildAskOutputReplayPressure(options: {
+  replaySnapshot?: EvaluationReplaySnapshot;
+  questionType: AskQuestionType;
+}): AskOutputReplayPressure | undefined {
+  const replaySnapshot = options.replaySnapshot;
+  if (!replaySnapshot) {
+    return undefined;
+  }
+
+  const sameTypeCandidates = replaySnapshot.replayCandidates.filter(
+    (candidate) => candidate.kind === "ask" && candidate.questionType === options.questionType
+  );
+  if (sameTypeCandidates.length === 0) {
+    return undefined;
+  }
+
+  const canonicalIssueCount = sameTypeCandidates.filter((candidate) =>
+    candidate.reasons.includes("canonical-flow-incoherent")
+  ).length;
+  const mixedNamespaceCount = sameTypeCandidates.filter((candidate) =>
+    candidate.reasons.includes("canonical-flow-mixed-namespace")
+  ).length;
+  const highRiskCount = sameTypeCandidates.filter((candidate) =>
+    candidate.reasons.includes("quality-risk-high")
+  ).length;
+
+  const weightedScore =
+    canonicalIssueCount * 2 +
+    mixedNamespaceCount * 2 +
+    highRiskCount +
+    Math.min(3, sameTypeCandidates.length);
+
+  const level =
+    weightedScore >= 6 ? "high" : weightedScore >= 3 ? "medium" : "low";
+
+  return {
+    level,
+    questionTypeCandidateCount: sameTypeCandidates.length,
+    canonicalIssueCount,
+    mixedNamespaceCount,
+    highRiskCount
+  };
 }
 
 function evaluationPromotionSnapshotPath(memoryRoot: string): string {
@@ -7397,6 +7448,7 @@ export async function askServerProject(options: {
 
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
     await fs.mkdir(memoryRoot, { recursive: true });
+    const replaySnapshot = await readEvaluationReplaySnapshotFull(memoryRoot);
 
     const structureSnapshot = await loadStructureSnapshot(project.workspaceDir);
     const structureMemoryFiles: string[] = [];
@@ -8377,6 +8429,10 @@ export async function askServerProject(options: {
     let retryStopReason: string | undefined;
     let previousAttemptConfidence: number | undefined;
     let learnedKnowledgeObservedInLoop = false;
+    let outputSelectionReason: ProjectAskResponse["diagnostics"]["outputSelectionReason"];
+    let replayPressureLevel: ProjectAskResponse["diagnostics"]["replayPressureLevel"];
+    let replayQuestionTypeCandidateCount = 0;
+    let replayCanonicalIssueCount = 0;
 
     if (deterministicCrossLayerGate && !deterministicCrossLayerGate.passed) {
       qualityFailures.push(...deterministicCrossLayerGate.failures);
@@ -8663,10 +8719,15 @@ export async function askServerProject(options: {
           matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label),
           matchedOntologyNodeActions: rankedOntologyNodes.flatMap((item) => item.node.metadata.actions)
         });
+        const replayPressure = buildAskOutputReplayPressure({
+          replaySnapshot,
+          questionType: questionTypeDecision.type
+        });
 
         const selectedOutput = selectPreferredAskOutput({
           questionType: questionTypeDecision.type,
           retryTargetConfidence: askRetryTargetConfidence,
+          replayPressure,
           deterministic: normalizedDeterministicCrossLayerOutput && deterministicCrossLayerGate
             ? {
                 output: normalizedDeterministicCrossLayerOutput,
@@ -8680,6 +8741,11 @@ export async function askServerProject(options: {
             failures: gate.failures
           }
         });
+        outputSelectionReason = selectedOutput.reason;
+        replayPressureLevel = replayPressure?.level;
+        replayQuestionTypeCandidateCount = replayPressure?.questionTypeCandidateCount ?? 0;
+        replayCanonicalIssueCount =
+          (replayPressure?.canonicalIssueCount ?? 0) + (replayPressure?.mixedNamespaceCount ?? 0);
         const effectiveGatePassed = selectedOutput.gatePassed;
         const effectiveFailures = selectedOutput.failures;
         if (selectedOutput.source === "deterministic") {
@@ -8864,6 +8930,10 @@ export async function askServerProject(options: {
       `- confidence: ${bestOutput.confidence.toFixed(2)}`,
       `- qualityGatePassed: ${passed}`,
       `- attempts: ${attempts}`,
+      `- outputSelectionReason: ${outputSelectionReason ?? "(none)"}`,
+      `- replayPressureLevel: ${replayPressureLevel ?? "(none)"}`,
+      `- replayQuestionTypeCandidateCount: ${replayQuestionTypeCandidateCount}`,
+      `- replayCanonicalIssueCount: ${replayCanonicalIssueCount}`,
       `- retryStopReason: ${retryStopReason ?? "(none)"}`,
       ``,
       `## Answer`,
@@ -8976,6 +9046,10 @@ export async function askServerProject(options: {
         canonicalFlowCount: canonicalCrossLayerPlan?.canonicalFlows.length ?? 0,
         droppedIncoherentFlowCount: canonicalCrossLayerPlan?.droppedIncoherentFlowCount ?? 0,
         canonicalNamespaceCount: canonicalCrossLayerPlan?.canonicalNamespaceCount ?? 0,
+        outputSelectionReason,
+        replayPressureLevel,
+        replayQuestionTypeCandidateCount,
+        replayCanonicalIssueCount,
         retryStopReason,
         memoryFiles: unique([
           analysis.memoryFiles[0],

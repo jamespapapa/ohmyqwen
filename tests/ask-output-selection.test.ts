@@ -74,5 +74,59 @@ describe("ask output selection", () => {
 
     expect(choice.source).toBe("generated");
   });
-});
 
+  it("prefers deterministic output under high replay pressure for canonical issues", () => {
+    const choice = selectPreferredAskOutput({
+      questionType: "cross_layer_flow",
+      retryTargetConfidence: 0.65,
+      replayPressure: {
+        level: "high",
+        questionTypeCandidateCount: 5,
+        canonicalIssueCount: 3,
+        mixedNamespaceCount: 1,
+        highRiskCount: 2
+      },
+      deterministic,
+      generated: {
+        output: {
+          answer: "some generated answer",
+          confidence: 0.76,
+          evidence: ["A", "B"],
+          caveats: []
+        },
+        gatePassed: true,
+        failures: []
+      }
+    });
+
+    expect(choice.source).toBe("deterministic");
+    expect(choice.reason).toBe("deterministic-replay-pressure");
+  });
+
+  it("keeps generated output when replay pressure is low and generated is materially stronger", () => {
+    const choice = selectPreferredAskOutput({
+      questionType: "cross_layer_flow",
+      retryTargetConfidence: 0.65,
+      replayPressure: {
+        level: "low",
+        questionTypeCandidateCount: 1,
+        canonicalIssueCount: 0,
+        mixedNamespaceCount: 0,
+        highRiskCount: 0
+      },
+      deterministic,
+      generated: {
+        output: {
+          answer: "materially stronger generated answer",
+          confidence: 0.89,
+          evidence: ["A", "B", "C", "D"],
+          caveats: []
+        },
+        gatePassed: true,
+        failures: []
+      }
+    });
+
+    expect(choice.source).toBe("generated");
+  });
+});

@@ -11,7 +11,16 @@ export interface AskOutputChoice {
     | "deterministic-gate-fallback"
     | "deterministic-canonical-fallback"
     | "deterministic-confidence-fallback"
+    | "deterministic-replay-pressure"
     | "deterministic-stronger";
+}
+
+export interface AskOutputReplayPressure {
+  level: "low" | "medium" | "high";
+  questionTypeCandidateCount: number;
+  canonicalIssueCount: number;
+  mixedNamespaceCount: number;
+  highRiskCount: number;
 }
 
 function isCanonicalCrossLayerType(questionType: AskQuestionType): boolean {
@@ -33,6 +42,7 @@ function hasCanonicalFlowFailure(failures: string[]): boolean {
 export function selectPreferredAskOutput(options: {
   questionType: AskQuestionType;
   retryTargetConfidence: number;
+  replayPressure?: AskOutputReplayPressure;
   generated: {
     output: AskQualityOutput;
     gatePassed: boolean;
@@ -90,6 +100,26 @@ export function selectPreferredAskOutput(options: {
     };
   }
 
+  const replayPressure = options.replayPressure;
+  if (
+    replayPressure &&
+    replayPressure.level !== "low" &&
+    (
+      replayPressure.canonicalIssueCount > 0 ||
+      replayPressure.mixedNamespaceCount > 0 ||
+      replayPressure.highRiskCount > 0
+    ) &&
+    generated.output.confidence <= deterministic.output.confidence + 0.12
+  ) {
+    return {
+      output: deterministic.output,
+      gatePassed: deterministic.gatePassed,
+      failures: deterministic.failures,
+      source: "deterministic",
+      reason: "deterministic-replay-pressure"
+    };
+  }
+
   if (
     deterministic.output.confidence >= generated.output.confidence &&
     deterministic.output.evidence.length >= generated.output.evidence.length &&
@@ -112,4 +142,3 @@ export function selectPreferredAskOutput(options: {
     reason: "generated-default"
   };
 }
-
