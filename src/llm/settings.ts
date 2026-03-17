@@ -37,6 +37,12 @@ const DEFAULT_SETTINGS: LlmRuntimeSettings = {
       label: "Qwen3 235B A22B",
       contextWindowTokens: 32768,
       maxOutputTokens: 4096
+    },
+    {
+      id: "openai/gpt-5.2",
+      label: "GPT 5.2 (OpenCode)",
+      contextWindowTokens: 32768,
+      maxOutputTokens: 4096
     }
   ],
   retryPolicy: {
@@ -140,4 +146,3 @@ export function deriveStageTokenCapsFromModel(options: {
     VERIFY: cap(0.25)
   };
 }
-

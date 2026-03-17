@@ -70,8 +70,21 @@ import {
 } from "./learned-knowledge.js";
 import {
   buildKnowledgeSchemaMarkdown,
-  buildKnowledgeSchemaSnapshot
+  buildKnowledgeSchemaSnapshot,
+  KnowledgeSchemaSnapshotSchema
 } from "./knowledge-schema.js";
+import {
+  buildOntologyGraphMarkdown,
+  buildOntologyGraphSnapshot,
+  OntologyGraphSnapshotSchema,
+  type OntologyGraphSnapshot
+} from "./ontology-graph.js";
+import {
+  buildOntologyProjectionMarkdown,
+  buildOntologyProjectionSnapshot,
+  OntologyProjectionSnapshotSchema,
+  type OntologyProjectionSnapshot
+} from "./ontology-projections.js";
 import {
   buildRetrievalUnitSupportCandidates,
   buildRetrievalUnitMarkdown,
@@ -110,6 +123,7 @@ import {
   buildProjectFeedbackSummarySnapshot,
   deriveFeedbackPromotionActions,
   ProjectFeedbackArtifactSchema,
+  ProjectFeedbackTargetSchema,
   ProjectFeedbackSummarySnapshotSchema,
   type ProjectFeedbackArtifact
 } from "./project-feedback.js";
@@ -287,6 +301,33 @@ export interface ProjectAnalysisResult {
       count: number;
     }>;
   };
+  ontologyGraph?: {
+    generatedAt: string;
+    nodeCount: number;
+    edgeCount: number;
+    feedbackNodeCount: number;
+    replayNodeCount: number;
+    pathNodeCount: number;
+    nodeTypeCounts: Record<string, number>;
+    edgeTypeCounts: Record<string, number>;
+    topDomains: Array<{
+      id: string;
+      count: number;
+    }>;
+    topChannels: Array<{
+      id: string;
+      count: number;
+    }>;
+  };
+  ontologyProjections?: {
+    generatedAt: string;
+    projectionCount: number;
+    projectionTypeCounts: Record<string, number>;
+    totalRepresentativePathCount: number;
+    largestProjectionType: string;
+    lifecycleProjectionPathCount: number;
+    topProjectionTypes: string[];
+  };
   evaluationTrends?: {
     generatedAt: string;
     totalArtifacts: number;
@@ -330,6 +371,10 @@ export interface ProjectAnalysisResult {
     partialCount: number;
     incorrectCount: number;
     feedbackBackedKnowledgeCount: number;
+    scopeCounts: Record<string, number>;
+    targetedNodeCount: number;
+    targetedEdgeCount: number;
+    targetedPathCount: number;
     topQuestionTypes: Array<{
       questionType: string;
       count: number;
@@ -666,6 +711,8 @@ const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
 const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
 const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
+const ONTOLOGY_GRAPH_MEMORY_DIR = "ontology-graph";
+const ONTOLOGY_PROJECTION_MEMORY_DIR = "ontology-projections";
 const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
@@ -2714,9 +2761,11 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
     const evaluationReplay = await readEvaluationReplaySnapshot(memoryRoot);
     const evaluationPromotions = await readEvaluationPromotionSnapshot(memoryRoot);
     const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
+    const ontologyGraph = await readOntologyGraphSnapshot(memoryRoot);
+    const ontologyProjections = await readOntologyProjectionSnapshot(memoryRoot);
     return {
       ...parsed,
-      evaluationTrends: parsed.evaluationTrends ?? (evaluationTrends
+      evaluationTrends: evaluationTrends
         ? {
             generatedAt: evaluationTrends.generatedAt,
             totalArtifacts: evaluationTrends.summary.totalArtifacts,
@@ -2730,10 +2779,12 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
             strongestCoverageQuestionType: evaluationTrends.summary.strongestCoverageQuestionType,
             topQuestionTypes: evaluationTrends.byQuestionType.slice(0, 8)
           }
-        : undefined),
-      evaluationReplay: parsed.evaluationReplay ?? buildEvaluationReplaySummary(evaluationReplay),
-      evaluationPromotions: parsed.evaluationPromotions ?? buildEvaluationPromotionSummary(evaluationPromotions),
-      userFeedback: parsed.userFeedback ?? buildUserFeedbackSummary(userFeedback),
+        : parsed.evaluationTrends,
+      evaluationReplay: buildEvaluationReplaySummary(evaluationReplay) ?? parsed.evaluationReplay,
+      evaluationPromotions: buildEvaluationPromotionSummary(evaluationPromotions) ?? parsed.evaluationPromotions,
+      userFeedback: buildUserFeedbackSummary(userFeedback) ?? parsed.userFeedback,
+      ontologyGraph: buildOntologyGraphSummary(ontologyGraph) ?? parsed.ontologyGraph,
+      ontologyProjections: buildOntologyProjectionSummary(ontologyProjections) ?? parsed.ontologyProjections,
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
@@ -2904,6 +2955,15 @@ async function readEvaluationPromotionSnapshot(memoryRoot: string): Promise<
   }
 }
 
+async function readEvaluationPromotionSnapshotFull(memoryRoot: string) {
+  try {
+    const raw = await fs.readFile(evaluationPromotionSnapshotPath(memoryRoot), "utf8");
+    return EvaluationPromotionSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
 function userFeedbackSummarySnapshotPath(memoryRoot: string): string {
   return path.resolve(memoryRoot, USER_FEEDBACK_MEMORY_DIR, "summary.json");
 }
@@ -2917,6 +2977,10 @@ async function readUserFeedbackSummarySnapshot(memoryRoot: string): Promise<
         partialCount: number;
         incorrectCount: number;
         feedbackBackedKnowledgeCount: number;
+        scopeCounts: Record<string, number>;
+        targetedNodeCount: number;
+        targetedEdgeCount: number;
+        targetedPathCount: number;
         topQuestionTypes: Array<{ questionType: string; count: number }>;
       };
     }
@@ -2933,6 +2997,10 @@ async function readUserFeedbackSummarySnapshot(memoryRoot: string): Promise<
         partialCount: parsed.summary.partialCount,
         incorrectCount: parsed.summary.incorrectCount,
         feedbackBackedKnowledgeCount: parsed.summary.feedbackBackedKnowledgeCount,
+        scopeCounts: parsed.summary.scopeCounts ?? {},
+        targetedNodeCount: parsed.summary.targetedNodeCount ?? 0,
+        targetedEdgeCount: parsed.summary.targetedEdgeCount ?? 0,
+        targetedPathCount: parsed.summary.targetedPathCount ?? 0,
         topQuestionTypes: parsed.summary.topQuestionTypes
       }
     };
@@ -2967,6 +3035,19 @@ async function readLearnedKnowledgeSnapshot(memoryRoot: string): Promise<Learned
   }
 }
 
+function knowledgeSchemaSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, KNOWLEDGE_SCHEMA_MEMORY_DIR, "latest.json");
+}
+
+async function readKnowledgeSchemaSnapshot(memoryRoot: string) {
+  try {
+    const raw = await fs.readFile(knowledgeSchemaSnapshotPath(memoryRoot), "utf8");
+    return KnowledgeSchemaSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
 function retrievalUnitSnapshotPath(memoryRoot: string): string {
   return path.resolve(memoryRoot, RETRIEVAL_UNITS_MEMORY_DIR, "latest.json");
 }
@@ -2975,6 +3056,32 @@ async function readRetrievalUnitSnapshot(memoryRoot: string): Promise<RetrievalU
   try {
     const raw = await fs.readFile(retrievalUnitSnapshotPath(memoryRoot), "utf8");
     return RetrievalUnitSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function ontologyGraphSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_GRAPH_MEMORY_DIR, "latest.json");
+}
+
+async function readOntologyGraphSnapshot(memoryRoot: string): Promise<OntologyGraphSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyGraphSnapshotPath(memoryRoot), "utf8");
+    return OntologyGraphSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function ontologyProjectionSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_PROJECTION_MEMORY_DIR, "latest.json");
+}
+
+async function readOntologyProjectionSnapshot(memoryRoot: string): Promise<OntologyProjectionSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyProjectionSnapshotPath(memoryRoot), "utf8");
+    return OntologyProjectionSnapshotSchema.parse(JSON.parse(raw));
   } catch {
     return undefined;
   }
@@ -3079,6 +3186,10 @@ function buildUserFeedbackSummary(
           partialCount: number;
           incorrectCount: number;
           feedbackBackedKnowledgeCount: number;
+          scopeCounts: Record<string, number>;
+          targetedNodeCount: number;
+          targetedEdgeCount: number;
+          targetedPathCount: number;
           topQuestionTypes: Array<{ questionType: string; count: number }>;
         };
       }
@@ -3094,7 +3205,48 @@ function buildUserFeedbackSummary(
     partialCount: snapshot.summary.partialCount,
     incorrectCount: snapshot.summary.incorrectCount,
     feedbackBackedKnowledgeCount: snapshot.summary.feedbackBackedKnowledgeCount,
+    scopeCounts: snapshot.summary.scopeCounts,
+    targetedNodeCount: snapshot.summary.targetedNodeCount,
+    targetedEdgeCount: snapshot.summary.targetedEdgeCount,
+    targetedPathCount: snapshot.summary.targetedPathCount,
     topQuestionTypes: snapshot.summary.topQuestionTypes.slice(0, 8)
+  };
+}
+
+function buildOntologyGraphSummary(
+  snapshot: OntologyGraphSnapshot | undefined
+): ProjectAnalysisResult["ontologyGraph"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    nodeCount: snapshot.summary.nodeCount,
+    edgeCount: snapshot.summary.edgeCount,
+    feedbackNodeCount: snapshot.summary.feedbackNodeCount,
+    replayNodeCount: snapshot.summary.replayNodeCount,
+    pathNodeCount: snapshot.summary.pathNodeCount,
+    nodeTypeCounts: snapshot.summary.nodeTypeCounts,
+    edgeTypeCounts: snapshot.summary.edgeTypeCounts,
+    topDomains: snapshot.summary.topDomains.slice(0, 8),
+    topChannels: snapshot.summary.topChannels.slice(0, 8)
+  };
+}
+
+function buildOntologyProjectionSummary(
+  snapshot: OntologyProjectionSnapshot | undefined
+): ProjectAnalysisResult["ontologyProjections"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    projectionCount: snapshot.summary.projectionCount,
+    projectionTypeCounts: snapshot.summary.projectionTypeCounts,
+    totalRepresentativePathCount: snapshot.summary.totalRepresentativePathCount,
+    largestProjectionType: snapshot.summary.largestProjectionType,
+    lifecycleProjectionPathCount: snapshot.summary.lifecycleProjectionPathCount,
+    topProjectionTypes: snapshot.projections.map((projection) => projection.type).slice(0, 8)
   };
 }
 
@@ -4986,6 +5138,26 @@ export async function analyzeServerProject(options: {
     const retrievalUnits = buildRetrievalUnitSnapshot({
       knowledgeSchema
     });
+    const historicalFeedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
+      memoryRoot,
+      groupDir: USER_FEEDBACK_MEMORY_DIR,
+      limit: 160,
+      parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
+    });
+    const existingEvaluationReplay = await readEvaluationReplaySnapshotFull(memoryRoot);
+    const existingEvaluationPromotions = await readEvaluationPromotionSnapshotFull(memoryRoot);
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      generatedAt,
+      workspaceDir: project.workspaceDir,
+      knowledgeSchema,
+      retrievalUnits,
+      feedbackArtifacts: historicalFeedbackArtifacts,
+      evaluationReplay: existingEvaluationReplay,
+      evaluationPromotions: existingEvaluationPromotions
+    });
+    const ontologyProjections = buildOntologyProjectionSnapshot({
+      ontologyGraph
+    });
 
     if (projectPreset) {
       const presetMarkdown = buildProjectPresetMarkdown({
@@ -5074,6 +5246,40 @@ export async function analyzeServerProject(options: {
       retrievalUnitDocs.latestPath,
       retrievalUnitDocs.snapshotPath,
       retrievalUnitJsonPath
+    ];
+    const ontologyGraphDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildOntologyGraphMarkdown(ontologyGraph)
+    });
+    const ontologyGraphJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: ontologyGraph
+    });
+    const ontologyGraphMemoryFiles = [
+      ontologyGraphDocs.latestPath,
+      ontologyGraphDocs.snapshotPath,
+      ontologyGraphJsonPath
+    ];
+    const ontologyProjectionDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildOntologyProjectionMarkdown(ontologyProjections)
+    });
+    const ontologyProjectionJsonPath = await writeMemoryJson({
+      memoryRoot,
+      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: ontologyProjections
+    });
+    const ontologyProjectionMemoryFiles = [
+      ontologyProjectionDocs.latestPath,
+      ontologyProjectionDocs.snapshotPath,
+      ontologyProjectionJsonPath
     ];
 
     await appendProjectDebugEvent({
@@ -5369,7 +5575,9 @@ export async function analyzeServerProject(options: {
         ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
         ...knowledgeSchemaMemoryFiles,
-        ...retrievalUnitMemoryFiles
+        ...retrievalUnitMemoryFiles,
+        ...ontologyGraphMemoryFiles,
+        ...ontologyProjectionMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -5401,7 +5609,9 @@ export async function analyzeServerProject(options: {
         ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
         ...knowledgeSchemaMemoryFiles,
-        ...retrievalUnitMemoryFiles
+        ...retrievalUnitMemoryFiles,
+        ...ontologyGraphMemoryFiles,
+        ...ontologyProjectionMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -5445,6 +5655,8 @@ export async function analyzeServerProject(options: {
         topDomains: retrievalUnits.summary.topDomains.slice(0, 8),
         topChannels: retrievalUnits.summary.topChannels.slice(0, 8)
       },
+      ontologyGraph: buildOntologyGraphSummary(ontologyGraph),
+      ontologyProjections: buildOntologyProjectionSummary(ontologyProjections),
       evaluationTrends: evaluationTrends
         ? {
             generatedAt: evaluationTrends.generatedAt,
@@ -7253,8 +7465,11 @@ export async function recordServerProjectFeedback(options: {
   prompt: string;
   questionType: string;
   verdict: "correct" | "partial" | "incorrect";
+  scope?: "answer" | "evidence" | "node" | "edge" | "path" | "boundary";
+  strength?: "weak" | "normal" | "strong";
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitIds?: string[];
+  targets?: Array<z.input<typeof ProjectFeedbackTargetSchema>>;
   notes?: string;
 }): Promise<{
   artifact: ProjectFeedbackArtifact;
@@ -7278,8 +7493,11 @@ export async function recordServerProjectFeedback(options: {
     prompt,
     questionType: options.questionType,
     verdict: options.verdict,
+    scope: options.scope,
+    strength: options.strength,
     matchedKnowledgeIds: options.matchedKnowledgeIds ?? [],
     matchedRetrievalUnitIds: options.matchedRetrievalUnitIds ?? [],
+    targets: options.targets ?? [],
     notes: options.notes
   });
   const feedbackFiles = await writeUserFeedbackArtifacts({
@@ -7290,6 +7508,7 @@ export async function recordServerProjectFeedback(options: {
   let learnedKnowledgeUpdated = false;
   let learnedKnowledgeFiles: string[] = [];
   let promotionFiles: string[] = [];
+  let ontologyFiles: string[] = [];
   const learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
   if (learnedKnowledgeSnapshot && artifact.matchedKnowledgeIds.length > 0) {
     const actions = deriveFeedbackPromotionActions({
@@ -7328,12 +7547,70 @@ export async function recordServerProjectFeedback(options: {
     }
   }
 
+  const knowledgeSchema = await readKnowledgeSchemaSnapshot(memoryRoot);
+  const retrievalUnits = await readRetrievalUnitSnapshot(memoryRoot);
+  if (knowledgeSchema) {
+    const feedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
+      memoryRoot,
+      groupDir: USER_FEEDBACK_MEMORY_DIR,
+      limit: 160,
+      parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
+    });
+    const replaySnapshot = await readEvaluationReplaySnapshotFull(memoryRoot);
+    const promotionSnapshot = await readEvaluationPromotionSnapshotFull(memoryRoot);
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      generatedAt: artifact.generatedAt,
+      workspaceDir: project.workspaceDir,
+      knowledgeSchema,
+      retrievalUnits,
+      feedbackArtifacts,
+      evaluationReplay: replaySnapshot,
+      evaluationPromotions: promotionSnapshot
+    });
+    const ontologyProjections = buildOntologyProjectionSnapshot({
+      ontologyGraph
+    });
+    const ontologyGraphDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildOntologyGraphMarkdown(ontologyGraph)
+    });
+    const ontologyGraphJson = await writeMemoryJson({
+      memoryRoot,
+      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: ontologyGraph
+    });
+    const ontologyProjectionDocs = await writeMemoryDocs({
+      memoryRoot,
+      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+      latestFileName: "latest.md",
+      content: buildOntologyProjectionMarkdown(ontologyProjections)
+    });
+    const ontologyProjectionJson = await writeMemoryJson({
+      memoryRoot,
+      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+      fileName: "latest.json",
+      payload: ontologyProjections
+    });
+    ontologyFiles = [
+      ontologyGraphDocs.latestPath,
+      ontologyGraphDocs.snapshotPath,
+      ontologyGraphJson,
+      ontologyProjectionDocs.latestPath,
+      ontologyProjectionDocs.snapshotPath,
+      ontologyProjectionJson
+    ];
+  }
+
   return {
     artifact,
     memoryFiles: unique([
       ...feedbackFiles.relativePaths,
       ...promotionFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file))),
-      ...learnedKnowledgeFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file)))
+      ...learnedKnowledgeFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file))),
+      ...ontologyFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file)))
     ]),
     learnedKnowledgeUpdated
   };

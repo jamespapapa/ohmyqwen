@@ -244,6 +244,8 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(analysis.knowledgeSchema?.entityCount).toBeGreaterThan(0);
     expect(analysis.knowledgeSchema?.edgeCount).toBeGreaterThan(0);
     expect(analysis.retrievalUnits?.unitCount).toBeGreaterThan(0);
+    expect(analysis.ontologyGraph?.nodeCount).toBeGreaterThan(0);
+    expect(analysis.ontologyProjections?.projectionCount).toBeGreaterThan(0);
     const knowledgeSchemaPath = path.join(
       appRoot,
       ".project-home",
@@ -267,6 +269,29 @@ describe("server projects with vendored internal qmd runtime", () => {
       summary?: { unitCount?: number };
     };
     expect(Number(retrievalUnits.summary?.unitCount ?? 0)).toBeGreaterThan(0);
+    const ontologyGraphPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "ontology-graph",
+      "latest.json"
+    );
+    const ontologyGraph = JSON.parse(await readFile(ontologyGraphPath, "utf8")) as {
+      summary?: { nodeCount?: number; edgeCount?: number };
+    };
+    expect(Number(ontologyGraph.summary?.nodeCount ?? 0)).toBeGreaterThan(0);
+    expect(Number(ontologyGraph.summary?.edgeCount ?? 0)).toBeGreaterThan(0);
+    const ontologyProjectionPath = path.join(
+      appRoot,
+      ".project-home",
+      "memory",
+      "ontology-projections",
+      "latest.json"
+    );
+    const ontologyProjections = JSON.parse(await readFile(ontologyProjectionPath, "utf8")) as {
+      summary?: { projectionCount?: number };
+    };
+    expect(Number(ontologyProjections.summary?.projectionCount ?? 0)).toBeGreaterThan(0);
 
     const ask = await projectsModule.askServerProject({
       projectId: project.id,
@@ -541,8 +566,10 @@ describe("server projects with vendored internal qmd runtime", () => {
       prompt: "loan runtime 프로젝트는 어떤 역할을 하는가?",
       questionType: "module_role_explanation",
       verdict: "correct",
+      scope: "node",
       matchedKnowledgeIds: ["module:loan-runtime"],
       matchedRetrievalUnitIds: ["unit:module:module:loan-runtime"],
+      targets: [{ kind: "node", id: "module:loan-runtime", label: "loan runtime module" }],
       notes: "사용자 확인 정답"
     });
 
@@ -556,9 +583,14 @@ describe("server projects with vendored internal qmd runtime", () => {
     const feedback = JSON.parse(await readFile(feedbackPath, "utf8")) as {
       verdict?: string;
       matchedKnowledgeIds?: string[];
+      scope?: string;
+      targets?: Array<{ kind?: string; id?: string }>;
     };
     expect(feedback.verdict).toBe("correct");
+    expect(feedback.scope).toBe("node");
     expect(feedback.matchedKnowledgeIds).toContain("module:loan-runtime");
+    expect(feedback.targets?.[0]?.kind).toBe("node");
+    expect(feedback.targets?.[0]?.id).toBe("module:loan-runtime");
 
     const updatedLearnedKnowledge = JSON.parse(await readFile(learnedKnowledgePath, "utf8")) as {
       candidates?: Array<{ id?: string; status?: string; counts?: { uses?: number; successes?: number } }>;
@@ -574,6 +606,9 @@ describe("server projects with vendored internal qmd runtime", () => {
     });
     expect(cachedAfterFeedback.userFeedback?.totalFeedback).toBeGreaterThanOrEqual(1);
     expect(cachedAfterFeedback.userFeedback?.correctCount).toBeGreaterThanOrEqual(1);
+    expect(cachedAfterFeedback.userFeedback?.targetedNodeCount).toBeGreaterThanOrEqual(1);
     expect(cachedAfterFeedback.evaluationPromotions?.promoteCount).toBeGreaterThanOrEqual(1);
+    expect(cachedAfterFeedback.ontologyGraph?.feedbackNodeCount).toBeGreaterThanOrEqual(1);
+    expect(cachedAfterFeedback.ontologyProjections?.lifecycleProjectionPathCount).toBeGreaterThanOrEqual(0);
   });
 });

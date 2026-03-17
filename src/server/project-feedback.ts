@@ -3,6 +3,39 @@ import type { LearnedKnowledgePromotionAction, LearnedKnowledgeSnapshot } from "
 
 export const ProjectFeedbackKindSchema = z.enum(["ask", "search"]);
 export const ProjectFeedbackVerdictSchema = z.enum(["correct", "partial", "incorrect"]);
+export const ProjectFeedbackScopeSchema = z.enum(["answer", "evidence", "node", "edge", "path", "boundary"]);
+export const ProjectFeedbackStrengthSchema = z.enum(["weak", "normal", "strong"]);
+
+export const ProjectFeedbackTargetSchema = z
+  .object({
+    kind: z.enum(["node", "edge", "path", "retrieval-unit", "knowledge", "evidence-path", "boundary"]),
+    id: z.string().min(1).optional(),
+    label: z.string().default(""),
+    nodeIds: z.array(z.string().min(1)).default([]),
+    edgeIds: z.array(z.string().min(1)).default([]),
+    evidencePath: z.string().min(1).optional(),
+    notes: z.string().default("")
+  })
+  .superRefine((value, ctx) => {
+    if (["node", "edge", "retrieval-unit", "knowledge"].includes(value.kind) && !value.id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `target id is required for kind=${value.kind}`
+      });
+    }
+    if (value.kind === "path" && value.nodeIds.length === 0 && value.edgeIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "path target requires nodeIds or edgeIds"
+      });
+    }
+    if (value.kind === "evidence-path" && !value.evidencePath) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "evidence-path target requires evidencePath"
+      });
+    }
+  });
 
 export const ProjectFeedbackArtifactSchema = z.object({
   version: z.literal(1),
@@ -13,8 +46,11 @@ export const ProjectFeedbackArtifactSchema = z.object({
   prompt: z.string().min(1),
   questionType: z.string().min(1),
   verdict: ProjectFeedbackVerdictSchema,
+  scope: ProjectFeedbackScopeSchema.default("answer"),
+  strength: ProjectFeedbackStrengthSchema.default("normal"),
   matchedKnowledgeIds: z.array(z.string().min(1)).default([]),
   matchedRetrievalUnitIds: z.array(z.string().min(1)).default([]),
+  targets: z.array(ProjectFeedbackTargetSchema).default([]),
   notes: z.string().default("")
 });
 
@@ -24,6 +60,10 @@ const ProjectFeedbackSummarySchema = z.object({
   partialCount: z.number().int().min(0),
   incorrectCount: z.number().int().min(0),
   feedbackBackedKnowledgeCount: z.number().int().min(0),
+  scopeCounts: z.record(z.string(), z.number().int().min(0)).default({}),
+  targetedNodeCount: z.number().int().min(0),
+  targetedEdgeCount: z.number().int().min(0),
+  targetedPathCount: z.number().int().min(0),
   topQuestionTypes: z.array(z.object({ questionType: z.string().min(1), count: z.number().int().min(0) })),
   lastVerdict: ProjectFeedbackVerdictSchema.optional().default("partial")
 });
@@ -53,6 +93,14 @@ function countTop(values: string[], limit = 8): Array<{ questionType: string; co
     .slice(0, limit);
 }
 
+function countItems(values: string[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return Object.fromEntries(Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])));
+}
+
 export function buildProjectFeedbackArtifact(input: {
   generatedAt: string;
   projectId: string;
@@ -61,8 +109,11 @@ export function buildProjectFeedbackArtifact(input: {
   prompt: string;
   questionType: string;
   verdict: "correct" | "partial" | "incorrect";
+  scope?: "answer" | "evidence" | "node" | "edge" | "path" | "boundary";
+  strength?: "weak" | "normal" | "strong";
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitIds?: string[];
+  targets?: Array<z.input<typeof ProjectFeedbackTargetSchema>>;
   notes?: string;
 }): ProjectFeedbackArtifact {
   return ProjectFeedbackArtifactSchema.parse({
@@ -74,8 +125,11 @@ export function buildProjectFeedbackArtifact(input: {
     prompt: input.prompt,
     questionType: input.questionType,
     verdict: input.verdict,
+    scope: input.scope ?? "answer",
+    strength: input.strength ?? "normal",
     matchedKnowledgeIds: unique(input.matchedKnowledgeIds ?? []),
     matchedRetrievalUnitIds: unique(input.matchedRetrievalUnitIds ?? []),
+    targets: input.targets ?? [],
     notes: input.notes ?? ""
   });
 }
@@ -90,9 +144,12 @@ export function buildProjectFeedbackMarkdown(artifact: ProjectFeedbackArtifact):
     `- kind: ${artifact.kind}`,
     `- questionType: ${artifact.questionType}`,
     `- verdict: ${artifact.verdict}`,
+    `- scope: ${artifact.scope}`,
+    `- strength: ${artifact.strength}`,
     `- prompt: ${artifact.prompt}`,
     `- matchedKnowledgeIds: ${artifact.matchedKnowledgeIds.join(", ") || "-"}`,
     `- matchedRetrievalUnitIds: ${artifact.matchedRetrievalUnitIds.join(", ") || "-"}`,
+    `- targetCount: ${artifact.targets.length}`,
     `- notes: ${artifact.notes || "-"}`,
     ""
   ].join("\n");
@@ -117,6 +174,24 @@ export function buildProjectFeedbackSummarySnapshot(options: {
       partialCount: artifacts.filter((artifact) => artifact.verdict === "partial").length,
       incorrectCount: artifacts.filter((artifact) => artifact.verdict === "incorrect").length,
       feedbackBackedKnowledgeCount: unique(artifacts.flatMap((artifact) => artifact.matchedKnowledgeIds)).length,
+      scopeCounts: countItems(artifacts.map((artifact) => artifact.scope)),
+      targetedNodeCount: unique(
+        artifacts.flatMap((artifact) =>
+          artifact.targets
+            .filter((target) => ["node", "retrieval-unit", "knowledge"].includes(target.kind) && target.id)
+            .map((target) => target.id as string)
+        )
+      ).length,
+      targetedEdgeCount: unique(
+        artifacts.flatMap((artifact) =>
+          artifact.targets.filter((target) => target.kind === "edge" && target.id).map((target) => target.id as string)
+        )
+      ).length,
+      targetedPathCount: artifacts.reduce(
+        (sum, artifact) =>
+          sum + artifact.targets.filter((target) => target.kind === "path" || target.kind === "evidence-path").length,
+        0
+      ),
       topQuestionTypes: countTop(artifacts.map((artifact) => artifact.questionType)),
       lastVerdict: artifacts[0]?.verdict ?? "partial"
     },
@@ -134,10 +209,22 @@ export function buildProjectFeedbackSummaryMarkdown(snapshot: ProjectFeedbackSum
     `- partialCount: ${snapshot.summary.partialCount}`,
     `- incorrectCount: ${snapshot.summary.incorrectCount}`,
     `- feedbackBackedKnowledgeCount: ${snapshot.summary.feedbackBackedKnowledgeCount}`,
+    `- targetedNodeCount: ${snapshot.summary.targetedNodeCount}`,
+    `- targetedEdgeCount: ${snapshot.summary.targetedEdgeCount}`,
+    `- targetedPathCount: ${snapshot.summary.targetedPathCount}`,
     `- lastVerdict: ${snapshot.summary.lastVerdict || "-"}`,
     "",
-    "## Top Question Types"
+    "## Scope Counts"
   ];
+  const scopeEntries = Object.entries(snapshot.summary.scopeCounts ?? {});
+  if (scopeEntries.length === 0) {
+    lines.push("- (none)");
+  } else {
+    for (const [scope, count] of scopeEntries) {
+      lines.push(`- ${scope}: ${count}`);
+    }
+  }
+  lines.push("", "## Top Question Types");
   if (snapshot.summary.topQuestionTypes.length === 0) {
     lines.push("- (none)");
   } else {
@@ -180,6 +267,7 @@ export function deriveFeedbackPromotionActions(options: {
       confidence: verdict === "correct" ? 0.96 : 0.97,
       reasons: unique([
         `feedback:${verdict}`,
+        `scope:${options.artifact.scope}`,
         `questionType:${options.artifact.questionType}`,
         ...(options.artifact.notes ? [`notes:${options.artifact.notes}`] : [])
       ])

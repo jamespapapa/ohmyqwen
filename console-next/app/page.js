@@ -2010,6 +2010,22 @@ export default function HomePage() {
                     </span>
                   </div>
                   <div className="report-row">
+                    <span>온톨로지 그래프</span>
+                    <span>
+                      {analysisResult.ontologyGraph
+                        ? `nodes=${analysisResult.ontologyGraph.nodeCount}, edges=${analysisResult.ontologyGraph.edgeCount}, feedback=${analysisResult.ontologyGraph.feedbackNodeCount}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>온톨로지 프로젝션</span>
+                    <span>
+                      {analysisResult.ontologyProjections
+                        ? `count=${analysisResult.ontologyProjections.projectionCount}, paths=${analysisResult.ontologyProjections.totalRepresentativePathCount}, largest=${analysisResult.ontologyProjections.largestProjectionType || "-"}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
                     <span>평가 추세</span>
                     <span>
                       {analysisResult.evaluationTrends
@@ -2196,6 +2212,46 @@ export default function HomePage() {
                             {shortText(candidate.label, 24)} · {candidate.kind} · {candidate.status}
                           </span>
                           <span>{candidate.score}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {analysisResult.ontologyGraph ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Ontology Graph
+                      {analysisResult.ontologyGraph
+                        ? ` · nodes=${analysisResult.ontologyGraph.nodeCount} · edges=${analysisResult.ontologyGraph.edgeCount}`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 140 }}>
+                      {(analysisResult.ontologyGraph.topDomains || []).slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.id}-${index}`}>
+                          <span title={`channelTop=${(analysisResult.ontologyGraph.topChannels || []).map((item) => `${item.id}:${item.count}`).join(", ")}`}>
+                            {shortText(entry.id, 28)} · ontology-domain
+                          </span>
+                          <span>{entry.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {analysisResult.ontologyProjections ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Ontology Projections
+                      {analysisResult.ontologyProjections
+                        ? ` · lifecyclePaths=${analysisResult.ontologyProjections.lifecycleProjectionPathCount}`
+                        : ""}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 120 }}>
+                      {(analysisResult.ontologyProjections.topProjectionTypes || []).slice(0, 8).map((entry, index) => (
+                        <li key={`${entry}-${index}`}>
+                          <span>{entry}</span>
+                          <span>{analysisResult.ontologyProjections.projectionTypeCounts?.[entry] ?? 0}</span>
                         </li>
                       ))}
                     </ul>

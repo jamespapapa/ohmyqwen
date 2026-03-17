@@ -3,6 +3,8 @@ import { LearnedKnowledgeSnapshotSchema, applyLearnedKnowledgePromotionActions }
 import {
   buildProjectFeedbackArtifact,
   buildProjectFeedbackMarkdown,
+  buildProjectFeedbackSummaryMarkdown,
+  buildProjectFeedbackSummarySnapshot,
   deriveFeedbackPromotionActions
 } from "../src/server/project-feedback.js";
 
@@ -53,8 +55,17 @@ describe("project feedback", () => {
       prompt: "모니모 회원인증의 흐름이 프론트에서부터 백엔드까지 어떻게 이루어지는지 분석해줘.",
       questionType: "channel_or_partner_integration",
       verdict: "correct",
+      scope: "path",
       matchedKnowledgeIds: ["channel:monimo"],
       matchedRetrievalUnitIds: ["unit:flow:monimo-auth"],
+      targets: [
+        {
+          kind: "path",
+          label: "monimo auth path",
+          nodeIds: ["route:/mo/login/monimo", "controller:EmbededMemberLoginController.login"],
+          edgeIds: ["edge:route-api"]
+        }
+      ],
       notes: "정답"
     });
 
@@ -65,6 +76,7 @@ describe("project feedback", () => {
     expect(actions).toHaveLength(1);
     expect(actions[0]?.candidateId).toBe("channel:monimo");
     expect(actions[0]?.targetStatus).toBe("validated");
+    expect(actions[0]?.reasons).toContain("scope:path");
 
     const next = applyLearnedKnowledgePromotionActions({
       snapshot,
@@ -73,6 +85,10 @@ describe("project feedback", () => {
     });
     expect(next.candidates[0]?.status).toBe("validated");
     expect(next.candidates[0]?.counts.successes).toBeGreaterThan(0);
+
+    const markdown = buildProjectFeedbackMarkdown(artifact);
+    expect(markdown).toContain("scope: path");
+    expect(markdown).toContain("targetCount: 1");
   });
 
   it("stales matched candidates when user marks a response incorrect", () => {
@@ -121,8 +137,10 @@ describe("project feedback", () => {
       prompt: "dcp-async 프로젝트는 어떤 역할을 하는가?",
       questionType: "module_role_explanation",
       verdict: "incorrect",
+      scope: "node",
       matchedKnowledgeIds: ["module:dcp-async"],
       matchedRetrievalUnitIds: ["unit:module:module:dcp-async"],
+      targets: [{ kind: "node", id: "module:dcp-async", label: "async module" }],
       notes: "공통 async 모듈 설명이 틀렸음"
     });
 
@@ -132,9 +150,68 @@ describe("project feedback", () => {
     });
     expect(actions).toHaveLength(1);
     expect(actions[0]?.targetStatus).toBe("stale");
+  });
 
-    const markdown = buildProjectFeedbackMarkdown(artifact);
-    expect(markdown).toContain("# User Feedback");
-    expect(markdown).toContain("verdict: incorrect");
+  it("summarizes scoped and targeted feedback", () => {
+    const artifacts = [
+      buildProjectFeedbackArtifact({
+        generatedAt: "2026-03-16T00:00:01.000Z",
+        projectId: "p1",
+        projectName: "dcp",
+        kind: "ask",
+        prompt: "모니모 회원인증 흐름",
+        questionType: "channel_or_partner_integration",
+        verdict: "correct",
+        scope: "path",
+        matchedKnowledgeIds: ["channel:monimo"],
+        targets: [
+          {
+            kind: "path",
+            label: "critical path",
+            nodeIds: ["route:/mo/login/monimo", "controller:RegisteUseDcpChnelController.registe"]
+          }
+        ]
+      }),
+      buildProjectFeedbackArtifact({
+        generatedAt: "2026-03-16T00:00:02.000Z",
+        projectId: "p1",
+        projectName: "dcp",
+        kind: "search",
+        prompt: "dcp-async 역할",
+        questionType: "module_role_explanation",
+        verdict: "incorrect",
+        scope: "edge",
+        matchedKnowledgeIds: ["module:dcp-async"],
+        targets: [{ kind: "edge", id: "edge:controller-service", label: "wrong relation" }]
+      }),
+      buildProjectFeedbackArtifact({
+        generatedAt: "2026-03-16T00:00:03.000Z",
+        projectId: "p1",
+        projectName: "dcp",
+        kind: "search",
+        prompt: "loan runtime 역할",
+        questionType: "module_role_explanation",
+        verdict: "partial",
+        scope: "node",
+        matchedKnowledgeIds: ["module:loan-runtime"],
+        targets: [{ kind: "node", id: "module:loan-runtime", label: "loan runtime" }]
+      })
+    ];
+
+    const summary = buildProjectFeedbackSummarySnapshot({
+      generatedAt: "2026-03-16T00:00:04.000Z",
+      artifacts
+    });
+    expect(summary.summary.totalFeedback).toBe(3);
+    expect(summary.summary.scopeCounts.path).toBe(1);
+    expect(summary.summary.scopeCounts.edge).toBe(1);
+    expect(summary.summary.scopeCounts.node).toBe(1);
+    expect(summary.summary.targetedNodeCount).toBe(1);
+    expect(summary.summary.targetedEdgeCount).toBe(1);
+    expect(summary.summary.targetedPathCount).toBe(1);
+
+    const markdown = buildProjectFeedbackSummaryMarkdown(summary);
+    expect(markdown).toContain("## Scope Counts");
+    expect(markdown).toContain("targetedEdgeCount: 1");
   });
 });

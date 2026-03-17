@@ -1,0 +1,660 @@
+import { createHash } from "node:crypto";
+import { z } from "zod";
+import {
+  KnowledgeSchemaSnapshotSchema,
+  type KnowledgeSchemaSnapshot,
+  type KnowledgeEntity,
+  type KnowledgeEdge
+} from "./knowledge-schema.js";
+import { RetrievalUnitSnapshotSchema, type RetrievalUnitSnapshot } from "./retrieval-units.js";
+import { ProjectFeedbackArtifactSchema, type ProjectFeedbackArtifact } from "./project-feedback.js";
+import { EvaluationReplaySnapshotSchema, type EvaluationReplaySnapshot } from "./evaluation-replay.js";
+import { EvaluationPromotionSnapshotSchema, type EvaluationPromotionSnapshot } from "./evaluation-promotions.js";
+
+const OntologyNodeTypeSchema = z.enum([
+  "module",
+  "file",
+  "symbol",
+  "route",
+  "api",
+  "controller",
+  "service",
+  "eai-interface",
+  "knowledge-cluster",
+  "retrieval-unit",
+  "feedback-record",
+  "replay-candidate",
+  "path"
+]);
+
+const OntologyEdgeTypeSchema = z.enum([
+  "contains",
+  "declares",
+  "calls",
+  "routes-to",
+  "maps-to",
+  "uses-eai",
+  "depends-on",
+  "belongs-to-domain",
+  "belongs-to-channel",
+  "belongs-to-process",
+  "supports-module-role",
+  "references-entity",
+  "references-edge",
+  "targets-node",
+  "targets-edge",
+  "targets-path"
+]);
+
+const OntologyValidatedStatusSchema = z.enum([
+  "candidate",
+  "validated",
+  "derived",
+  "stale",
+  "contested",
+  "deprecated"
+]);
+
+const OntologySourceTypeSchema = z.enum([
+  "knowledge-schema",
+  "retrieval-unit",
+  "feedback",
+  "evaluation-replay",
+  "evaluation-promotion",
+  "derived"
+]);
+
+const OntologyMetadataSchema = z.object({
+  domains: z.array(z.string().min(1)).default([]),
+  subdomains: z.array(z.string().min(1)).default([]),
+  channels: z.array(z.string().min(1)).default([]),
+  actions: z.array(z.string().min(1)).default([]),
+  moduleRoles: z.array(z.string().min(1)).default([]),
+  processRoles: z.array(z.string().min(1)).default([]),
+  confidence: z.number().min(0).max(1),
+  evidencePaths: z.array(z.string().min(1)).default([]),
+  sourceType: OntologySourceTypeSchema,
+  validatedStatus: OntologyValidatedStatusSchema
+});
+
+const OntologyNodeSchema = z.object({
+  id: z.string().min(1),
+  type: OntologyNodeTypeSchema,
+  label: z.string().min(1),
+  summary: z.string().default(""),
+  metadata: OntologyMetadataSchema,
+  attributes: z.record(z.string(), z.unknown()).default({})
+});
+
+const OntologyEdgeSchema = z.object({
+  id: z.string().min(1),
+  type: OntologyEdgeTypeSchema,
+  fromId: z.string().min(1),
+  toId: z.string().min(1),
+  label: z.string().default(""),
+  metadata: OntologyMetadataSchema,
+  attributes: z.record(z.string(), z.unknown()).default({})
+});
+
+const OntologyGraphSummarySchema = z.object({
+  nodeCount: z.number().int().min(0),
+  edgeCount: z.number().int().min(0),
+  nodeTypeCounts: z.record(z.string(), z.number().int().min(0)),
+  edgeTypeCounts: z.record(z.string(), z.number().int().min(0)),
+  feedbackNodeCount: z.number().int().min(0),
+  replayNodeCount: z.number().int().min(0),
+  pathNodeCount: z.number().int().min(0),
+  validatedNodeCount: z.number().int().min(0),
+  candidateNodeCount: z.number().int().min(0),
+  staleNodeCount: z.number().int().min(0),
+  topDomains: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
+  topChannels: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) }))
+});
+
+export const OntologyGraphSnapshotSchema = z.object({
+  version: z.literal(1),
+  generatedAt: z.string().min(1),
+  workspaceDir: z.string().min(1),
+  nodes: z.array(OntologyNodeSchema),
+  edges: z.array(OntologyEdgeSchema),
+  summary: OntologyGraphSummarySchema
+});
+
+export type OntologyNode = z.infer<typeof OntologyNodeSchema>;
+export type OntologyEdge = z.infer<typeof OntologyEdgeSchema>;
+export type OntologyGraphSnapshot = z.infer<typeof OntologyGraphSnapshotSchema>;
+
+function unique(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+function toForwardSlash(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function mapValidatedStatus(status?: string): z.infer<typeof OntologyValidatedStatusSchema> {
+  switch (status) {
+    case "candidate":
+    case "validated":
+    case "derived":
+    case "stale":
+    case "contested":
+    case "deprecated":
+      return status;
+    default:
+      return "derived";
+  }
+}
+
+function makeMetadata(input?: Partial<z.infer<typeof OntologyMetadataSchema>>): z.infer<typeof OntologyMetadataSchema> {
+  return {
+    domains: unique(input?.domains ?? []),
+    subdomains: unique(input?.subdomains ?? []),
+    channels: unique(input?.channels ?? []),
+    actions: unique(input?.actions ?? []),
+    moduleRoles: unique(input?.moduleRoles ?? []),
+    processRoles: unique(input?.processRoles ?? []),
+    confidence: Math.max(0, Math.min(1, input?.confidence ?? 0.5)),
+    evidencePaths: unique((input?.evidencePaths ?? []).map(toForwardSlash)),
+    sourceType: input?.sourceType ?? "derived",
+    validatedStatus: mapValidatedStatus(input?.validatedStatus)
+  };
+}
+
+function countBy<T extends string>(values: T[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return Object.fromEntries(Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])));
+}
+
+function countTop(values: string[], limit = 10): Array<{ id: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([id, count]) => ({ id, count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.id.localeCompare(b.id)))
+    .slice(0, limit);
+}
+
+function feedbackNodeId(artifact: ProjectFeedbackArtifact): string {
+  const digest = createHash("sha1")
+    .update(JSON.stringify([artifact.projectId, artifact.kind, artifact.generatedAt, artifact.prompt, artifact.questionType]))
+    .digest("hex")
+    .slice(0, 12);
+  return `feedback:${artifact.kind}:${digest}`;
+}
+
+function replayNodeId(candidate: EvaluationReplaySnapshot["replayCandidates"][number]): string {
+  const digest = createHash("sha1")
+    .update(JSON.stringify([candidate.kind, candidate.generatedAt, candidate.questionType, candidate.questionOrQuery]))
+    .digest("hex")
+    .slice(0, 12);
+  return `replay:${candidate.kind}:${digest}`;
+}
+
+function pathNodeId(feedbackId: string, targetIndex: number): string {
+  return `path:${feedbackId}:${targetIndex}`;
+}
+
+function feedbackConfidence(verdict: ProjectFeedbackArtifact["verdict"]): number {
+  if (verdict === "correct") return 0.98;
+  if (verdict === "incorrect") return 0.97;
+  return 0.7;
+}
+
+function feedbackStatus(verdict: ProjectFeedbackArtifact["verdict"]): z.infer<typeof OntologyValidatedStatusSchema> {
+  if (verdict === "correct") return "validated";
+  if (verdict === "incorrect") return "contested";
+  return "candidate";
+}
+
+function resolveFeedbackTargetNodeId(target: ProjectFeedbackArtifact["targets"][number], nodeIds: Set<string>, clusterNodes: OntologyNode[]): string | undefined {
+  if (["node", "retrieval-unit", "knowledge"].includes(target.kind) && target.id && nodeIds.has(target.id)) {
+    return target.id;
+  }
+  if (target.kind === "knowledge" && target.id) {
+    const matched = clusterNodes.find((node) => node.id === target.id || String(node.attributes.candidateId ?? "") === target.id || String(node.attributes.packId ?? "") === target.id);
+    return matched?.id;
+  }
+  if (target.kind === "retrieval-unit" && target.id) {
+    const direct = `retrieval-unit:${target.id}`;
+    return nodeIds.has(direct) ? direct : undefined;
+  }
+  return undefined;
+}
+
+export function buildOntologyGraphSnapshot(options: {
+  generatedAt?: string;
+  workspaceDir?: string;
+  knowledgeSchema: KnowledgeSchemaSnapshot;
+  retrievalUnits?: RetrievalUnitSnapshot;
+  feedbackArtifacts?: ProjectFeedbackArtifact[];
+  evaluationReplay?: EvaluationReplaySnapshot;
+  evaluationPromotions?: EvaluationPromotionSnapshot;
+}): OntologyGraphSnapshot {
+  const knowledgeSchema = KnowledgeSchemaSnapshotSchema.parse(options.knowledgeSchema);
+  const retrievalUnits = options.retrievalUnits ? RetrievalUnitSnapshotSchema.parse(options.retrievalUnits) : undefined;
+  const feedbackArtifacts = (options.feedbackArtifacts ?? []).map((artifact) => ProjectFeedbackArtifactSchema.parse(artifact));
+  const evaluationReplay = options.evaluationReplay
+    ? EvaluationReplaySnapshotSchema.parse(options.evaluationReplay)
+    : undefined;
+  const evaluationPromotions = options.evaluationPromotions
+    ? EvaluationPromotionSnapshotSchema.parse(options.evaluationPromotions)
+    : undefined;
+
+  const nodes = new Map<string, OntologyNode>();
+  const edges = new Map<string, OntologyEdge>();
+
+  const upsertNode = (node: OntologyNode) => {
+    nodes.set(node.id, OntologyNodeSchema.parse(node));
+  };
+  const upsertEdge = (edge: OntologyEdge) => {
+    const parsed = OntologyEdgeSchema.parse(edge);
+    edges.set(`${parsed.type}:${parsed.fromId}:${parsed.toId}`, parsed);
+  };
+
+  for (const entity of knowledgeSchema.entities) {
+    upsertNode({
+      id: entity.id,
+      type: entity.type,
+      label: entity.label,
+      summary: entity.summary,
+      metadata: makeMetadata({
+        ...entity.metadata,
+        sourceType: "knowledge-schema"
+      }),
+      attributes: {
+        ...entity.attributes,
+        originType: entity.type
+      }
+    });
+  }
+  for (const edge of knowledgeSchema.edges) {
+    upsertEdge({
+      id: edge.id,
+      type: edge.type,
+      fromId: edge.fromId,
+      toId: edge.toId,
+      label: edge.label,
+      metadata: makeMetadata({
+        ...edge.metadata,
+        sourceType: "knowledge-schema"
+      }),
+      attributes: edge.attributes
+    });
+  }
+
+  if (retrievalUnits) {
+    for (const unit of retrievalUnits.units) {
+      const unitNodeId = `retrieval-unit:${unit.id}`;
+      upsertNode({
+        id: unitNodeId,
+        type: "retrieval-unit",
+        label: unit.title,
+        summary: unit.summary,
+        metadata: makeMetadata({
+          domains: unit.domains,
+          subdomains: unit.subdomains,
+          channels: unit.channels,
+          actions: unit.actions,
+          moduleRoles: unit.moduleRoles,
+          processRoles: unit.processRoles,
+          confidence: unit.confidence,
+          evidencePaths: unit.evidencePaths,
+          sourceType: "retrieval-unit",
+          validatedStatus: unit.validatedStatus
+        }),
+        attributes: {
+          unitId: unit.id,
+          unitType: unit.type,
+          searchText: unit.searchText,
+          entityIds: unit.entityIds,
+          edgeIds: unit.edgeIds
+        }
+      });
+      for (const entityId of unit.entityIds) {
+        if (!nodes.has(entityId)) continue;
+        upsertEdge({
+          id: `edge:references-entity:${unitNodeId}:${entityId}`,
+          type: "references-entity",
+          fromId: unitNodeId,
+          toId: entityId,
+          label: "retrieval unit references entity",
+          metadata: makeMetadata({
+            domains: unit.domains,
+            subdomains: unit.subdomains,
+            channels: unit.channels,
+            actions: unit.actions,
+            moduleRoles: unit.moduleRoles,
+            processRoles: unit.processRoles,
+            confidence: unit.confidence,
+            evidencePaths: unit.evidencePaths,
+            sourceType: "retrieval-unit",
+            validatedStatus: unit.validatedStatus
+          }),
+          attributes: { unitType: unit.type }
+        });
+      }
+      for (const edgeId of unit.edgeIds) {
+        const knowledgeEdge = knowledgeSchema.edges.find((candidate) => candidate.id === edgeId);
+        if (!knowledgeEdge) continue;
+        const targetNodeId = `${knowledgeEdge.fromId}->${knowledgeEdge.toId}:${knowledgeEdge.type}`;
+        upsertNode({
+          id: targetNodeId,
+          type: "path",
+          label: `${knowledgeEdge.type} ${knowledgeEdge.fromId} -> ${knowledgeEdge.toId}`,
+          summary: knowledgeEdge.label || `${knowledgeEdge.type} relation`,
+          metadata: makeMetadata({
+            ...knowledgeEdge.metadata,
+            sourceType: "derived"
+          }),
+          attributes: {
+            edgeId: knowledgeEdge.id,
+            edgeType: knowledgeEdge.type,
+            fromId: knowledgeEdge.fromId,
+            toId: knowledgeEdge.toId
+          }
+        });
+        upsertEdge({
+          id: `edge:references-edge:${unitNodeId}:${targetNodeId}`,
+          type: "references-edge",
+          fromId: unitNodeId,
+          toId: targetNodeId,
+          label: "retrieval unit references edge",
+          metadata: makeMetadata({
+            domains: unit.domains,
+            subdomains: unit.subdomains,
+            channels: unit.channels,
+            actions: unit.actions,
+            moduleRoles: unit.moduleRoles,
+            processRoles: unit.processRoles,
+            confidence: unit.confidence,
+            evidencePaths: unit.evidencePaths,
+            sourceType: "retrieval-unit",
+            validatedStatus: unit.validatedStatus
+          }),
+          attributes: { edgeId: knowledgeEdge.id }
+        });
+      }
+    }
+  }
+
+  const nodeIds = new Set(nodes.keys());
+  const clusterNodes = Array.from(nodes.values()).filter((node) => node.type === "knowledge-cluster");
+
+  for (const artifact of feedbackArtifacts) {
+    const feedbackId = feedbackNodeId(artifact);
+    upsertNode({
+      id: feedbackId,
+      type: "feedback-record",
+      label: `${artifact.kind}:${artifact.verdict}`,
+      summary: artifact.prompt,
+      metadata: makeMetadata({
+        confidence: feedbackConfidence(artifact.verdict),
+        evidencePaths: [],
+        sourceType: "feedback",
+        validatedStatus: feedbackStatus(artifact.verdict)
+      }),
+      attributes: {
+        kind: artifact.kind,
+        prompt: artifact.prompt,
+        questionType: artifact.questionType,
+        verdict: artifact.verdict,
+        scope: artifact.scope,
+        strength: artifact.strength,
+        notes: artifact.notes,
+        matchedKnowledgeIds: artifact.matchedKnowledgeIds,
+        matchedRetrievalUnitIds: artifact.matchedRetrievalUnitIds
+      }
+    });
+
+    for (const candidateId of artifact.matchedKnowledgeIds) {
+      const target = resolveFeedbackTargetNodeId({ kind: "knowledge", id: candidateId, label: "", nodeIds: [], edgeIds: [], notes: "" }, nodeIds, clusterNodes);
+      if (!target) continue;
+      upsertEdge({
+        id: `edge:targets-node:${feedbackId}:${target}`,
+        type: "targets-node",
+        fromId: feedbackId,
+        toId: target,
+        label: "feedback targets knowledge",
+        metadata: makeMetadata({
+          confidence: feedbackConfidence(artifact.verdict),
+          sourceType: "feedback",
+          validatedStatus: feedbackStatus(artifact.verdict)
+        }),
+        attributes: {
+          verdict: artifact.verdict,
+          scope: artifact.scope
+        }
+      });
+    }
+
+    for (const unitId of artifact.matchedRetrievalUnitIds) {
+      const target = resolveFeedbackTargetNodeId({ kind: "retrieval-unit", id: unitId, label: "", nodeIds: [], edgeIds: [], notes: "" }, nodeIds, clusterNodes);
+      if (!target) continue;
+      upsertEdge({
+        id: `edge:targets-node:${feedbackId}:${target}`,
+        type: "targets-node",
+        fromId: feedbackId,
+        toId: target,
+        label: "feedback targets retrieval unit",
+        metadata: makeMetadata({
+          confidence: feedbackConfidence(artifact.verdict),
+          sourceType: "feedback",
+          validatedStatus: feedbackStatus(artifact.verdict)
+        }),
+        attributes: {
+          verdict: artifact.verdict,
+          scope: artifact.scope
+        }
+      });
+    }
+
+    artifact.targets.forEach((target, index) => {
+      if (target.kind === "path") {
+        const targetId = pathNodeId(feedbackId, index);
+        upsertNode({
+          id: targetId,
+          type: "path",
+          label: target.label || `feedback path ${index + 1}`,
+          summary: target.notes || target.edgeIds.join(" -> ") || target.nodeIds.join(" -> "),
+          metadata: makeMetadata({
+            confidence: feedbackConfidence(artifact.verdict),
+            evidencePaths: target.evidencePath ? [target.evidencePath] : [],
+            sourceType: "feedback",
+            validatedStatus: feedbackStatus(artifact.verdict)
+          }),
+          attributes: {
+            nodeIds: target.nodeIds,
+            edgeIds: target.edgeIds,
+            evidencePath: target.evidencePath ?? ""
+          }
+        });
+        upsertEdge({
+          id: `edge:targets-path:${feedbackId}:${targetId}`,
+          type: "targets-path",
+          fromId: feedbackId,
+          toId: targetId,
+          label: "feedback targets path",
+          metadata: makeMetadata({
+            confidence: feedbackConfidence(artifact.verdict),
+            sourceType: "feedback",
+            validatedStatus: feedbackStatus(artifact.verdict)
+          }),
+          attributes: {
+            verdict: artifact.verdict,
+            scope: artifact.scope
+          }
+        });
+        return;
+      }
+
+      const targetNode = resolveFeedbackTargetNodeId(target, nodeIds, clusterNodes);
+      if (target.kind === "edge" && target.id) {
+        const edgeNodeId = `${target.id}:feedback-target`;
+        upsertNode({
+          id: edgeNodeId,
+          type: "path",
+          label: target.label || target.id,
+          summary: target.notes || "feedback targets edge",
+          metadata: makeMetadata({
+            confidence: feedbackConfidence(artifact.verdict),
+            sourceType: "feedback",
+            validatedStatus: feedbackStatus(artifact.verdict)
+          }),
+          attributes: { edgeId: target.id }
+        });
+        upsertEdge({
+          id: `edge:targets-edge:${feedbackId}:${edgeNodeId}`,
+          type: "targets-edge",
+          fromId: feedbackId,
+          toId: edgeNodeId,
+          label: "feedback targets edge",
+          metadata: makeMetadata({
+            confidence: feedbackConfidence(artifact.verdict),
+            sourceType: "feedback",
+            validatedStatus: feedbackStatus(artifact.verdict)
+          }),
+          attributes: {
+            verdict: artifact.verdict,
+            scope: artifact.scope,
+            targetId: target.id
+          }
+        });
+        return;
+      }
+      if (targetNode) {
+        upsertEdge({
+          id: `edge:targets-node:${feedbackId}:${targetNode}:${index}`,
+          type: "targets-node",
+          fromId: feedbackId,
+          toId: targetNode,
+          label: `feedback targets ${target.kind}`,
+          metadata: makeMetadata({
+            confidence: feedbackConfidence(artifact.verdict),
+            sourceType: "feedback",
+            validatedStatus: feedbackStatus(artifact.verdict)
+          }),
+          attributes: {
+            verdict: artifact.verdict,
+            scope: artifact.scope,
+            targetKind: target.kind
+          }
+        });
+      }
+    });
+  }
+
+  for (const candidate of evaluationReplay?.replayCandidates ?? []) {
+    const replayId = replayNodeId(candidate);
+    upsertNode({
+      id: replayId,
+      type: "replay-candidate",
+      label: `${candidate.kind}:${candidate.questionType}`,
+      summary: candidate.questionOrQuery,
+      metadata: makeMetadata({
+        confidence: Math.max(0, Math.min(1, candidate.score / 100)),
+        sourceType: "evaluation-replay",
+        validatedStatus: candidate.score >= 80 ? "candidate" : "derived"
+      }),
+      attributes: {
+        kind: candidate.kind,
+        questionType: candidate.questionType,
+        score: candidate.score,
+        reasons: candidate.reasons
+      }
+    });
+  }
+
+  if (evaluationPromotions) {
+    for (const action of evaluationPromotions.actions.slice(0, 48)) {
+      const target = clusterNodes.find((node) => node.id === action.candidateId || String(node.attributes.candidateId ?? "") === action.candidateId);
+      if (!target) continue;
+      target.metadata = makeMetadata({
+        ...target.metadata,
+        confidence: Math.max(target.metadata.confidence, action.confidence),
+        sourceType: "evaluation-promotion",
+        validatedStatus: action.targetStatus
+      });
+      target.attributes = {
+        ...target.attributes,
+        promotionScore: action.score,
+        promotionReasons: action.reasons,
+        promotionCurrentStatus: action.currentStatus,
+        promotionTargetStatus: action.targetStatus
+      };
+      nodes.set(target.id, target);
+    }
+  }
+
+  const orderedNodes = Array.from(nodes.values()).sort((a, b) => a.id.localeCompare(b.id));
+  const orderedEdges = Array.from(edges.values()).sort((a, b) => a.id.localeCompare(b.id));
+
+  return OntologyGraphSnapshotSchema.parse({
+    version: 1,
+    generatedAt: options.generatedAt ?? knowledgeSchema.generatedAt,
+    workspaceDir: options.workspaceDir ?? knowledgeSchema.workspaceDir,
+    nodes: orderedNodes,
+    edges: orderedEdges,
+    summary: {
+      nodeCount: orderedNodes.length,
+      edgeCount: orderedEdges.length,
+      nodeTypeCounts: countBy(orderedNodes.map((node) => node.type)),
+      edgeTypeCounts: countBy(orderedEdges.map((edge) => edge.type)),
+      feedbackNodeCount: orderedNodes.filter((node) => node.type === "feedback-record").length,
+      replayNodeCount: orderedNodes.filter((node) => node.type === "replay-candidate").length,
+      pathNodeCount: orderedNodes.filter((node) => node.type === "path").length,
+      validatedNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "validated").length,
+      candidateNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "candidate").length,
+      staleNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "stale").length,
+      topDomains: countTop(orderedNodes.flatMap((node) => node.metadata.domains)),
+      topChannels: countTop(orderedNodes.flatMap((node) => node.metadata.channels))
+    }
+  });
+}
+
+export function buildOntologyGraphMarkdown(snapshot: OntologyGraphSnapshot): string {
+  const lines: string[] = [];
+  lines.push("# Ontology Graph");
+  lines.push("");
+  lines.push(`- generatedAt: ${snapshot.generatedAt}`);
+  lines.push(`- workspaceDir: ${toForwardSlash(snapshot.workspaceDir)}`);
+  lines.push(`- nodeCount: ${snapshot.summary.nodeCount}`);
+  lines.push(`- edgeCount: ${snapshot.summary.edgeCount}`);
+  lines.push(`- feedbackNodeCount: ${snapshot.summary.feedbackNodeCount}`);
+  lines.push(`- replayNodeCount: ${snapshot.summary.replayNodeCount}`);
+  lines.push(`- pathNodeCount: ${snapshot.summary.pathNodeCount}`);
+  lines.push("");
+  lines.push("## Node Types");
+  for (const [type, count] of Object.entries(snapshot.summary.nodeTypeCounts)) {
+    lines.push(`- ${type}: ${count}`);
+  }
+  lines.push("");
+  lines.push("## Edge Types");
+  for (const [type, count] of Object.entries(snapshot.summary.edgeTypeCounts)) {
+    lines.push(`- ${type}: ${count}`);
+  }
+  lines.push("");
+  lines.push("## Top Domains");
+  if (snapshot.summary.topDomains.length === 0) {
+    lines.push("- (none)");
+  } else {
+    for (const item of snapshot.summary.topDomains) {
+      lines.push(`- ${item.id}: ${item.count}`);
+    }
+  }
+  lines.push("");
+  lines.push("## Representative Nodes");
+  for (const node of snapshot.nodes.slice(0, 24)) {
+    lines.push(`- [${node.type}] ${node.label} | status=${node.metadata.validatedStatus} | confidence=${node.metadata.confidence.toFixed(2)}`);
+    if (node.summary) {
+      lines.push(`  - ${node.summary}`);
+    }
+  }
+  lines.push("");
+  return `${lines.join("\n")}\n`;
+}

@@ -669,18 +669,47 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         prompt?: string;
         questionType?: string;
         verdict?: "correct" | "partial" | "incorrect";
+        scope?: "answer" | "evidence" | "node" | "edge" | "path" | "boundary";
+        strength?: "weak" | "normal" | "strong";
         matchedKnowledgeIds?: string[];
         matchedRetrievalUnitIds?: string[];
+        targets?: Array<{
+          kind?: "node" | "edge" | "path" | "retrieval-unit" | "knowledge" | "evidence-path" | "boundary";
+          id?: string;
+          label?: string;
+          nodeIds?: string[];
+          edgeIds?: string[];
+          evidencePath?: string;
+          notes?: string;
+        }>;
         notes?: string;
       };
+      const normalizedTargets = (payload.targets ?? []).flatMap((target) =>
+        target.kind
+          ? [
+              {
+                kind: target.kind,
+                id: target.id,
+                label: target.label,
+                nodeIds: target.nodeIds,
+                edgeIds: target.edgeIds,
+                evidencePath: target.evidencePath,
+                notes: target.notes
+              }
+            ]
+          : []
+      );
       const result = await recordServerProjectFeedback({
         projectId: projectFeedbackId,
         kind: payload.kind ?? "ask",
         prompt: payload.prompt ?? "",
         questionType: payload.questionType ?? "domain_capability_overview",
         verdict: payload.verdict ?? "partial",
+        scope: payload.scope,
+        strength: payload.strength,
         matchedKnowledgeIds: payload.matchedKnowledgeIds ?? [],
         matchedRetrievalUnitIds: payload.matchedRetrievalUnitIds ?? [],
+        targets: normalizedTargets,
         notes: payload.notes
       });
       routeTrace("project/feedback:success", {

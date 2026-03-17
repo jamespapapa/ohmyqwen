@@ -43,6 +43,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - EAI dictionary
 - learned knowledge
 - domain/module-role/process/channel packs
+- ontology graph / ontology projections (진행 중)
 - 목적: 프로젝트별 정합도를 반복 사용으로 점진 향상
 
 ---
@@ -55,6 +56,8 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 4. 프로젝트 분석 품질은 **하드코딩된 도메인 분기**보다, 사전/그래프/후보지식/회귀테스트 축적을 통해 올린다.
 5. 외부 지원 없이도 폐쇄망 내부 Qwen3 기반으로 점진 강화될 수 있도록, **candidate -> validated knowledge 승격 구조**를 우선한다.
 6. 본격적인 RAG 구축은 **코드/구조/그래프/사전/운영기록을 하나의 knowledge schema 아래 통합**하는 방향으로 진행한다.
+7. domain pack은 중심 본체가 아니라 **typed knowledge graph 위의 보조 semantic layer**로 취급한다.
+8. 코드베이스에서 먼저 **최소 ontology graph**를 만들고, 사용자 힌트/피드백/CSV/문서/이력으로 semantic layer를 승격한다.
 
 ---
 
@@ -74,6 +77,12 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 
 5. **Windows x64 오프라인 번들 실행성을 항상 의식한다.**  
    네이티브 의존성, bundle root 경로, local model path, wrapper 스크립트 동작을 깨지 않게 유지한다.
+
+6. **현재 구현을 버리는 rewrite보다 ontology migration을 우선한다.**  
+   `knowledge schema`, `retrieval units`, `replay`, `feedback`은 ontology graph의 seed layer로 재사용한다.
+
+7. **사용자 노하우는 정의가 아니라 사례/경계/비교/판단기준/단계 흐름으로 받는다.**  
+   자유 메모도 허용하지만, 가능하면 구조화된 입력과 provenance를 남긴다.
 
 ---
 
@@ -130,11 +139,16 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - candidate -> validated -> stale lifecycle을 정식 도입
 - 질문 유형별 retrieval contract와 quality gate를 분리
 - 운영 기록과 사용자 피드백을 replay / regression / pack 승격으로 연결
+- ontology graph / projection / visualization 중심 구조로 점진 이행
+- feedback을 answer-level이 아니라 **node / edge / path 검증 시스템**으로 확장
 
 **설계 문서 우선 참조**
 
 - `docs/OFFLINE_SELF_IMPROVEMENT_PROTOCOL.md`
 - `docs/RAG_MAIN_CONSTRUCTION_PLAN.md`
+- `docs/ONTOLOGY_GRAPH_MIGRATION_PLAN.md`
+- `docs/ONTOLOGY_SYSTEM_DESIGN.md`
+- `docs/ONTOLOGY_GRAPH_ASCII.md`
 
 ---
 
@@ -152,11 +166,17 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
    - retrieval unit 표준화
    - knowledge lifecycle 정식화
    - 질문 유형별 retrieval / gate contract 정리
+   - ontology graph snapshot / projection / planner / lifecycle 설계와 구현
 
 3. **질문 품질 일반화**
    - 특정 도메인 하드코딩 축소
    - module-role / process-role / channel 질문 대응력 강화
 
-4. **오프라인 배포 안정화**
+4. **사용자 상호작용 기반 지식 승격**
+   - 자유 메모 / 구조화 폼 / CSV / 문서 입력 채널
+   - feedback schema / evaluation criteria / promotion state machine 정교화
+   - 시각화된 projection 위에서 node / edge / path 검증 가능하게 만들기
+
+5. **오프라인 배포 안정화**
    - Windows x64 bundle runtime 검증
    - qmd models / wrapper / frontend-backend startup 안정화
