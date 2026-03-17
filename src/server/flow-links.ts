@@ -195,6 +195,23 @@ function topNamespaceFromPath(value?: string): string | undefined {
   return segments[0];
 }
 
+function classifyFlowPhase(flow: LinkedFlowEvidence): DownstreamFlowTrace["phase"] {
+  const text = `${flow.apiUrl} ${flow.backendControllerMethod} ${(flow.serviceHints ?? []).join(" ")}`.toLowerCase();
+  if (/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment|document/.test(text)) {
+    return "action-document";
+  }
+  if (/\/insert(?:\/|$)|\/apply(?:\/|$)|\/submit(?:\/|$)|\/save(?:\/|$)|\/proc(?:\/|$)|\/update(?:\/|$)|register|regist|create|write/.test(text)) {
+    return "action-write";
+  }
+  if (/\/check(?:\/|$)|\/status(?:\/|$)|verify|validate|guard/.test(text)) {
+    return "action-check";
+  }
+  if (/inqury|inquiry|query|select|get|load|read/.test(text)) {
+    return "action-read";
+  }
+  return "other";
+}
+
 function buildCanonicalFlowCluster(
   flows: LinkedFlowEvidence[],
   questionTags: string[]
@@ -242,6 +259,12 @@ function countIncoherentFlows(flows: LinkedFlowEvidence[], questionTags: string[
   const canonical = buildCanonicalFlowCluster(flows, questionTags);
   const canonicalKeys = new Set(canonical.map((flow) => `${flow.apiUrl}|${flow.backendControllerMethod}`));
   return flows.filter((flow) => !canonicalKeys.has(`${flow.apiUrl}|${flow.backendControllerMethod}`)).length;
+}
+
+function countDistinctTopNamespaces(flows: LinkedFlowEvidence[]): number {
+  return unique(
+    flows.flatMap((flow) => [topNamespaceFromPath(flow.apiUrl), topNamespaceFromPath(flow.backendPath)].filter(Boolean) as string[])
+  ).length;
 }
 
 function expandDesiredActionTags(actionHints: string[]): string[] {
@@ -578,7 +601,7 @@ export function buildDeterministicFlowAnswer(options: {
     }
     for (const pattern of criteria.avoidApiPatterns ?? []) {
       if (pattern.test(lowerApi)) {
-        score -= 120;
+        return Number.NEGATIVE_INFINITY;
       }
     }
     const specificSignalMatches = specificQuestionTags.filter((tag) => (item.capabilityTags ?? []).includes(tag));
@@ -609,27 +632,53 @@ export function buildDeterministicFlowAnswer(options: {
     methodPatterns: [/inq/i, /inquiry/i, /select/i, /load/i, /get/i]
   });
 
-  const accountFlow = pickBestFlow({
-    tags: ["action-account-register"],
-    apiPatterns: [/account/i, /accnt/i],
-    methodPatterns: [/account/i, /accnt/i]
-  });
-
   const insertFlow = pickBestFlow({
     tags: ["action-submit", "action-write", "action-register"],
     apiPatterns: [/\/insert(?:\/|$)/i, /\/apply(?:\/|$)/i, /\/submit(?:\/|$)/i, /\/save/i, /\/proc(?:\/|$)/i],
-    methodPatterns: [/insert/i, /apply/i, /submit/i, /save/i, /regist/i, /register/i]
+    methodPatterns: [/insert/i, /apply/i, /submit/i, /save/i, /regist/i, /register/i],
+    avoidApiPatterns: [/\/doc(?:\/|$)/i, /agreement/i, /upload/i, /pdf/i, /file/i, /attachment/i]
   });
 
   const docInsertFlow = pickBestFlow({
-    tags: ["action-doc", "action-agreement"],
+    tags: ["action-document", "action-doc", "action-agreement"],
     apiPatterns: [/\/doc(?:\/|$)/i, /agreement/i, /owner\/agreement/i, /upload/i, /pdf/i],
     methodPatterns: [/doc/i, /agreement/i, /upload/i, /pdf/i]
   });
 
+  const fallbackPhaseFlow = (phase: DownstreamFlowTrace["phase"]): LinkedFlowEvidence | undefined =>
+    [...canonicalFlows]
+      .filter((candidate) => classifyFlowPhase(candidate) === phase)
+      .sort((a, b) => b.confidence - a.confidence)[0];
+
+  const orderedFlowCandidates = unique(
+    [
+      checkFlow ?? fallbackPhaseFlow("action-check"),
+      inquiryFlow ?? fallbackPhaseFlow("action-read"),
+      insertFlow ?? (classifyFlowPhase(primary) === "action-write" ? primary : undefined) ?? fallbackPhaseFlow("action-write"),
+      docInsertFlow ?? (classifyFlowPhase(primary) === "action-document" ? primary : undefined) ?? fallbackPhaseFlow("action-document"),
+      primary,
+      ...canonicalFlows
+    ]
+      .filter((candidate): candidate is LinkedFlowEvidence => Boolean(candidate))
+      .map((candidate) => `${candidate.apiUrl}|${candidate.backendControllerMethod}`)
+  )
+    .map((key) =>
+      [
+        checkFlow,
+        inquiryFlow,
+        insertFlow,
+        docInsertFlow,
+        classifyFlowPhase(primary) === "action-write" ? primary : undefined,
+        classifyFlowPhase(primary) === "action-document" ? primary : undefined,
+        primary,
+        ...canonicalFlows
+      ].find((candidate) => candidate && `${candidate.apiUrl}|${candidate.backendControllerMethod}` === key)
+    )
+    .filter((candidate): candidate is LinkedFlowEvidence => Boolean(candidate));
+
   const orderedFlows: LinkedFlowEvidence[] = [];
   const seenFlowKeys = new Set<string>();
-  for (const candidate of [checkFlow, inquiryFlow, accountFlow, insertFlow, docInsertFlow, primary]) {
+  for (const candidate of orderedFlowCandidates) {
     if (!candidate) {
       continue;
     }
@@ -649,6 +698,9 @@ export function buildDeterministicFlowAnswer(options: {
     }
     seenFlowKeys.add(key);
     orderedFlows.push(candidate);
+    if (orderedFlows.length >= 4) {
+      break;
+    }
   }
   const traceByPhase = new Map<string, DownstreamFlowTrace>();
   for (const trace of options.downstreamTraces ?? []) {
@@ -685,13 +737,7 @@ export function buildDeterministicFlowAnswer(options: {
   const answerLines = orderedFlows.map((flow, index) => {
     const stepPrefix = `${index + 1}) `;
     const phaseTrace =
-      (/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment/i.test(flow.apiUrl) ? traceByPhase.get("action-document") : undefined) ??
-      (/\/insert(?:\/|$)|\/apply(?:\/|$)|\/submit(?:\/|$)|\/save(?:\/|$)|\/proc(?:\/|$)|\/update(?:\/|$)|register|regist/i.test(flow.apiUrl) &&
-      !(/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment/i.test(flow.apiUrl))
-        ? traceByPhase.get("action-write")
-        : undefined) ??
-      (/\/check(?:\/|$)|\/status(?:\/|$)|verify|validate/i.test(flow.apiUrl) ? traceByPhase.get("action-check") : undefined) ??
-      (/inqury|inquiry|load|select|get|read/i.test(flow.apiUrl) ? traceByPhase.get("action-read") : undefined) ??
+      traceByPhase.get(classifyFlowPhase(flow)) ??
       flow.serviceHints.map((hint) => traceByService.get(hint)).find(Boolean);
     const servicePhrase =
       flow.serviceHints.length > 0
@@ -711,6 +757,7 @@ export function buildDeterministicFlowAnswer(options: {
   const flowSpecificMatches = unique(orderedFlows.flatMap((flow) => specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag))));
   const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
   const droppedIncoherentFlowCount = countIncoherentFlows(options.linkedFlowEvidence, questionTags);
+  const canonicalNamespaceCount = countDistinctTopNamespaces(canonicalFlows);
   let confidence = 0.34;
   confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
   confidence += orderedFlows.length >= 2 ? 0.08 : 0.03;
@@ -735,13 +782,19 @@ export function buildDeterministicFlowAnswer(options: {
   if (droppedIncoherentFlowCount > 0) {
     confidence -= Math.min(0.18, droppedIncoherentFlowCount * 0.04);
   }
+  if (canonicalNamespaceCount > 1) {
+    confidence -= Math.min(0.16, (canonicalNamespaceCount - 1) * 0.08);
+  }
+  if (orderedFlows.length <= 1 || distinctFlowActions.length <= 1) {
+    confidence = Math.min(confidence, 0.72);
+  }
   if ((options.downstreamTraces ?? []).length === 0) {
-    confidence = Math.min(confidence, 0.78);
+    confidence = Math.min(confidence, 0.74);
   }
   if (specificQuestionTags.length > 0 && primarySpecificMatches.length === 0) {
     confidence = Math.min(confidence, 0.62);
   }
-  confidence = Math.max(0.18, Math.min(0.86, Number(confidence.toFixed(2))));
+  confidence = Math.max(0.18, Math.min(0.82, Number(confidence.toFixed(2))));
   const answer = [
     ...answerLines,
     mentionedEaiIds.length > 0
@@ -767,6 +820,7 @@ export function buildDeterministicFlowAnswer(options: {
       ...(specificQuestionTags.length > 0 && primarySpecificMatches.length === 0
         ? ["specific-capability-mismatch"]
         : []),
+      ...(canonicalNamespaceCount > 1 ? ["mixed-namespace-evidence"] : []),
       ...(droppedIncoherentFlowCount > 0 ? ["incoherent-flow-filtered"] : []),
       ...((options.downstreamTraces ?? []).some((trace) => trace.steps.length > 0)
         ? ["downstream-static-trace"]

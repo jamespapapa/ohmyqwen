@@ -4903,10 +4903,10 @@ function scoreOwnedCallCandidate(options: { owner: string; method: string; focus
   const method = options.method.toLowerCase();
   let score = 0;
 
-  if (/service|dao|mapper|client|support/.test(owner)) {
+  if (/service|dao|mapper|client|support|helper|handler|manager|facade|validator|guard|repository/.test(owner)) {
     score += 20;
   }
-  if (/save|submit|claim|benefit|check|apply|insert|delete|cancel|select|callf/.test(method)) {
+  if (/save|submit|check|apply|insert|delete|cancel|select|get|load|query|update|modify|verify|validate|register|regist|callf|callmodc/.test(method)) {
     score += 40;
   }
   if (/sendlms|debug|log|trace|print/.test(method)) {
@@ -5048,10 +5048,10 @@ function scoreStructureSymbolForAsk(options: {
   if (options.strategy === "module_flow_topdown" && /controller|service/.test(entryPath)) {
     score += 24;
   }
-  if (/claim|benefit|acc|loan|credit|contract|limit|member|auth|session|pension|fund|submit|save|cancel|upload|doc|file|apply|receipt|account|check|select/.test(symbolName)) {
+  if (/save|submit|insert|delete|cancel|upload|doc|file|apply|receipt|account|check|select|get|load|query|status|session|cache|token|auth|verify|register|regist|request|response|callback|bridge|guard|validator|process|worker|queue/.test(symbolName)) {
     score += 20;
   }
-  if (/claim|benefit|acc|loan|credit|contract|member|auth|pension|fund/.test(className)) {
+  if (/service|controller|manager|client|mapper|repository|dao|validator|guard|worker|processor|dispatcher|handler|session|cache|redis|token|auth|query|model|entity/.test(className)) {
     score += 10;
   }
 
@@ -8195,7 +8195,7 @@ export async function askServerProject(options: {
               questionTypeDecision.type === "symbol_deep_trace"
                 ? "특정 심볼/메서드 추적 질문입니다. target symbol -> direct callee -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 메서드를 최소 1개 이상 직접 언급하세요."
                 : questionTypeDecision.type === "cross_layer_flow"
-                ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요. 질문의 업무 capability(예: 보험금 청구)와 맞는 flow만 사용하고, 인접 업무 플로우로 대체하지 마세요."
+                ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요. 질문의 target capability/action과 맞는 flow만 사용하고, 인접 업무 플로우로 대체하지 마세요."
                 : questionTypeDecision.type === "module_role_explanation"
                 ? "모듈 역할 설명 질문입니다. 이 모듈의 책임, 진입점, 핵심 클래스/서비스, 처리 대상, 외부 연계를 근거로 설명하세요. 단순 구조 나열이 아니라 무엇을 담당하는 프로젝트인지 명확히 써야 합니다."
                 : questionTypeDecision.type === "process_or_batch_trace"

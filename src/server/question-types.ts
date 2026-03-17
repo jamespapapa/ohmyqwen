@@ -62,11 +62,51 @@ function normalizeSignals(options: {
 }
 
 function hasSpecificCapabilitySignal(signals: string[]): boolean {
+  const genericSignals = new Set([
+    "frontend-flow",
+    "gateway-routing",
+    "backend-controller",
+    "service-layer",
+    "data-persistence",
+    "async-process",
+    "control-guard",
+    "external-integration",
+    "state-store",
+    "config-resource"
+  ]);
+  const genericTokens = new Set([
+    "general",
+    "gateway-api",
+    "frontend",
+    "backend",
+    "route",
+    "screen",
+    "controller",
+    "service",
+    "api",
+    "flow",
+    "logic",
+    "module",
+    "process",
+    "data",
+    "resource",
+    "state",
+    "store"
+  ]);
   return signals.some((signal) => {
-    if (/^(channel:|module:|process:)/.test(signal)) {
+    if (signal.startsWith("action-")) {
       return false;
     }
-    return !/^(loan|fund|benefit-claim|retire-pension|member-auth|general|gateway-api)$/.test(signal);
+    if (genericSignals.has(signal) || genericTokens.has(signal)) {
+      return false;
+    }
+    if (/^(channel:|module:|process:|concept:)/.test(signal)) {
+      return true;
+    }
+    if (signal.includes(":")) {
+      return false;
+    }
+    return signal.length >= 4;
   });
 }
 

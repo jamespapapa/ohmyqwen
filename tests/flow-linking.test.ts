@@ -248,6 +248,63 @@ describe("flow linking", () => {
     expect(output.confidence).toBeLessThanOrEqual(0.78);
   });
 
+  it("orders canonical flows by generic action progression instead of discovery order", () => {
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write", "action-document"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+          screenCode: "MDP-MYINT020220M",
+          apiUrl: "/gw/api/insurance/benefit/claim/doc/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/doc/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["BenefitClaimService.saveBenefitClaimDoc"],
+          capabilityTags: ["insurance", "benefit", "claim", "document", "action-document"],
+          confidence: 0.84,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/benefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaim",
+          serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "insert", "action-write"],
+          confidence: 0.86,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M",
+          screenCode: "MDP-MYINT020200M",
+          apiUrl: "/gw/api/insurance/benefit/claim/inquiry",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/inquiry",
+          backendControllerMethod: "BenefitClaimController.benefitClaimInquiry",
+          serviceHints: ["BenefitClaimService.loadBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "inquiry", "action-read"],
+          confidence: 0.83,
+          reasons: []
+        }
+      ]
+    });
+
+    const inquiryIndex = output.answer.indexOf("MDP-MYINT020200M");
+    const insertIndex = output.answer.indexOf("MDP-MYINT020210M");
+    const docInsertIndex = output.answer.indexOf("MDP-MYINT020220M");
+
+    expect(inquiryIndex).toBeGreaterThanOrEqual(0);
+    expect(insertIndex).toBeGreaterThanOrEqual(0);
+    expect(docInsertIndex).toBeGreaterThan(inquiryIndex);
+    expect(docInsertIndex).toBeGreaterThan(insertIndex);
+  });
+
   it("adds mismatch caveats and lowers confidence when only adjacent flow evidence is available", () => {
     const output = buildDeterministicFlowAnswer({
       question: "보험금 청구 insert 흐름을 프론트부터 백엔드까지 추적해줘.",
