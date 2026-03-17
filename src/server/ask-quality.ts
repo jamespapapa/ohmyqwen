@@ -8,6 +8,7 @@ import {
 } from "./flow-capabilities.js";
 import {
   classifyAskQuestionType,
+  inferQuestionActionHints,
   getAskQuestionTypeContract,
   type AskQuestionType,
   type AskStrategyLike
@@ -90,6 +91,45 @@ function topLevelModulesFromPaths(paths: string[]): string[] {
   return unique(paths.map((entry) => entry.replace(/\\/g, "/").split("/")[0] ?? ""));
 }
 
+function isDirectActionHint(action: string): boolean {
+  return [
+    "action-auth",
+    "action-register",
+    "action-write",
+    "action-update",
+    "action-delete",
+    "action-callback",
+    "action-token"
+  ].includes(action);
+}
+
+function actionAnswerPatterns(action: string): RegExp {
+  switch (action) {
+    case "action-auth":
+      return /(auth|authenticate|login|signin|verify|cert|로그인|본인확인|검증|토큰)/i;
+    case "action-register":
+      return /(등록|가입|register|regist|signup|join|enroll)/i;
+    case "action-status-read":
+      return /(상태|정보|status|state|info|lookup)/i;
+    case "action-read":
+      return /(조회|확인|get|read|query|select|lookup|load|inquiry|inqury)/i;
+    case "action-write":
+      return /(저장|생성|추가|save|insert|create|write|persist|set)/i;
+    case "action-update":
+      return /(수정|변경|갱신|update|modify|change|patch)/i;
+    case "action-delete":
+      return /(삭제|제거|만료|delete|remove|clear|expire|evict)/i;
+    case "action-callback":
+      return /(콜백|callback|webhook|event|notify)/i;
+    case "action-state-store":
+      return /(세션|캐시|redis|session|cache)/i;
+    case "action-token":
+      return /(토큰|재발급|token|refresh)/i;
+    default:
+      return /$^/;
+  }
+}
+
 export function qualityGateForAskOutput(options: {
   output: AskQualityOutput;
   question: string;
@@ -106,6 +146,7 @@ export function qualityGateForAskOutput(options: {
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
   matchedOntologyNodeTypes?: string[];
   matchedOntologyNodeLabels?: string[];
+  matchedOntologyNodeActions?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -117,6 +158,7 @@ export function qualityGateForAskOutput(options: {
   const moduleCandidates = options.moduleCandidates ?? [];
   const matchedOntologyNodeTypes = unique(options.matchedOntologyNodeTypes ?? []);
   const matchedOntologyNodeLabels = unique(options.matchedOntologyNodeLabels ?? []);
+  const matchedOntologyNodeActions = unique(options.matchedOntologyNodeActions ?? []);
   const questionType =
     options.questionType ??
     classifyAskQuestionType({
@@ -126,6 +168,11 @@ export function qualityGateForAskOutput(options: {
       questionTags: options.questionTags,
       matchedKnowledgeIds: options.matchedKnowledgeIds
     }).type;
+  const questionActionHints = inferQuestionActionHints(options.question, [
+    ...(options.questionTags ?? []),
+    ...(options.matchedKnowledgeIds ?? [])
+  ]);
+  const directQuestionActions = questionActionHints.filter(isDirectActionHint);
   const contract = getAskQuestionTypeContract(questionType);
 
   if (options.output.answer.trim().length < 80) {
@@ -199,6 +246,19 @@ export function qualityGateForAskOutput(options: {
     if (contract.requireBusinessTraceDetail && directTraceSignals.length > 0 && !answerMentionsAny(options.output.answer, directTraceSignals)) {
       failures.push("missing-business-trace-detail");
     }
+    if (
+      directQuestionActions.length > 0 &&
+      matchedOntologyNodeActions.length > 0 &&
+      !directQuestionActions.some((action) => matchedOntologyNodeActions.includes(action))
+    ) {
+      failures.push("missing-aligned-action-evidence");
+    }
+    if (
+      directQuestionActions.length > 0 &&
+      !directQuestionActions.some((action) => actionAnswerPatterns(action).test(options.output.answer))
+    ) {
+      failures.push("missing-aligned-action-detail");
+    }
   }
 
   if (questionType === "module_role_explanation") {
@@ -252,6 +312,19 @@ export function qualityGateForAskOutput(options: {
     }
     if (channelSignals.length > 0 && !answerMentionsAny(options.output.answer, channelSignals)) {
       failures.push("missing-channel-boundary-detail");
+    }
+    if (
+      directQuestionActions.length > 0 &&
+      matchedOntologyNodeActions.length > 0 &&
+      !directQuestionActions.some((action) => matchedOntologyNodeActions.includes(action))
+    ) {
+      failures.push("missing-aligned-action-evidence");
+    }
+    if (
+      directQuestionActions.length > 0 &&
+      !directQuestionActions.some((action) => actionAnswerPatterns(action).test(options.output.answer))
+    ) {
+      failures.push("missing-aligned-action-detail");
     }
   }
 

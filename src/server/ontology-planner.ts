@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type AskQuestionType } from "./question-types.js";
+import { inferQuestionActionHints, type AskQuestionType } from "./question-types.js";
 import {
   OntologyGraphSnapshotSchema,
   type OntologyEdge,
@@ -94,24 +94,60 @@ function countOverlap(tokens: string[], corpus: string[]): number {
   return overlap;
 }
 
+function isDirectActionHint(action: string): boolean {
+  return [
+    "action-auth",
+    "action-register",
+    "action-write",
+    "action-update",
+    "action-delete",
+    "action-callback",
+    "action-token"
+  ].includes(action);
+}
+
+function actionAlignmentScore(nodeActions: string[], desiredActions: string[]): { delta: number; reasons: string[] } {
+  if (nodeActions.length === 0 || desiredActions.length === 0) {
+    return { delta: 0, reasons: [] };
+  }
+
+  const overlaps = desiredActions.filter((action) => nodeActions.includes(action));
+  if (overlaps.length > 0) {
+    return {
+      delta: overlaps.length * 1.35,
+      reasons: [`actions:${overlaps.slice(0, 4).join(",")}`]
+    };
+  }
+
+  const directDesired = desiredActions.filter(isDirectActionHint);
+  if (directDesired.length > 0) {
+    return {
+      delta: -1.45,
+      reasons: ["action-mismatch"]
+    };
+  }
+
+  return { delta: -0.55, reasons: ["action-mismatch"] };
+}
+
 function preferredNodeTypes(questionType: AskQuestionType): string[] {
   switch (questionType) {
     case "cross_layer_flow":
-      return ["route", "api", "controller", "service", "path", "retrieval-unit", "knowledge-input"];
+      return ["route", "api", "controller", "service", "control-guard", "path", "retrieval-unit", "knowledge-input"];
     case "symbol_deep_trace":
-      return ["symbol", "service", "controller", "retrieval-unit", "path"];
+      return ["symbol", "service", "controller", "control-guard", "retrieval-unit", "path"];
     case "module_role_explanation":
       return ["module", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "process_or_batch_trace":
       return ["service", "path", "knowledge-input", "retrieval-unit", "module"];
     case "channel_or_partner_integration":
-      return ["route", "api", "controller", "service", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
+      return ["route", "api", "controller", "service", "control-guard", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "state_store_schema":
-      return ["data-store", "data-model", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
+      return ["data-store", "data-model", "data-query", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
     case "config_or_resource_explanation":
-      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-model", "data-table", "cache-key", "service", "symbol"];
+      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-model", "data-query", "data-table", "cache-key", "service", "symbol"];
     case "business_capability_trace":
-      return ["service", "controller", "api", "route", "retrieval-unit", "knowledge-cluster"];
+      return ["service", "controller", "control-guard", "api", "route", "retrieval-unit", "knowledge-cluster"];
     case "domain_capability_overview":
       return ["module", "knowledge-cluster", "knowledge-input", "service", "retrieval-unit"];
   }
@@ -198,6 +234,10 @@ export function rankOntologyNodesForQuestion(options: {
   const snapshot = OntologyGraphSnapshotSchema.parse(options.snapshot);
   const questionTokens = tokenize(options.question);
   const signalTokens = unique([...(options.questionTags ?? []), ...(options.moduleCandidates ?? [])]).flatMap((item) => tokenize(item));
+  const desiredActions = inferQuestionActionHints(options.question, [
+    ...(options.questionTags ?? []),
+    ...(options.matchedKnowledgeIds ?? [])
+  ]);
   const preferredTypes = new Set(preferredNodeTypes(options.questionType));
   const matchedKnowledge = new Set(options.matchedKnowledgeIds ?? []);
   const matchedUnits = new Set(options.matchedRetrievalUnitIds ?? []);
@@ -218,6 +258,9 @@ export function rankOntologyNodesForQuestion(options: {
 
       let score = overlap * 1.45 + signalOverlap * 1.1 + statusWeight(node.metadata.validatedStatus);
       const reasons = [`status:${node.metadata.validatedStatus}`];
+      const actionAlignment = actionAlignmentScore(node.metadata.actions, desiredActions);
+      score += actionAlignment.delta;
+      reasons.push(...actionAlignment.reasons);
 
       if (preferredTypes.has(node.type)) {
         score += 1.5;

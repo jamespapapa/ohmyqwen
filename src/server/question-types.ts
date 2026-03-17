@@ -115,6 +115,44 @@ function looksLikeBroadOverview(question: string): boolean {
   );
 }
 
+export function inferQuestionActionHints(question: string, extraSignals: string[] = []): string[] {
+  const text = `${question} ${extraSignals.join(" ")}`.toLowerCase();
+  const actions: string[] = [];
+
+  if (/(login|signin|auth|authenticate|cert|verify|인증|로그인|본인확인|회원 인증)/.test(text)) {
+    actions.push("action-auth");
+  }
+  if (/(register|regist|signup|join|enroll|등록|가입)/.test(text)) {
+    actions.push("action-register");
+  }
+  if (/(status|state|info|lookup|상태|현황|정보)/.test(text)) {
+    actions.push("action-status-read");
+  }
+  if (/(select|get|load|read|inquiry|inqury|query|조회|확인|가져오)/.test(text)) {
+    actions.push("action-read");
+  }
+  if (/(save|insert|create|add|persist|write|set|저장|생성|추가|기록)/.test(text)) {
+    actions.push("action-write");
+  }
+  if (/(update|modify|change|patch|갱신|수정|변경)/.test(text)) {
+    actions.push("action-update");
+  }
+  if (/(delete|remove|clear|expire|evict|삭제|제거|만료)/.test(text)) {
+    actions.push("action-delete");
+  }
+  if (/(callback|webhook|notify|event|콜백|웹훅|알림|이벤트)/.test(text)) {
+    actions.push("action-callback");
+  }
+  if (/(session|redis|cache|세션|캐시)/.test(text)) {
+    actions.push("action-state-store");
+  }
+  if (/(token|refresh|토큰|재발급)/.test(text)) {
+    actions.push("action-token");
+  }
+
+  return unique(actions);
+}
+
 export function classifyAskQuestionType(options: {
   question: string;
   strategy?: AskStrategyLike;

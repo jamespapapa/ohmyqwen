@@ -131,4 +131,81 @@ describe("ontology planner", () => {
 
     expect(ranked[0]?.projection.id).toBe("projection:code");
   });
+
+  it("prefers action-aligned nodes over adjacent status-read nodes", () => {
+    const snapshot = OntologyGraphSnapshotSchema.parse({
+      version: 1,
+      generatedAt: "2026-03-17T00:00:00.000Z",
+      workspaceDir: "/workspace",
+      nodes: [
+        {
+          id: "controller:MemberStatusController.getMemberRedisInfo",
+          type: "controller",
+          label: "MemberStatusController.getMemberRedisInfo",
+          summary: "member redis status info",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: ["monimo"],
+            actions: ["action-read", "action-status-read", "action-state-store"],
+            moduleRoles: [],
+            processRoles: [],
+            confidence: 0.86,
+            evidencePaths: ["dcp-member/src/MemberStatusController.java"],
+            sourceType: "ontology-review",
+            validatedStatus: "validated"
+          },
+          attributes: {}
+        },
+        {
+          id: "controller:RegisteUseDcpChnelController.registe",
+          type: "controller",
+          label: "RegisteUseDcpChnelController.registe",
+          summary: "monimo member registration/authentication flow",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: ["monimo"],
+            actions: ["action-auth", "action-register"],
+            moduleRoles: ["bridge"],
+            processRoles: [],
+            confidence: 0.84,
+            evidencePaths: ["dcp-member/src/RegisteUseDcpChnelController.java"],
+            sourceType: "ontology-review",
+            validatedStatus: "validated"
+          },
+          attributes: {}
+        }
+      ],
+      edges: [],
+      summary: {
+        nodeCount: 2,
+        edgeCount: 0,
+        nodeTypeCounts: { controller: 2 },
+        edgeTypeCounts: {},
+        feedbackNodeCount: 0,
+        replayNodeCount: 0,
+        pathNodeCount: 0,
+        validatedNodeCount: 2,
+        candidateNodeCount: 0,
+        staleNodeCount: 0,
+        contestedNodeCount: 0,
+        deprecatedNodeCount: 0,
+        topDomains: [{ id: "member-auth", count: 2 }],
+        topChannels: [{ id: "monimo", count: 2 }]
+      }
+    });
+
+    const ranked = rankOntologyNodesForQuestion({
+      snapshot,
+      question: "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.",
+      questionType: "channel_or_partner_integration",
+      questionTags: ["channel:monimo", "member-auth"]
+    });
+
+    expect(ranked[0]?.node.id).toBe("controller:RegisteUseDcpChnelController.registe");
+    expect(ranked.find((item) => item.node.id === "controller:MemberStatusController.getMemberRedisInfo")?.reasons).toContain(
+      "action-mismatch"
+    );
+  });
 });

@@ -3,7 +3,8 @@ import {
   buildRetrievalUnitSupportCandidates,
   buildRetrievalUnitMarkdown,
   buildRetrievalUnitSnapshot,
-  rankRetrievalUnitsForQuestion
+  rankRetrievalUnitsForQuestion,
+  RetrievalUnitSnapshotSchema
 } from "../src/server/retrieval-units.js";
 import type { KnowledgeSchemaSnapshot } from "../src/server/knowledge-schema.js";
 
@@ -654,6 +655,190 @@ describe("retrieval unit standardization", () => {
 
     expect(ranked[0]?.unit.type).toBe("resource-schema");
     expect(ranked[0]?.unit.searchText.join(" ")).toMatch(/redis|member\.login\.status|tb_member_session/i);
+  });
+
+  it("prefers action-aligned flow units over adjacent status-read flow units", () => {
+    const actionSnapshot = RetrievalUnitSnapshotSchema.parse({
+      version: 1,
+      generatedAt: "2026-03-17T00:00:00.000Z",
+      workspaceDir: "/workspace",
+      units: [
+        {
+          id: "unit:flow:status",
+          type: "flow",
+          title: "member status read flow",
+          summary: "redis info status lookup flow",
+          confidence: 0.86,
+          validatedStatus: "validated",
+          entityIds: ["controller:MemberStatusController.getMemberRedisInfo"],
+          edgeIds: [],
+          searchText: ["member redis status info", "/member/user/redis/info"],
+          domains: ["member-auth"],
+          subdomains: [],
+          channels: ["monimo"],
+          actions: ["action-read", "action-status-read", "action-state-store"],
+          moduleRoles: [],
+          processRoles: [],
+          evidencePaths: ["dcp-member/src/MemberStatusController.java"]
+        },
+        {
+          id: "unit:flow:auth",
+          type: "flow",
+          title: "member auth registration flow",
+          summary: "monimo authentication and registration flow",
+          confidence: 0.83,
+          validatedStatus: "validated",
+          entityIds: ["controller:RegisteUseDcpChnelController.registe"],
+          edgeIds: [],
+          searchText: ["member auth register bridge", "/member/monimo/registe"],
+          domains: ["member-auth"],
+          subdomains: [],
+          channels: ["monimo"],
+          actions: ["action-auth", "action-register"],
+          moduleRoles: ["bridge"],
+          processRoles: [],
+          evidencePaths: ["dcp-member/src/RegisteUseDcpChnelController.java"]
+        }
+      ],
+      summary: {
+        unitCount: 2,
+        unitTypeCounts: { flow: 2 },
+        unitStatusCounts: { validated: 2 },
+        topDomains: [{ id: "member-auth", count: 2 }],
+        topChannels: [{ id: "monimo", count: 2 }],
+        topModuleRoles: [{ id: "bridge", count: 1 }]
+      }
+    });
+
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: actionSnapshot,
+      question: "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.",
+      questionType: "channel_or_partner_integration",
+      questionTags: ["channel:monimo", "member-auth"]
+    });
+
+    expect(ranked[0]?.unit.id).toBe("unit:flow:auth");
+    expect(ranked.find((item) => item.unit.id === "unit:flow:status")?.reasons).toContain("action-mismatch");
+  });
+
+  it("creates symbol-block retrieval units for control-guard nodes", () => {
+    const guardSnapshot: KnowledgeSchemaSnapshot = {
+      ...snapshot,
+      entities: [
+        ...snapshot.entities,
+        {
+          id: "control-guard:memberauthvalidator",
+          type: "control-guard",
+          label: "MemberAuthValidator",
+          summary: "member auth guard",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: ["monimo"],
+            actions: ["action-auth"],
+            moduleRoles: ["validation-control"],
+            processRoles: [],
+            confidence: 0.82,
+            evidencePaths: ["dcp-member/src/main/java/com/example/MemberAuthValidator.java"],
+            sourceType: "structure-index",
+            validatedStatus: "derived"
+          },
+          attributes: {
+            path: "dcp-member/src/main/java/com/example/MemberAuthValidator.java",
+            guardName: "MemberAuthValidator"
+          }
+        }
+      ],
+      edges: [
+        ...snapshot.edges,
+        {
+          id: "edge:declares:file:guard",
+          type: "declares",
+          fromId: "module:dcp-member",
+          toId: "control-guard:memberauthvalidator",
+          label: "module declares guard",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: ["monimo"],
+            actions: ["action-auth"],
+            moduleRoles: ["validation-control"],
+            processRoles: [],
+            confidence: 0.7,
+            evidencePaths: ["dcp-member/src/main/java/com/example/MemberAuthValidator.java"],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          },
+          attributes: {}
+        }
+      ]
+    };
+
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: guardSnapshot });
+    const guardUnit = units.units.find((unit) => unit.title === "MemberAuthValidator");
+
+    expect(guardUnit?.type).toBe("symbol-block");
+    expect(guardUnit?.actions).toContain("action-auth");
+  });
+
+  it("creates symbol-block retrieval units for data-query nodes", () => {
+    const querySnapshot: KnowledgeSchemaSnapshot = {
+      ...snapshot,
+      entities: [
+        ...snapshot.entities,
+        {
+          id: "data-query:findactivesession",
+          type: "data-query",
+          label: "findActiveSession",
+          summary: "repository query for active session lookup",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: [],
+            actions: ["action-read"],
+            moduleRoles: ["data-persistence"],
+            processRoles: [],
+            confidence: 0.84,
+            evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionRepository.java"],
+            sourceType: "structure-index",
+            validatedStatus: "derived"
+          },
+          attributes: {
+            path: "dcp-member/src/main/java/com/example/MemberSessionRepository.java",
+            queryName: "findActiveSession"
+          }
+        }
+      ],
+      edges: [
+        ...snapshot.edges,
+        {
+          id: "edge:declares:file:data-query",
+          type: "declares",
+          fromId: "module:dcp-member",
+          toId: "data-query:findactivesession",
+          label: "module declares query",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: [],
+            actions: ["action-read"],
+            moduleRoles: ["data-persistence"],
+            processRoles: [],
+            confidence: 0.7,
+            evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionRepository.java"],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          },
+          attributes: {}
+        }
+      ]
+    };
+
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: querySnapshot });
+    const queryUnit = units.units.find((unit) => unit.title === "findActiveSession");
+
+    expect(queryUnit?.type).toBe("symbol-block");
+    expect(queryUnit?.actions).toContain("action-read");
   });
 
   it("preserves stale lifecycle status for stale learned-knowledge clusters and penalizes them", () => {

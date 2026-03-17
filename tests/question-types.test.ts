@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyAskQuestionType,
+  inferQuestionActionHints,
   getAskQuestionTypeContract,
   getAskQuestionTypeRetrievalContract
 } from "../src/server/question-types.js";
@@ -107,5 +108,14 @@ describe("question types", () => {
     const storeSchema = getAskQuestionTypeRetrievalContract("state_store_schema");
     expect(storeSchema.preferredUnitTypes[0]).toBe("resource-schema");
     expect(storeSchema.queryHints).toContain("redis");
+  });
+
+  it("extracts generic action hints from implementation questions", () => {
+    expect(inferQuestionActionHints("모니모 회원 인증 로직이 어떻게 구현되는지 설명해줘.")).toEqual(
+      expect.arrayContaining(["action-auth"])
+    );
+    expect(inferQuestionActionHints("회원 상태 조회와 redis 세션 정보를 확인해줘.")).toEqual(
+      expect.arrayContaining(["action-status-read", "action-state-store"])
+    );
   });
 });

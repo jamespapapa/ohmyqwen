@@ -201,6 +201,75 @@ describe("ask quality gate", () => {
     expect(gate.passed).toBe(true);
   });
 
+  it("fails channel integration answers when only status-read actions back the evidence", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "모니모 회원 인증은 /member/user/redis/info 를 통해 Redis 세션 상태를 조회하는 구조로 구현된다.",
+        confidence: 0.68,
+        evidence: ["redis info flow", "gateway bridge flow"],
+        caveats: []
+      },
+      question: "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.",
+      questionType: "channel_or_partner_integration",
+      hitPaths: [
+        "dcp-member/src/main/java/com/acme/MemberStatusController.java",
+        "dcp-member/src/main/java/com/acme/RedisSessionSupport.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-member/src/main/java/com/acme/MemberStatusController.java",
+          reason: "callee:MemberStatusController.getMemberRedisInfo",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      matchedOntologyNodeTypes: ["controller", "data-store", "cache-key"],
+      matchedOntologyNodeLabels: ["MemberStatusController.getMemberRedisInfo", "Redis Store", "member.login.status"],
+      matchedOntologyNodeActions: ["action-read", "action-status-read", "action-state-store"],
+      questionTags: ["channel:monimo", "member-auth"]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-aligned-action-evidence");
+    expect(gate.failures).toContain("missing-aligned-action-detail");
+  });
+
+  it("passes channel integration answers when auth/register actions are explicit", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "모니모 회원 인증은 /gw/api/member/monimo/registe 브릿지 호출 뒤 RegisteUseDcpChnelController.registe 와 EmbededMemberLoginService.authenticate 가 회원 등록 및 인증 단계를 수행하는 구조다.",
+        confidence: 0.81,
+        evidence: ["channel flow", "service flow"],
+        caveats: []
+      },
+      question: "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.",
+      questionType: "channel_or_partner_integration",
+      hitPaths: [
+        "dcp-member/src/main/java/com/acme/RegisteUseDcpChnelController.java",
+        "dcp-member/src/main/java/com/acme/EmbededMemberLoginService.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-member/src/main/java/com/acme/EmbededMemberLoginService.java",
+          reason: "callee:EmbededMemberLoginService.authenticate",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      matchedOntologyNodeTypes: ["controller", "service"],
+      matchedOntologyNodeLabels: [
+        "RegisteUseDcpChnelController.registe",
+        "EmbededMemberLoginService.authenticate"
+      ],
+      matchedOntologyNodeActions: ["action-auth", "action-register"],
+      questionTags: ["channel:monimo", "member-auth"]
+    });
+
+    expect(gate.passed).toBe(true);
+  });
+
   it("fails module-scoped answers when hydrated evidence does not stay inside the requested module", () => {
     const gate = qualityGateForAskOutput({
       output: {

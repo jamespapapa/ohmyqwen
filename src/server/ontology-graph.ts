@@ -32,8 +32,10 @@ const OntologyNodeTypeSchema = z.enum([
   "eai-interface",
   "data-store",
   "data-model",
+  "data-query",
   "data-table",
   "cache-key",
+  "control-guard",
   "knowledge-cluster",
   "retrieval-unit",
   "knowledge-input",
@@ -55,6 +57,7 @@ const OntologyEdgeTypeSchema = z.enum([
   "maps-to-table",
   "queries-table",
   "uses-cache-key",
+  "validates",
   "depends-on",
   "belongs-to-domain",
   "belongs-to-channel",
@@ -258,9 +261,11 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "service":
     case "eai-interface":
     case "data-store":
+    case "control-guard":
     case "knowledge-cluster":
       return 110;
     case "data-model":
+    case "data-query":
     case "data-table":
     case "cache-key":
       return 95;
@@ -285,6 +290,7 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "maps-to-table":
     case "queries-table":
     case "uses-cache-key":
+    case "validates":
     case "supports-module-role":
       return 105;
     case "contains":

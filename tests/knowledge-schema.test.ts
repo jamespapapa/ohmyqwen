@@ -303,6 +303,43 @@ describe("knowledge schema foundation", () => {
             methods: [{ name: "jellyPayRes", className: "MonimoAsyncController", line: 25 }],
             functions: []
           },
+          "dcp-member/src/main/java/com/example/MemberAuthValidator.java": {
+            path: "dcp-member/src/main/java/com/example/MemberAuthValidator.java",
+            packageName: "com.example",
+            summary: "member auth validator",
+            classes: [{ name: "MemberAuthValidator", line: 9 }],
+            methods: [{ name: "validateSessionToken", className: "MemberAuthValidator", line: 21 }],
+            functions: [],
+            resources: {
+              storeKinds: [],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              dbAccessTypes: [],
+              dbModelNames: [],
+              dbTableNames: [],
+              controlGuardNames: ["MemberAuthValidator", "validateSessionToken"]
+            }
+          },
+          "dcp-member/src/main/java/com/example/MemberSessionRepository.java": {
+            path: "dcp-member/src/main/java/com/example/MemberSessionRepository.java",
+            packageName: "com.example",
+            summary: "member session repository",
+            classes: [{ name: "MemberSessionRepository", line: 12 }],
+            methods: [{ name: "findActiveSession", className: "MemberSessionRepository", line: 28 }],
+            functions: [],
+            resources: {
+              storeKinds: ["database"],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              dbAccessTypes: ["MemberSessionRepository"],
+              dbModelNames: [],
+              dbTableNames: ["TB_MONIMO_MEMBER"],
+              dbQueryNames: ["findActiveSession"],
+              controlGuardNames: []
+            }
+          },
           "dcp-member/src/main/java/com/example/MonimoUntyPlatfMbrBasDaoModel.java": {
             path: "dcp-member/src/main/java/com/example/MonimoUntyPlatfMbrBasDaoModel.java",
             packageName: "com.example.model",
@@ -346,6 +383,9 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "cache-key:member.login.status")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "MemberAuthValidator")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "validateSessionToken")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:candidate:channel:monimo")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:pack:member-auth")).toBe(true);
 
@@ -416,6 +456,14 @@ describe("knowledge schema foundation", () => {
       snapshot.edges.some(
         (edge) =>
           edge.type === "queries-table" &&
+          edge.fromId.includes("findactivesession") &&
+          edge.toId === "data-table:tb_monimo_member"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "queries-table" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "data-table:tb_monimo_member"
       )
@@ -426,6 +474,16 @@ describe("knowledge schema foundation", () => {
           edge.type === "uses-cache-key" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "cache-key:member.login.status"
+      )
+    ).toBe(true);
+    const guardIds = snapshot.entities
+      .filter((entity) => entity.type === "control-guard" && ["MemberAuthValidator", "validateSessionToken"].includes(entity.label))
+      .map((entity) => entity.id);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "validates" &&
+          guardIds.includes(edge.toId)
       )
     ).toBe(true);
   });

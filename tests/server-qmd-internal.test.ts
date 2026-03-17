@@ -255,6 +255,20 @@ async function writeStorageWorkspaceFixture(workspaceDir: string): Promise<void>
     ].join("\n"),
     "utf8"
   );
+  await writeFile(
+    path.join(workspaceDir, "src", "MemberAuthValidator.java"),
+    [
+      "package demo;",
+      "public class MemberAuthValidator {",
+      "  public void validateSessionToken(String token) {",
+      "    if (token == null || token.isBlank()) {",
+      "      throw new IllegalArgumentException(\"missing token\");",
+      "    }",
+      "  }",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
 }
 
 describe("server projects with vendored internal qmd runtime", () => {
@@ -589,7 +603,9 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-store"] ?? 0)).toBeGreaterThanOrEqual(2);
     expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-model"] ?? 0)).toBeGreaterThanOrEqual(1);
     expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-table"] ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-query"] ?? 0)).toBeGreaterThanOrEqual(1);
     expect(Number(analysis.ontologyGraph?.nodeTypeCounts["cache-key"] ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["control-guard"] ?? 0)).toBeGreaterThanOrEqual(1);
 
     const ontologyGraphPath = path.join(appRoot, ".project-home", "memory", "ontology-graph", "latest.json");
     const ontologyGraph = JSON.parse(await readFile(ontologyGraphPath, "utf8")) as {
@@ -602,6 +618,8 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(nodeIds.has("cache-key:member.login.status")).toBe(true);
     expect(nodeIds.has("data-model:membersessionentity")).toBe(true);
     expect(nodeIds.has("data-table:tb_member_session")).toBe(true);
+    expect((ontologyGraph.nodes ?? []).some((node) => node.type === "data-query" && node.id?.includes("findactivesession"))).toBe(true);
+    expect((ontologyGraph.nodes ?? []).some((node) => node.type === "control-guard" && node.id?.includes("memberauthvalidator"))).toBe(true);
     expect(
       (ontologyGraph.edges ?? []).some(
         (edge) =>
@@ -613,6 +631,11 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(
       (ontologyGraph.edges ?? []).some(
         (edge) => edge.type === "uses-cache-key" && edge.toId === "cache-key:member.login.status"
+      )
+    ).toBe(true);
+    expect(
+      (ontologyGraph.edges ?? []).some(
+        (edge) => edge.type === "validates"
       )
     ).toBe(true);
   });

@@ -16,8 +16,10 @@ const KnowledgeEntityTypeSchema = z.enum([
   "eai-interface",
   "data-store",
   "data-model",
+  "data-query",
   "data-table",
   "cache-key",
+  "control-guard",
   "knowledge-cluster"
 ]);
 
@@ -33,6 +35,7 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "maps-to-table",
   "queries-table",
   "uses-cache-key",
+  "validates",
   "depends-on",
   "belongs-to-domain",
   "belongs-to-channel",
@@ -135,6 +138,8 @@ interface StructureFileEntryLike {
     dbAccessTypes?: string[];
     dbModelNames?: string[];
     dbTableNames?: string[];
+    dbQueryNames?: string[];
+    controlGuardNames?: string[];
   };
 }
 
@@ -246,6 +251,7 @@ function inferActionsFromTexts(...values: Array<string | undefined>): string[] {
   const actions = new Set<string>();
   if (/(login|signin|auth|authenticate|cert|verify)/.test(text)) actions.add("action-auth");
   if (/(register|regist|signup|join|enroll)/.test(text)) actions.add("action-register");
+  if (/(status|state|info|lookup)/.test(text)) actions.add("action-status-read");
   if (/(status|state|info|lookup|select|get|load|read|inquiry|inqury|query)/.test(text)) actions.add("action-read");
   if (/(save|insert|create|add|persist|write|set)/.test(text)) actions.add("action-write");
   if (/(update|modify|change|patch)/.test(text)) actions.add("action-update");
@@ -554,6 +560,39 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     return id;
   };
 
+  const ensureDataQuery = (options: {
+    label: string;
+    tableNames: string[];
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `data-query:${slugify(options.label)}:${slugify(options.evidencePath)}`;
+    upsertEntity({
+      id,
+      type: "data-query",
+      label: options.label,
+      summary:
+        options.tableNames.length > 0
+          ? `${options.label} query touches ${options.tableNames.join(", ")}`
+          : `${options.label} database query`,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.label, ...options.tableNames),
+        moduleRoles: ["data-persistence"],
+        confidence: 0.8,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        queryName: options.label,
+        tableNames: options.tableNames,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    return id;
+  };
+
   const ensureDataTable = (options: {
     tableName: string;
     evidencePath: string;
@@ -623,6 +662,34 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }),
       attributes: {
         key: options.key,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    return id;
+  };
+
+  const ensureControlGuard = (options: {
+    label: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `control-guard:${slugify(options.label)}:${slugify(options.evidencePath)}`;
+    upsertEntity({
+      id,
+      type: "control-guard",
+      label: options.label,
+      summary: `${options.label} validation/guard control`,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.label, "validate guard check verify"),
+        moduleRoles: ["validation-control"],
+        confidence: 0.76,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        guardName: options.label,
         moduleName: options.moduleName,
         path: options.evidencePath
       }
@@ -761,6 +828,55 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           metadata: makeMetadata({
             moduleRoles: ["data-model", "data-persistence"],
             confidence: 0.82,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
+    }
+
+    for (const queryName of unique(resourceHints.dbQueryNames ?? [])) {
+      const queryId = ensureDataQuery({
+        label: queryName,
+        tableNames: dbTableNames,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${queryId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: queryId,
+        label: "file declares database query",
+        metadata: makeMetadata({
+          actions: inferActionsFromTexts(queryName, ...dbTableNames),
+          moduleRoles: ["data-persistence"],
+          confidence: 0.78,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+
+      for (const tableName of dbTableNames) {
+        const tableId = ensureDataTable({
+          tableName,
+          evidencePath: normalizedPath,
+          moduleName
+        });
+        upsertEdge({
+          id: `edge:queries-table:${queryId}:${tableId}`,
+          type: "queries-table",
+          fromId: queryId,
+          toId: tableId,
+          label: "query reads or writes database table",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(queryName, tableName),
+            moduleRoles: ["data-persistence"],
+            confidence: 0.8,
             evidencePaths: [normalizedPath],
             sourceType: "derived",
             validatedStatus: "derived"
@@ -978,6 +1094,72 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           attributes: {
             redisOps: resourceHints.redisOps
           }
+        });
+      }
+    }
+
+    for (const guardName of unique(resourceHints.controlGuardNames ?? [])) {
+      const guardId = ensureControlGuard({
+        label: guardName,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${guardId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: guardId,
+        label: "file declares validation guard",
+        metadata: makeMetadata({
+          actions: inferActionsFromTexts(guardName, "validate guard check verify"),
+          moduleRoles: ["validation-control"],
+          confidence: 0.78,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+
+      const classSymbolId = classSymbolMap.get(guardName);
+      if (classSymbolId) {
+        upsertEdge({
+          id: `edge:validates:${classSymbolId}:${guardId}`,
+          type: "validates",
+          fromId: classSymbolId,
+          toId: guardId,
+          label: "class implements validation guard",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(guardName, "validate guard check verify"),
+            moduleRoles: ["validation-control"],
+            confidence: 0.8,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
+
+      const matchingMethodSymbol = Array.from(methodSymbolMap.entries()).find(([key]) =>
+        key.endsWith(`.${guardName}`) || key === guardName
+      )?.[1];
+      if (matchingMethodSymbol) {
+        upsertEdge({
+          id: `edge:validates:${matchingMethodSymbol}:${guardId}`,
+          type: "validates",
+          fromId: matchingMethodSymbol,
+          toId: guardId,
+          label: "method performs validation guard",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(guardName, "validate guard check verify"),
+            moduleRoles: ["validation-control"],
+            confidence: 0.84,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
         });
       }
     }

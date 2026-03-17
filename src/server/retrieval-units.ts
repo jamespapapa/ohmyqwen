@@ -7,7 +7,7 @@ import {
   type KnowledgeValidatedStatus,
   type KnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
-import type { AskQuestionType } from "./question-types.js";
+import { inferQuestionActionHints, type AskQuestionType } from "./question-types.js";
 
 const RetrievalUnitTypeSchema = z.enum([
   "symbol-block",
@@ -150,6 +150,39 @@ function toSearchTokens(input: string): string[] {
   );
 }
 
+function isDirectActionHint(action: string): boolean {
+  return [
+    "action-auth",
+    "action-register",
+    "action-write",
+    "action-update",
+    "action-delete",
+    "action-callback",
+    "action-token"
+  ].includes(action);
+}
+
+function actionAlignmentScore(unitActions: string[], desiredActions: string[]): { delta: number; reasons: string[] } {
+  if (unitActions.length === 0 || desiredActions.length === 0) {
+    return { delta: 0, reasons: [] };
+  }
+
+  const overlaps = desiredActions.filter((action) => unitActions.includes(action));
+  if (overlaps.length > 0) {
+    return {
+      delta: overlaps.length * 1.2,
+      reasons: [`actions:${overlaps.slice(0, 4).join(",")}`]
+    };
+  }
+
+  const directDesired = desiredActions.filter(isDirectActionHint);
+  if (directDesired.length > 0) {
+    return { delta: -1.3, reasons: ["action-mismatch"] };
+  }
+
+  return { delta: -0.45, reasons: ["action-mismatch"] };
+}
+
 function chooseSupportPath(evidencePaths: string[]): string | undefined {
   const normalized = evidencePaths.map(toForwardSlash).filter(Boolean);
   return (
@@ -202,7 +235,7 @@ export function buildRetrievalUnitSnapshot(options: {
   };
 
   for (const entity of knowledgeSchema.entities) {
-    if (!["symbol", "controller", "service"].includes(entity.type)) {
+    if (!["symbol", "controller", "service", "control-guard", "data-query"].includes(entity.type)) {
       continue;
     }
     const declaredBy = (incoming.get(entity.id) ?? []).find((edge) => edge.type === "declares");
@@ -510,6 +543,7 @@ export function rankRetrievalUnitsForQuestion(options: {
   const tokens = toSearchTokens(options.question);
   const questionTags = unique(options.questionTags ?? []);
   const knowledgeSignals = unique(options.matchedKnowledgeIds ?? []);
+  const desiredActions = inferQuestionActionHints(options.question, [...questionTags, ...knowledgeSignals]);
   const moduleCandidates = unique(options.moduleCandidates ?? []).map((item) => item.toLowerCase());
   const preferredTypeWeights: Record<AskQuestionType, Partial<Record<RetrievalUnit["type"], number>>> = {
     cross_layer_flow: { flow: 4, "knowledge-cluster": 1.5, "module-overview": 1 },
@@ -542,6 +576,10 @@ export function rankRetrievalUnitsForQuestion(options: {
       score += typeBonus;
       reasons.push(`type:${unit.type}`);
     }
+
+    const actionAlignment = actionAlignmentScore(unit.actions, desiredActions);
+    score += actionAlignment.delta;
+    reasons.push(...actionAlignment.reasons);
 
     const haystack = unique([unit.title, unit.summary, ...unit.searchText]).join(" ").toLowerCase();
     const tokenMatches = tokens.filter((token) => haystack.includes(token));
@@ -584,6 +622,14 @@ export function rankRetrievalUnitsForQuestion(options: {
     if (options.questionType === "channel_or_partner_integration" && unit.channels.length > 0) {
       score += 1.5;
       reasons.push(`channels:${unit.channels.slice(0, 3).join(",")}`);
+    }
+    if (
+      options.questionType === "channel_or_partner_integration" &&
+      unit.type === "flow" &&
+      unit.channels.length > 0
+    ) {
+      score += 1.15;
+      reasons.push("channel-flow");
     }
 
     if (options.questionType === "process_or_batch_trace" && (unit.processRoles.length > 0 || /batch|job|tasklet|step|scheduler|processor|queue/i.test(haystack))) {

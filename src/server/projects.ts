@@ -690,6 +690,8 @@ interface StructureResourceHints {
   dbAccessTypes: string[];
   dbModelNames: string[];
   dbTableNames: string[];
+  dbQueryNames: string[];
+  controlGuardNames: string[];
 }
 
 interface StructureFileEntry {
@@ -1616,6 +1618,7 @@ function buildStructureResourceHints(options: {
   relativePath: string;
   content: string;
   classes: StructureSymbolRef[];
+  methods: StructureSymbolRef[];
 }): StructureResourceHints {
   const lowerPath = options.relativePath.toLowerCase();
   const lines = options.content.split(/\r?\n/);
@@ -1626,7 +1629,21 @@ function buildStructureResourceHints(options: {
   const dbAccessTypes = new Set<string>();
   const dbModelNames = new Set<string>();
   const dbTableNames = new Set<string>();
+  const dbQueryNames = new Set<string>();
+  const controlGuardNames = new Set<string>();
   const classNames = options.classes.map((entry) => entry.name);
+  const methodNames = options.methods.map((entry) => entry.name);
+
+  const maybeGuardName = (value: string) => {
+    if (
+      /(Validator|Guard|Policy|Checker|Verifier|Authorizer)$/i.test(value) ||
+      /^(validate|check|verify|authorize|guard|assert|ensure)[A-Z_]/.test(value) ||
+      /^can[A-Z_]/.test(value) ||
+      /^is[A-Z_].*(Allowed|Eligible|Valid|Ready|Authorized|Enabled)$/.test(value)
+    ) {
+      controlGuardNames.add(value);
+    }
+  };
 
   if (lowerPath.includes("/model/") || lowerPath.includes("/entity/")) {
     for (const className of classNames) {
@@ -1664,6 +1681,12 @@ function buildStructureResourceHints(options: {
     }
     if (/@Repository\b/.test(trimmed) || /@Mapper\b/.test(trimmed)) {
       storeKinds.add("database");
+    }
+    if (/\bObjects\.requireNonNull\s*\(|\bAssert\.[A-Za-z_][A-Za-z0-9_]*\s*\(|\bPreconditions\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(trimmed)) {
+      controlGuardNames.add("guard-assertion");
+    }
+    if (/\bif\s*\([^)]{1,200}\)\s*\{?\s*(?:throw new|return false|return null|continue;|break;)/.test(trimmed)) {
+      controlGuardNames.add("conditional-guard");
     }
 
     const dependencyMatch = trimmed.match(
@@ -1727,6 +1750,7 @@ function buildStructureResourceHints(options: {
   }
 
   for (const className of classNames) {
+    maybeGuardName(className);
     if (/(DaoModel|Entity|Model)$/i.test(className)) {
       storeKinds.add("database");
       dbModelNames.add(className);
@@ -1740,6 +1764,22 @@ function buildStructureResourceHints(options: {
       redisAccessTypes.add(className);
     }
   }
+  for (const methodName of methodNames) {
+    maybeGuardName(methodName);
+    const databaseContext =
+      lowerPath.includes("/repository/") ||
+      lowerPath.includes("/mapper/") ||
+      lowerPath.includes("/dao/") ||
+      classNames.some((className) => /(Repository|Mapper|Dao)$/i.test(className)) ||
+      dbAccessTypes.size > 0 ||
+      dbTableNames.size > 0;
+    if (
+      databaseContext &&
+      /^(find|select|get|load|list|search|query|count|exists|insert|save|update|delete|remove)[A-Z_]/.test(methodName)
+    ) {
+      dbQueryNames.add(methodName);
+    }
+  }
 
   return {
     storeKinds: uniqueStructureHints([...storeKinds]),
@@ -1748,7 +1788,9 @@ function buildStructureResourceHints(options: {
     redisKeys: uniqueStructureHints([...redisKeys]),
     dbAccessTypes: uniqueStructureHints([...dbAccessTypes]),
     dbModelNames: uniqueStructureHints([...dbModelNames]),
-    dbTableNames: uniqueStructureHints([...dbTableNames])
+    dbTableNames: uniqueStructureHints([...dbTableNames]),
+    dbQueryNames: uniqueStructureHints([...dbQueryNames]),
+    controlGuardNames: uniqueStructureHints([...controlGuardNames])
   };
 }
 
@@ -4280,7 +4322,8 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
       resources: buildStructureResourceHints({
         relativePath,
         content,
-        classes: parsed.classes
+        classes: parsed.classes,
+        methods: [...parsed.methods, ...parsed.functions]
       })
     };
   }
@@ -4291,7 +4334,8 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
       resources: buildStructureResourceHints({
         relativePath,
         content,
-        classes: parsed.classes
+        classes: parsed.classes,
+        methods: [...parsed.methods, ...parsed.functions]
       })
     };
   }
@@ -4302,7 +4346,8 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
       resources: buildStructureResourceHints({
         relativePath,
         content,
-        classes: parsed.classes
+        classes: parsed.classes,
+        methods: [...parsed.methods, ...parsed.functions]
       })
     };
   }
@@ -4316,7 +4361,8 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
     resources: buildStructureResourceHints({
       relativePath,
       content,
-      classes: []
+      classes: [],
+      methods: []
     }),
     summary: summarizeContentLine(content)
   };
@@ -6673,6 +6719,7 @@ function qualityGateForAsk(options: {
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
   matchedOntologyNodeTypes?: string[];
   matchedOntologyNodeLabels?: string[];
+  matchedOntologyNodeActions?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -6697,7 +6744,8 @@ function qualityGateForAsk(options: {
     matchedKnowledgeIds: options.matchedKnowledgeIds,
     matchedRetrievalUnitStatuses: options.matchedRetrievalUnitStatuses,
     matchedOntologyNodeTypes: options.matchedOntologyNodeTypes,
-    matchedOntologyNodeLabels: options.matchedOntologyNodeLabels
+    matchedOntologyNodeLabels: options.matchedOntologyNodeLabels,
+    matchedOntologyNodeActions: options.matchedOntologyNodeActions
   });
 }
 
@@ -7771,7 +7819,8 @@ export async function askServerProject(options: {
           ],
           matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
           matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
-          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label)
+          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label),
+          matchedOntologyNodeActions: rankedOntologyNodes.flatMap((item) => item.node.metadata.actions)
         })
       : null;
 
@@ -7998,7 +8047,8 @@ export async function askServerProject(options: {
           ],
           matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
           matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
-          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label)
+          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label),
+          matchedOntologyNodeActions: rankedOntologyNodes.flatMap((item) => item.node.metadata.actions)
         });
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
