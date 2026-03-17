@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  extractOntologyTextSignalsFromTexts,
+  extractSpecificOntologySignals,
+  scoreOntologySignalAlignment
+} from "./ontology-signals.js";
 
 export const LearnedKnowledgeKindSchema = z.enum(["domain", "module-role", "process", "channel"]);
 export const LearnedKnowledgeStatusSchema = z.enum(["candidate", "validated", "stale"]);
@@ -677,20 +682,62 @@ function scoreCandidateMatch(question: string, candidate: LearnedKnowledgeCandid
   };
 }
 
-export function matchLearnedKnowledge(question: string, snapshot?: LearnedKnowledgeSnapshot, limit = 6): LearnedKnowledgeMatch[] {
+function collectCandidateOntologySignals(candidate: LearnedKnowledgeCandidate): string[] {
+  return extractOntologyTextSignalsFromTexts([
+    candidate.id,
+    candidate.label,
+    candidate.description,
+    ...candidate.aliases,
+    ...candidate.tags,
+    ...candidate.apiPrefixes,
+    ...candidate.screenPrefixes,
+    ...candidate.controllerHints,
+    ...candidate.serviceHints,
+    ...candidate.pathHints,
+    ...candidate.searchTerms,
+    ...candidate.evidence
+  ]);
+}
+
+export function matchLearnedKnowledge(
+  question: string,
+  snapshot?: LearnedKnowledgeSnapshot,
+  limit = 6,
+  questionSignals?: string[]
+): LearnedKnowledgeMatch[] {
   if (!snapshot) {
     return [];
   }
+  const normalizedQuestionSignals = questionSignals ?? extractOntologyTextSignalsFromTexts([question]);
+  const specificQuestionSignals = extractSpecificOntologySignals(normalizedQuestionSignals);
   return snapshot.candidates
     .map((candidate) => {
       const matched = scoreCandidateMatch(question, candidate);
+      const candidateSignals = collectCandidateOntologySignals(candidate);
+      const alignment = scoreOntologySignalAlignment(normalizedQuestionSignals, candidateSignals, {
+        question,
+        pathText: candidate.pathHints.join(" "),
+        apiText: candidate.apiPrefixes.join(" "),
+        methodText: [...candidate.controllerHints, ...candidate.serviceHints].join(" ")
+      });
+      let score = matched.score + Math.round(candidate.score / 8) + alignment.score;
+      const reasons = [...matched.reasons, ...alignment.reasons];
+      const hasDirectLexicalMatch = matched.reasons.some((reason) => reason.startsWith("token:") || reason.startsWith("alias:"));
+      if (
+        specificQuestionSignals.length > 0 &&
+        !hasDirectLexicalMatch &&
+        !specificQuestionSignals.some((signal) => candidateSignals.includes(signal))
+      ) {
+        score -= 40;
+        reasons.push("specific-signal-mismatch");
+      }
       return {
         id: candidate.id,
         kind: candidate.kind,
         status: candidate.status,
         label: candidate.label,
-        score: matched.score + Math.round(candidate.score / 8),
-        reasons: matched.reasons,
+        score,
+        reasons: takeTop(reasons, 8),
         searchTerms: takeTop(
           [
             ...candidate.apiPrefixes,
@@ -737,7 +784,12 @@ export function extractLearnedKnowledgeTagsFromTexts(
       ].some((term) => term && normalized.includes(term.toLowerCase()))
     )
     .map((candidate) => candidate.id);
-  return unique([...direct, ...matchLearnedKnowledge(joined, snapshot, 8).filter((item) => item.status !== "stale").map((item) => item.id)]);
+  return unique([
+    ...direct,
+    ...matchLearnedKnowledge(joined, snapshot, 8, extractOntologyTextSignalsFromTexts([joined]))
+      .filter((item) => item.status !== "stale")
+      .map((item) => item.id)
+  ]);
 }
 
 export function applyLearnedKnowledgeObservation(options: {

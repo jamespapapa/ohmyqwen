@@ -334,4 +334,73 @@ describe("learned knowledge", () => {
     expect(next.summary.staleCount).toBeGreaterThanOrEqual(1);
     expect(extractLearnedKnowledgeTagsFromTexts(["/member/monimo/registe"], next)).not.toContain("channel:monimo");
   });
+
+  it("prefers ontology-aligned learned knowledge over unrelated high-score candidates", () => {
+    const snapshot = {
+      version: 1 as const,
+      generatedAt: "2026-03-10T00:00:00.000Z",
+      candidates: [
+        {
+          id: "channel:monimo",
+          kind: "channel" as const,
+          status: "validated" as const,
+          label: "monimo channel",
+          description: "monimo member registration and bridge",
+          tags: ["channel:monimo", "member", "register"],
+          aliases: ["모니모", "monimo"],
+          apiPrefixes: ["/member/monimo/registe"],
+          screenPrefixes: ["MDP-MYCER9999"],
+          controllerHints: ["RegisteUseDcpChnelController"],
+          serviceHints: ["EmbededMemberLoginService"],
+          pathHints: ["dcp-member", "monimo"],
+          searchTerms: ["모니모", "monimo", "/member/monimo/registe"],
+          evidence: ["MDP-MYCER999999M -> /gw/api/member/monimo/registe"],
+          score: 88,
+          counts: { links: 1, screens: 1, backend: 1, eai: 0, uses: 0, successes: 0, failures: 0 },
+          firstSeenAt: "2026-03-10T00:00:00.000Z",
+          lastSeenAt: "2026-03-10T00:00:00.000Z"
+        },
+        {
+          id: "graph:insurance-benefit-claim",
+          kind: "domain" as const,
+          status: "validated" as const,
+          label: "insurance benefit claim",
+          description: "insurance benefit claim insert/inquiry/document flow",
+          tags: ["insurance", "benefit", "claim", "action-write", "action-read", "action-document"],
+          aliases: ["보험금 청구", "benefit claim"],
+          apiPrefixes: ["/insurance/benefit/claim/insert", "/insurance/benefit/claim/inquiry"],
+          screenPrefixes: ["MDP-MYINT0202"],
+          controllerHints: ["BenefitClaimController"],
+          serviceHints: ["BenefitClaimService"],
+          pathHints: ["dcp-insurance", "benefit/claim"],
+          searchTerms: ["보험금", "청구", "benefit", "claim"],
+          evidence: ["MDP-MYINT020210M -> /gw/api/insurance/benefit/claim/insert"],
+          score: 72,
+          counts: { links: 3, screens: 2, backend: 2, eai: 1, uses: 0, successes: 0, failures: 0 },
+          firstSeenAt: "2026-03-10T00:00:00.000Z",
+          lastSeenAt: "2026-03-10T00:00:00.000Z"
+        }
+      ],
+      summary: {
+        candidateCount: 2,
+        validatedCount: 2,
+        staleCount: 0,
+        domainCount: 1,
+        moduleRoleCount: 0,
+        processCount: 0,
+        channelCount: 1,
+        strongestCandidates: ["channel:monimo", "graph:insurance-benefit-claim"]
+      }
+    };
+
+    const matches = matchLearnedKnowledge(
+      "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 면밀히 분석해줘.",
+      snapshot,
+      6,
+      ["보험금", "청구", "benefit", "claim", "action-read", "action-write", "action-document"]
+    );
+
+    expect(matches[0]?.id).toBe("graph:insurance-benefit-claim");
+    expect(matches.some((item) => item.id === "channel:monimo" && item.score >= matches[0]!.score)).toBe(false);
+  });
 });

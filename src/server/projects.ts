@@ -7615,11 +7615,11 @@ export async function askServerProject(options: {
     };
 
     const buildAskEvidenceBundle = async (round: number) => {
-      const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
       const seedQuestionSignals = buildQuestionOntologySignals({
         question,
         moduleCandidates: strategyDecision.moduleCandidates
       });
+      const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6, seedQuestionSignals);
       const seedQuestionType = classifyAskQuestionType({
         question,
         strategy: strategyDecision.strategy,
@@ -9068,11 +9068,11 @@ export async function searchServerProject(options: {
     const ontologyReviewSnapshot = await readOntologyReviewSnapshot(memoryRoot);
     const moduleCandidates = extractModuleCandidates(query);
     const strategyDecision = classifyQuestionIntentFallback(query);
-    const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6);
     const questionTags = buildQuestionOntologySignals({
       question: query,
       moduleCandidates
     });
+    const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6, questionTags);
     const questionTypeDecision = classifyAskQuestionType({
       question: query,
       strategy: strategyDecision.strategy,
