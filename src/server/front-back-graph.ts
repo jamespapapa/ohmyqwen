@@ -1,7 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { DomainPack } from "./domain-packs.js";
-import { extractFlowCapabilityTagsFromTexts } from "./flow-capabilities.js";
+import { extractOntologyTextSignalsFromTexts } from "./ontology-signals.js";
 
 export interface FrontendRouteEntry {
   routePath: string;
@@ -225,8 +224,7 @@ function deriveScreenCode(filePath: string, componentName?: string): string | un
 }
 
 export async function buildFrontendCatalog(
-  workspaceDir: string,
-  options?: { domainPacks?: DomainPack[] }
+  workspaceDir: string
 ): Promise<FrontendCatalogSnapshot> {
   const routeFiles = await collectFiles(workspaceDir, (relativePath) => /(^|\/)src\/router\/.*\/route\.js$/i.test(relativePath));
   const vueFiles = await collectFiles(workspaceDir, (relativePath) => /(^|\/)src\/views\/.*\.vue$/i.test(relativePath));
@@ -254,7 +252,7 @@ export async function buildFrontendCatalog(
         sourceFile: relativePath,
         screenCode: name || deriveScreenCode(viewPath),
         notes: routeNotes,
-        capabilityTags: extractFlowCapabilityTagsFromTexts([routePath, viewPath, name, ...routeNotes], options)
+        capabilityTags: extractOntologyTextSignalsFromTexts([routePath, viewPath, name, ...routeNotes])
       });
     }
   }
@@ -367,7 +365,7 @@ export async function buildFrontendCatalog(
       apiPaths,
       httpCalls,
       labels,
-      capabilityTags: extractFlowCapabilityTagsFromTexts([
+      capabilityTags: extractOntologyTextSignalsFromTexts([
         relativePath,
         deriveScreenCode(relativePath, componentName),
         componentName,
@@ -376,7 +374,7 @@ export async function buildFrontendCatalog(
         ...apiPaths,
         ...httpCalls.flatMap((entry) => [entry.rawUrl, entry.normalizedUrl, entry.functionName]),
         ...labels
-      ], options)
+      ])
     });
   }
 
@@ -443,8 +441,7 @@ function buildPublicRoutePath(modulePrefix: string | undefined, routePath: strin
 }
 
 export async function extractBackendRouteEntries(
-  workspaceDir: string,
-  options?: { domainPacks?: DomainPack[] }
+  workspaceDir: string
 ): Promise<BackendRouteEntry[]> {
   const controllerFiles = await collectFiles(
     workspaceDir,
@@ -516,7 +513,7 @@ export async function extractBackendRouteEntries(
             filePath: relativePath,
             serviceHints,
             labels,
-            capabilityTags: extractFlowCapabilityTagsFromTexts([
+            capabilityTags: extractOntologyTextSignalsFromTexts([
               relativePath,
               className,
               methodName,
@@ -524,7 +521,7 @@ export async function extractBackendRouteEntries(
               normalizeSlashPath(combined),
               ...serviceHints,
               ...labels
-            ], options)
+            ])
           });
         }
       }
@@ -561,16 +558,13 @@ function chooseBestBackendRoute(normalizedUrl: string, routes: BackendRouteEntry
 export async function buildFrontBackGraph(options: {
   backendWorkspaceDir: string;
   frontendWorkspaceDirs: string[];
-  domainPacks?: DomainPack[];
 }): Promise<FrontBackGraphSnapshot> {
   const frontendCatalogs = await Promise.all(
-    options.frontendWorkspaceDirs.map((dir) => buildFrontendCatalog(dir, { domainPacks: options.domainPacks }))
+    options.frontendWorkspaceDirs.map((dir) => buildFrontendCatalog(dir))
   );
   const routes = frontendCatalogs.flatMap((catalog) => catalog.routes);
   const screens = frontendCatalogs.flatMap((catalog) => catalog.screens);
-  const backendRoutesAll = await extractBackendRouteEntries(options.backendWorkspaceDir, {
-    domainPacks: options.domainPacks
-  });
+  const backendRoutesAll = await extractBackendRouteEntries(options.backendWorkspaceDir);
   const gatewayRoutes = backendRoutesAll.filter((entry) => entry.path === "/api/**" || /dcp-gateway\//.test(entry.filePath));
   const backendRoutes = backendRoutesAll.filter((entry) => !gatewayRoutes.includes(entry));
 
@@ -611,7 +605,7 @@ export async function buildFrontBackGraph(options: {
       }
       const capabilityTags = unique([
         ...(backendRoute.capabilityTags ?? []),
-        ...extractFlowCapabilityTagsFromTexts([
+        ...extractOntologyTextSignalsFromTexts([
           screen.filePath,
           screen.screenCode,
           screen.routePaths[0],
@@ -621,7 +615,7 @@ export async function buildFrontBackGraph(options: {
           call.functionName,
           gatewayRoute?.path,
           gatewayRoute ? `${gatewayRoute.controllerClass}.${gatewayRoute.controllerMethod}` : undefined
-        ], { domainPacks: options.domainPacks })
+        ])
       ]);
       links.push({
         confidence: Math.min(0.99, Number(confidence.toFixed(2))),

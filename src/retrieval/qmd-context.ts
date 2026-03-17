@@ -3,10 +3,6 @@ export interface ProjectQmdContextInput {
     name: string;
     description?: string;
   };
-  projectPreset?: {
-    name: string;
-    summary: string;
-  };
   summary: string;
   architecture: string[];
   keyModules: Array<{
@@ -14,12 +10,19 @@ export interface ProjectQmdContextInput {
     path: string;
     role: string;
   }>;
-  domains?: Array<{
-    id: string;
-    name: string;
-    score: number;
-    band: string;
-  }>;
+  ontologyGraph?: {
+    topChannels?: Array<{
+      id: string;
+      count: number;
+    }>;
+    topDomains?: Array<{
+      id: string;
+      count: number;
+    }>;
+  };
+  ontologyProjections?: {
+    topProjectionTypes?: string[];
+  };
   eaiCatalog?: {
     interfaceCount: number;
     topInterfaces: Array<{
@@ -68,10 +71,9 @@ function compactLines(lines: string[], limit: number): string[] {
 }
 
 export function buildProjectQmdContextPayload(input: ProjectQmdContextInput): ProjectQmdContextPayload {
-  const activeDomains = (input.domains ?? [])
-    .slice()
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6);
+  const topChannels = (input.ontologyGraph?.topChannels ?? []).slice(0, 6);
+  const topConcepts = (input.ontologyGraph?.topDomains ?? []).slice(0, 6);
+  const topProjectionTypes = input.ontologyProjections?.topProjectionTypes?.slice(0, 6) ?? [];
   const strongestModules = input.keyModules.slice(0, 10);
   const topInterfaces = input.eaiCatalog?.topInterfaces.slice(0, 6) ?? [];
   const knowledge = input.learnedKnowledge?.topCandidates.slice(0, 6) ?? [];
@@ -80,12 +82,15 @@ export function buildProjectQmdContextPayload(input: ProjectQmdContextInput): Pr
     [
       `${input.project.name}: ${input.summary}`,
       input.project.description ? `project-description: ${input.project.description}` : "",
-      input.projectPreset ? `preset: ${input.projectPreset.name} — ${input.projectPreset.summary}` : "",
       input.architecture.slice(0, 6).map((line) => `architecture: ${line}`).join("\n"),
-      activeDomains.length > 0
-        ? `active-domains: ${activeDomains
-            .map((domain) => `${domain.id}(${domain.band}:${domain.score})`)
-            .join(", ")}`
+      topChannels.length > 0
+        ? `ontology-channels: ${topChannels.map((channel) => `${channel.id}(${channel.count})`).join(", ")}`
+        : "",
+      topConcepts.length > 0
+        ? `ontology-concepts: ${topConcepts.map((concept) => `${concept.id}(${concept.count})`).join(", ")}`
+        : "",
+      topProjectionTypes.length > 0
+        ? `ontology-projections: ${topProjectionTypes.join(", ")}`
         : "",
       input.eaiCatalog
         ? `eai-catalog: ${input.eaiCatalog.interfaceCount} interfaces`

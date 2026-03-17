@@ -522,8 +522,6 @@ export default function HomePage() {
   const [askQuestion, setAskQuestion] = useState("");
   const [askMaxAttempts, setAskMaxAttempts] = useState(3);
   const [askDeterministicOnly, setAskDeterministicOnly] = useState(false);
-  const [askDomainMode, setAskDomainMode] = useState("auto");
-  const [askDomainIds, setAskDomainIds] = useState([]);
   const [askLoading, setAskLoading] = useState(false);
   const [askResult, setAskResult] = useState(null);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
@@ -603,14 +601,6 @@ export default function HomePage() {
     () => domainPacks.find((domainPack) => domainPack.id === selectedDomainPackId) || null,
     [domainPacks, selectedDomainPackId]
   );
-  const askAvailableDomainPacks = useMemo(() => {
-    if (!selectedPreset?.domainPackIds?.length) {
-      return [];
-    }
-    const allowed = new Set(selectedPreset.domainPackIds);
-    return domainPacks.filter((domainPack) => allowed.has(domainPack.id));
-  }, [domainPacks, selectedPreset]);
-
   const done = useMemo(() => {
     const status = run?.status;
     return status === "finished" || status === "failed";
@@ -715,8 +705,6 @@ export default function HomePage() {
 
   useEffect(() => {
     void loadProjects();
-    void loadPresets();
-    void loadDomainPacks();
     void loadLlmSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -731,7 +719,6 @@ export default function HomePage() {
     setLinkedWorkspaceDirsText((selectedProject.linkedWorkspaceDirs || []).join("\n"));
     setProjectDescription(selectedProject.description || "");
     setSelectedLlmModelId(selectedProject.llm?.modelId || llmSettings?.defaultModelId || "");
-    setSelectedPresetId(selectedProject.presetId || "");
     setProjectQueryMode(selectedProject.retrieval?.qmd?.queryMode || "query_then_search");
     setMode(selectedProject.defaultMode || "feature");
     setDryRun(Boolean(selectedProject.defaultDryRun));
@@ -820,14 +807,6 @@ export default function HomePage() {
     setDomainPackRankingPriorsJson(JSON.stringify(selectedDomainPack.rankingPriors || [], null, 2));
     setDomainPackExemplarsJson(JSON.stringify(selectedDomainPack.exemplars || [], null, 2));
   }, [selectedDomainPack, selectedDomainPackId]);
-
-  useEffect(() => {
-    if (askDomainMode !== "lock") {
-      return;
-    }
-    const allowed = new Set(askAvailableDomainPacks.map((item) => item.id));
-    setAskDomainIds((current) => current.filter((item) => allowed.has(item)));
-  }, [askAvailableDomainPacks, askDomainMode]);
 
   useEffect(() => {
     if (done || !runId) return;
@@ -1101,7 +1080,6 @@ export default function HomePage() {
         workspaceDir: workspaceDir.trim(),
         linkedWorkspaceDirs: parseLines(linkedWorkspaceDirsText),
         description: projectDescription.trim(),
-        presetId: selectedPresetId || undefined,
         llm: {
           modelId: selectedLlmModelId || undefined
         },
@@ -1306,15 +1284,6 @@ export default function HomePage() {
     }
   }
 
-  function onToggleAskDomainId(domainId, checked) {
-    setAskDomainIds((current) => {
-      if (checked) {
-        return Array.from(new Set([...current, domainId]));
-      }
-      return current.filter((item) => item !== domainId);
-    });
-  }
-
   async function onAskProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -1337,9 +1306,7 @@ export default function HomePage() {
         body: JSON.stringify({
           question: askQuestion.trim(),
           maxAttempts: Math.max(0, Math.min(Number(askMaxAttempts) || 0, 5)),
-          deterministicOnly: askDeterministicOnly,
-          domainSelectionMode: askDomainMode,
-          domainPackIds: askDomainMode === "lock" ? askDomainIds : []
+          deterministicOnly: askDeterministicOnly
         })
       });
       setAskResult(response);
@@ -1974,28 +1941,7 @@ export default function HomePage() {
               placeholder="프로젝트 메모"
             />
 
-            <div className="label" style={{ marginTop: 10 }}>프로젝트 프리셋</div>
-            <div className="workspace-row">
-              <select
-                value={selectedPresetId}
-                onChange={(e) => setSelectedPresetId(e.target.value)}
-                disabled={presetLoading}
-              >
-                <option value="">(프리셋 자동 선택/미사용)</option>
-                {presets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}{preset.builtIn ? " [built-in]" : ""}
-                  </option>
-                ))}
-              </select>
-              <button type="button" className="secondary" onClick={loadPresets} disabled={presetLoading}>
-                프리셋 새로고침
-              </button>
-            </div>
-
-            <div className="hint">
-              프로젝트 저장 시 선택한 프리셋이 우선 적용됩니다. 미선택 시 규칙 기반 자동 매칭을 시도합니다.
-            </div>
+            <div className="hint" style={{ marginTop: 10 }}>프로젝트 설정은 온톨로지/경로 기반으로 동작합니다. 프리셋/도메인 팩은 코어 분석 경로에서 사용하지 않습니다.</div>
 
             <div className="label" style={{ marginTop: 10 }}>LLM 모델</div>
             <select
@@ -2012,191 +1958,6 @@ export default function HomePage() {
                 </option>
               ))}
             </select>
-
-            <details className="preset-editor">
-              <summary>프리셋 추가/수정</summary>
-              <div className="label" style={{ marginTop: 8 }}>Preset Name</div>
-              <input
-                value={presetName}
-                onChange={(e) => setPresetName(e.target.value)}
-                placeholder="예: My Enterprise Backend"
-              />
-              <div className="label" style={{ marginTop: 8 }}>Preset Summary</div>
-              <textarea
-                value={presetSummary}
-                onChange={(e) => setPresetSummary(e.target.value)}
-                placeholder="프로젝트의 큰 그림/목적 요약"
-                style={{ minHeight: 70 }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>Key Facts (줄바꿈 구분)</div>
-              <textarea
-                value={presetFactsText}
-                onChange={(e) => setPresetFactsText(e.target.value)}
-                placeholder={"핵심 사실 1\n핵심 사실 2"}
-                style={{ minHeight: 90 }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>활성 도메인 팩</div>
-              <div className="hint">프리셋에 연결된 도메인만 분석/랭킹/성숙도 계산에 사용합니다.</div>
-              <div className="reason-list">
-                {(domainPacks || []).length === 0 ? (
-                  <div className="hint">등록된 도메인 팩이 없습니다.</div>
-                ) : (
-                  domainPacks.map((domainPack) => (
-                    <label key={domainPack.id} style={{ display: "block", marginBottom: 4 }}>
-                      <input
-                        type="checkbox"
-                        checked={presetDomainPackIds.includes(domainPack.id)}
-                        onChange={() => togglePresetDomainPack(domainPack.id)}
-                        style={{ width: 16, marginRight: 6 }}
-                      />
-                      {domainPack.name} ({domainPack.id}){domainPack.builtIn ? " [built-in]" : ""}
-                    </label>
-                  ))
-                )}
-              </div>
-              <div className="label" style={{ marginTop: 8 }}>Rule: workspaceIncludes (줄바꿈/콤마)</div>
-              <input
-                value={presetWorkspaceRules}
-                onChange={(e) => setPresetWorkspaceRules(e.target.value)}
-                placeholder="예: dcp-services"
-              />
-              <div className="label" style={{ marginTop: 8 }}>Rule: projectNameIncludes</div>
-              <input
-                value={presetProjectNameRules}
-                onChange={(e) => setPresetProjectNameRules(e.target.value)}
-                placeholder="예: backend-core"
-              />
-              <div className="label" style={{ marginTop: 8 }}>Rule: requiredPaths</div>
-              <textarea
-                value={presetRequiredPaths}
-                onChange={(e) => setPresetRequiredPaths(e.target.value)}
-                placeholder={"예: src/main/java\nresources/eai/"}
-                style={{ minHeight: 70 }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>EAI Dictionary Enabled</div>
-              <label style={{ display: "block" }}>
-                <input
-                  type="checkbox"
-                  checked={presetEaiEnabled}
-                  onChange={(e) => setPresetEaiEnabled(e.target.checked)}
-                  style={{ width: 16, marginRight: 6 }}
-                />
-                enable EAI catalog for this preset
-              </label>
-              <div className="label" style={{ marginTop: 8 }}>EAI 기준일자(asOfDate)</div>
-              <input
-                value={presetEaiAsOfDate}
-                onChange={(e) => setPresetEaiAsOfDate(e.target.value)}
-                placeholder="예: 2026-03-06"
-              />
-              <div className="label" style={{ marginTop: 8 }}>EAI servicePathIncludes</div>
-              <textarea
-                value={presetEaiServiceIncludes}
-                onChange={(e) => setPresetEaiServiceIncludes(e.target.value)}
-                placeholder={"예: resources/eai/\nresources/integration/eai/"}
-                style={{ minHeight: 70 }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>EAI manualOverridesFile</div>
-              <input
-                value={presetEaiOverridesFile}
-                onChange={(e) => setPresetEaiOverridesFile(e.target.value)}
-                placeholder=".ohmyqwen/eai-overrides.json"
-              />
-              <div className="action-row" style={{ marginTop: 8 }}>
-                <button type="button" className="secondary" onClick={onSavePreset} disabled={presetLoading}>
-                  {presetLoading ? "저장 중..." : "프리셋 저장"}
-                </button>
-                <button type="button" className="secondary" onClick={onDeletePreset} disabled={!selectedPresetId || presetLoading || selectedPreset?.builtIn}>
-                  프리셋 삭제
-                </button>
-              </div>
-              {presetError ? <div className="error">{presetError}</div> : null}
-            </details>
-
-            <details className="preset-editor">
-              <summary>도메인 팩 추가/수정</summary>
-              <div className="label" style={{ marginTop: 8 }}>도메인 팩 선택</div>
-              <div className="workspace-row">
-                <select
-                  value={selectedDomainPackId}
-                  onChange={(e) => setSelectedDomainPackId(e.target.value)}
-                  disabled={domainPackLoading}
-                >
-                  <option value="">(새 도메인 팩)</option>
-                  {domainPacks.map((domainPack) => (
-                    <option key={domainPack.id} value={domainPack.id}>
-                      {domainPack.name}{domainPack.builtIn ? " [built-in]" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" className="secondary" onClick={loadDomainPacks} disabled={domainPackLoading}>
-                  도메인 새로고침
-                </button>
-              </div>
-              <div className="label" style={{ marginTop: 8 }}>도메인 이름</div>
-              <input
-                value={domainPackName}
-                onChange={(e) => setDomainPackName(e.target.value)}
-                placeholder="예: 보험금 청구"
-              />
-              <div className="label" style={{ marginTop: 8 }}>설명</div>
-              <textarea
-                value={domainPackDescription}
-                onChange={(e) => setDomainPackDescription(e.target.value)}
-                placeholder="도메인의 목적과 범위"
-                style={{ minHeight: 70 }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>Family (줄바꿈/콤마)</div>
-              <input
-                value={domainPackFamiliesText}
-                onChange={(e) => setDomainPackFamiliesText(e.target.value)}
-                placeholder="예: insurance, claim"
-              />
-              <label style={{ display: "block", marginTop: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={domainPackEnabledByDefault}
-                  onChange={(e) => setDomainPackEnabledByDefault(e.target.checked)}
-                  style={{ width: 16, marginRight: 6 }}
-                />
-                기본 활성 도메인으로 사용
-              </label>
-              <div className="label" style={{ marginTop: 8 }}>capabilityTags JSON</div>
-              <textarea
-                value={domainPackCapabilitiesJson}
-                onChange={(e) => setDomainPackCapabilitiesJson(e.target.value)}
-                placeholder='[{"tag":"benefit-claim","questionPatterns":["보험금 청구"],"textPatterns":["BenefitClaim"],"searchTerms":["BenefitClaimController"]}]'
-                style={{ minHeight: 180, fontFamily: "monospace" }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>rankingPriors JSON</div>
-              <textarea
-                value={domainPackRankingPriorsJson}
-                onChange={(e) => setDomainPackRankingPriorsJson(e.target.value)}
-                placeholder='[{"whenQuestionHas":["benefit-claim"],"whenLinkHas":["benefit-claim"],"weight":30,"reason":"domain exact"}]'
-                style={{ minHeight: 140, fontFamily: "monospace" }}
-              />
-              <div className="label" style={{ marginTop: 8 }}>exemplars JSON</div>
-              <textarea
-                value={domainPackExemplarsJson}
-                onChange={(e) => setDomainPackExemplarsJson(e.target.value)}
-                placeholder='[{"question":"보험금 청구 흐름을 추적해줘","expectedTags":["benefit-claim"]}]'
-                style={{ minHeight: 140, fontFamily: "monospace" }}
-              />
-              <div className="action-row" style={{ marginTop: 8 }}>
-                <button type="button" className="secondary" onClick={onSaveDomainPack} disabled={domainPackLoading}>
-                  {domainPackLoading ? "저장 중..." : "도메인 팩 저장"}
-                </button>
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={onDeleteDomainPack}
-                  disabled={!selectedDomainPackId || domainPackLoading || selectedDomainPack?.builtIn}
-                >
-                  도메인 팩 삭제
-                </button>
-              </div>
-              {domainPackError ? <div className="error">{domainPackError}</div> : null}
-            </details>
 
             <div className="label" style={{ marginTop: 10 }}>QMD Query Mode</div>
             <select value={projectQueryMode} onChange={(e) => setProjectQueryMode(e.target.value)}>
@@ -2457,16 +2218,20 @@ export default function HomePage() {
                     <span title={analysisResult.memoryHome}>{shortText(analysisResult.memoryHome || "-", 70)}</span>
                   </div>
                   <div className="report-row">
-                    <span>프리셋</span>
-                    <span>{analysisResult.projectPreset?.name || "-"}</span>
+                    <span>온톨로지 개념</span>
+                    <span>
+                      {analysisResult.ontologyGraph?.topDomains?.length
+                        ? analysisResult.ontologyGraph.topDomains.slice(0, 4).map((item) => item.id).join(", ")
+                        : "-"}
+                    </span>
                   </div>
                   <div className="report-row">
-                    <span>활성 도메인</span>
-                    <span>{analysisResult.domains?.length ?? 0}개</span>
-                  </div>
-                  <div className="report-row">
-                    <span>도메인 성숙도</span>
-                    <span>{analysisResult.maturitySummary?.overallScore ?? 0} / 100</span>
+                    <span>온톨로지 채널</span>
+                    <span>
+                      {analysisResult.ontologyGraph?.topChannels?.length
+                        ? analysisResult.ontologyGraph.topChannels.slice(0, 4).map((item) => item.id).join(", ")
+                        : "-"}
+                    </span>
                   </div>
                   <div className="report-row">
                     <span>학습 지식 후보</span>
@@ -2650,29 +2415,6 @@ export default function HomePage() {
                             {shortText(entry.screenCode || entry.routePath || entry.apiUrl, 26)} · {shortText(entry.apiUrl, 28)}
                           </span>
                           <span>{Number(entry.confidence || 0).toFixed(2)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : null}
-
-                {(analysisResult.domains || []).length > 0 ? (
-                  <>
-                    <div className="label" style={{ marginTop: 8 }}>
-                      Domain Maturity
-                      {analysisResult.maturitySummary
-                        ? ` · overall=${analysisResult.maturitySummary.overallScore}/100`
-                        : ""}
-                    </div>
-                    <ul className="artifacts" style={{ maxHeight: 180 }}>
-                      {analysisResult.domains.slice(0, 12).map((domain, index) => (
-                        <li key={`${domain.id}-${index}`}>
-                          <span
-                            title={`${domain.description || "-"} | strongest=${(domain.strongestSignals || []).join(", ")} | weakest=${(domain.weakestSignals || []).join(", ")}`}
-                          >
-                            {shortText(domain.name, 22)} · {domain.band} · tags={domain.counts?.capabilitiesMatched ?? 0} · links={domain.counts?.linkCount ?? 0}
-                          </span>
-                          <span>{domain.score}</span>
                         </li>
                       ))}
                     </ul>
@@ -2872,45 +2614,6 @@ export default function HomePage() {
                 {askLoading ? "응답 생성 중..." : "질문 실행"}
               </button>
             </div>
-            <div className="hint" style={{ marginTop: 6 }}>
-              도메인 선택
-              <select
-                value={askDomainMode}
-                onChange={(e) => setAskDomainMode(e.target.value)}
-                style={{ width: 120, marginLeft: 8, marginRight: 8 }}
-              >
-                <option value="auto">auto</option>
-                <option value="lock">lock</option>
-              </select>
-              {askDomainMode === "lock"
-                ? "질문을 이 도메인들로 고정합니다."
-                : "질문에서 도메인을 자동 추정합니다."}
-            </div>
-            {askDomainMode === "lock" ? (
-              <div className="report-box" style={{ marginTop: 8 }}>
-                <div className="label">고정 도메인</div>
-                {askAvailableDomainPacks.length === 0 ? (
-                  <div className="hint">현재 프리셋에 연결된 도메인 팩이 없습니다.</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 6 }}>
-                    {askAvailableDomainPacks.map((domainPack) => (
-                      <label key={`ask-domain-${domainPack.id}`} className="hint" style={{ display: "flex", gap: 8 }}>
-                        <input
-                          type="checkbox"
-                          checked={askDomainIds.includes(domainPack.id)}
-                          onChange={(e) => onToggleAskDomainId(domainPack.id, e.target.checked)}
-                          style={{ width: 14 }}
-                        />
-                        <span title={domainPack.description || domainPack.id}>
-                          {domainPack.name} ({domainPack.id})
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : null}
-
             {askResult ? (
               <div className="search-result-box">
                 <div className="hint">
@@ -2926,14 +2629,11 @@ export default function HomePage() {
                   {(askResult.diagnostics?.scopeModules || []).length > 0
                     ? ` · modules=${askResult.diagnostics.scopeModules.join(",")}`
                     : ""}
-                  {(askResult.diagnostics?.matchedDomainIds || []).length > 0
-                    ? ` · matchedDomains=${askResult.diagnostics.matchedDomainIds.join(",")}`
+                  {(askResult.diagnostics?.matchedOntologyConcepts || []).length > 0
+                    ? ` · matchedOntologyConcepts=${askResult.diagnostics.matchedOntologyConcepts.join(",")}`
                     : ""}
                   {(askResult.diagnostics?.matchedLearnedKnowledgeIds || []).length > 0
                     ? ` · matchedKnowledge=${askResult.diagnostics.matchedLearnedKnowledgeIds.join(",")}`
-                    : ""}
-                  {(askResult.diagnostics?.lockedDomainIds || []).length > 0
-                    ? ` · lockedDomains=${askResult.diagnostics.lockedDomainIds.join(",")}`
                     : ""}
                   {Number(askResult.diagnostics?.hydratedEvidenceCount || 0) > 0
                     ? ` · hydrated=${askResult.diagnostics.hydratedEvidenceCount}`
@@ -2945,14 +2645,6 @@ export default function HomePage() {
                     ? ` · deterministic=${askResult.diagnostics?.deterministicSymbol || "true"}`
                     : ""}
                 </div>
-                {askResult.diagnostics?.domainSelectionMode ? (
-                  <div className="hint" style={{ marginTop: 4 }}>
-                    domainMode={askResult.diagnostics.domainSelectionMode}
-                    {(askResult.diagnostics?.activeDomainIds || []).length > 0
-                      ? ` · activeDomains=${askResult.diagnostics.activeDomainIds.join(",")}`
-                      : ""}
-                  </div>
-                ) : null}
                 <div className="action-row" style={{ marginTop: 8 }}>
                   <button
                     type="button"

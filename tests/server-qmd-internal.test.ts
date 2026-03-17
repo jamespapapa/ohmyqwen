@@ -325,6 +325,9 @@ describe("server projects with vendored internal qmd runtime", () => {
       projectId: project.id,
       maxFiles: 20
     });
+    expect("projectPreset" in analysis).toBe(false);
+    expect("domains" in analysis).toBe(false);
+    expect("maturitySummary" in analysis).toBe(false);
     expect(analysis.ontologyInputs?.totalInputs).toBeGreaterThanOrEqual(1);
     expect(analysis.ontologyReview?.totalTargets).toBeGreaterThanOrEqual(0);
     expect(analysis.ontologyGraph?.nodeCount).toBeGreaterThan(0);
@@ -337,6 +340,9 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect(search.diagnostics.ontologyGraphLoaded).toBe(true);
     expect((search.diagnostics.matchedOntologyNodeIds ?? []).length).toBeGreaterThan(0);
     expect((search.diagnostics.matchedOntologyProjectionIds ?? []).length).toBeGreaterThan(0);
+    expect("matchedDomains" in search.diagnostics).toBe(false);
+    expect("activeDomains" in search.diagnostics).toBe(false);
+    expect("lockedDomains" in search.diagnostics).toBe(false);
 
     const ask = await projectsModule.askServerProject({
       projectId: project.id,
@@ -349,6 +355,9 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect((ask.diagnostics.matchedOntologyNodeIds ?? []).length).toBeGreaterThan(0);
     expect((ask.diagnostics.matchedOntologyProjectionIds ?? []).length).toBeGreaterThan(0);
     expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("ontology-graph/latest.md"))).toBe(true);
+    expect("matchedDomains" in ask.diagnostics).toBe(false);
+    expect("activeDomains" in ask.diagnostics).toBe(false);
+    expect("lockedDomains" in ask.diagnostics).toBe(false);
 
     const ontologyInputPath = path.join(appRoot, ".project-home", "memory", "ontology-inputs", "summary.json");
     const ontologyReviewPath = path.join(appRoot, ".project-home", "memory", "ontology-review", "latest.json");

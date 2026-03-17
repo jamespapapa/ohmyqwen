@@ -1,19 +1,16 @@
 import type { FrontBackGraphLink, FrontBackGraphSnapshot } from "./front-back-graph.js";
 import type { DownstreamFlowTrace } from "./flow-trace.js";
-import type { DomainPack } from "./domain-packs.js";
 import type { LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
 import { extractLearnedKnowledgeTagsFromTexts } from "./learned-knowledge.js";
 import { inferQuestionActionHints } from "./question-types.js";
 import {
-  extractFlowCapabilityTagsFromTexts,
-  extractSpecificQuestionCapabilityTags,
-  extractQuestionCapabilityTags,
-  hasStrongFlowCapabilityAlignment,
+  buildQuestionOntologySignals,
+  extractOntologyTextSignalsFromTexts,
+  extractSpecificOntologySignals,
+  hasStrongOntologySignalAlignment,
   isCrossLayerFlowQuestion,
-  resolveQuestionCapabilityTags,
-  scoreSpecificCapabilityCoverage,
-  scoreFlowCapabilityAlignment
-} from "./flow-capabilities.js";
+  scoreOntologySignalAlignment
+} from "./ontology-signals.js";
 
 interface SearchLikeHit {
   path: string;
@@ -55,6 +52,20 @@ function tokenize(value: string): string[] {
   return unique(value.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? []);
 }
 
+function countOverlap(tokens: string[], text: string): number {
+  if (tokens.length === 0) {
+    return 0;
+  }
+  const corpusTokens = new Set(tokenize(text));
+  let overlap = 0;
+  for (const token of tokens) {
+    if (corpusTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap;
+}
+
 function isActionCapabilityTag(tag: string): boolean {
   return tag.startsWith("action-");
 }
@@ -93,7 +104,7 @@ function inferFlowActionTags(item: {
   capabilityTags?: string[];
 }): string[] {
   const direct = (item.capabilityTags ?? []).filter(isActionCapabilityTag);
-  const inferred = extractFlowCapabilityTagsFromTexts(
+  const inferred = extractOntologyTextSignalsFromTexts(
     [item.apiUrl, item.backendControllerMethod, ...(item.serviceHints ?? [])],
     {}
   ).filter(isActionCapabilityTag);
@@ -163,7 +174,6 @@ function scoreActionAlignment(flowActions: string[], desiredActions: string[]): 
 
 function resolveLinkCapabilityTags(
   link: FrontBackGraphLink,
-  domainPacks?: DomainPack[],
   learnedKnowledge?: LearnedKnowledgeSnapshot
 ): string[] {
   const texts = [
@@ -180,7 +190,7 @@ function resolveLinkCapabilityTags(
     ...link.backend.serviceHints
   ];
   return unique([
-    ...extractFlowCapabilityTagsFromTexts(texts, { domainPacks }),
+    ...extractOntologyTextSignalsFromTexts(texts),
     ...extractLearnedKnowledgeTagsFromTexts(texts, learnedKnowledge)
   ]);
 }
@@ -191,19 +201,15 @@ export function buildLinkedFlowEvidence(options: {
   hits?: SearchLikeHit[];
   snapshot: FrontBackGraphSnapshot;
   limit?: number;
-  domainPacks?: DomainPack[];
   learnedKnowledge?: LearnedKnowledgeSnapshot;
 }): LinkedFlowEvidence[] {
   const tokens = tokenize(options.question);
-  const questionTags = options.questionTags ?? resolveQuestionCapabilityTags({
-    question: options.question,
-    domainPacks: options.domainPacks
-  });
-  const specificQuestionTags = extractSpecificQuestionCapabilityTags(questionTags, {
-    domainPacks: options.domainPacks
-  });
+  const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const specificQuestionTags = extractSpecificOntologySignals(questionTags);
   const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
-  const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
+  const nonActionQuestionTags = questionTags.filter(
+    (tag) => !isActionCapabilityTag(tag) && !tag.startsWith("token:")
+  );
   const minSharedNonActionTags =
     nonActionQuestionTags.length >= 3 ? 2 : nonActionQuestionTags.length >= 1 ? 1 : 0;
   const hitPaths = (options.hits ?? []).map((hit) => hit.path.toLowerCase());
@@ -211,22 +217,18 @@ export function buildLinkedFlowEvidence(options: {
 
   return options.snapshot.links
     .map((link) => {
-      const capabilityTags = resolveLinkCapabilityTags(link, options.domainPacks, options.learnedKnowledge);
+      const capabilityTags = resolveLinkCapabilityTags(link, options.learnedKnowledge);
       const flowActions = inferFlowActionTags({
         apiUrl: link.api.normalizedUrl,
         backendControllerMethod: link.backend.controllerMethod,
         serviceHints: link.backend.serviceHints,
         capabilityTags
       });
-      const capabilityAlignment = scoreFlowCapabilityAlignment(questionTags, capabilityTags, {
-        domainPacks: options.domainPacks,
+      const capabilityAlignment = scoreOntologySignalAlignment(questionTags, capabilityTags, {
         question: options.question,
         pathText: [link.frontend.screenPath, link.frontend.routePath, link.backend.filePath, link.backend.path].join(" "),
         apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
         methodText: [link.gateway.controllerMethod, link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
-      });
-      const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, capabilityTags, {
-        domainPacks: options.domainPacks
       });
       let score = link.confidence * 100 + capabilityAlignment.score;
       const reasons: string[] = [...capabilityAlignment.reasons];
@@ -284,27 +286,14 @@ export function buildLinkedFlowEvidence(options: {
         score += Math.min(18, tokenHits.length * 4);
         reasons.push(`question-token-match:${tokenHits.slice(0, 3).join(",")}`);
       }
-      if (specificCoverage.matchedSpecificTags.length > 0) {
-        score += Math.min(28, specificCoverage.matchedSpecificTags.length * 16);
-        reasons.push(
-          ...specificCoverage.matchedSpecificTags.slice(0, 3).map((tag) => `specific-capability:${tag}`)
-        );
+      const sharedSpecificSignals = specificQuestionTags.filter((tag) => capabilityTags.includes(tag));
+      if (sharedSpecificSignals.length > 0) {
+        score += Math.min(28, sharedSpecificSignals.length * 16);
+        reasons.push(...sharedSpecificSignals.slice(0, 3).map((tag) => `specific-signal:${tag}`));
       }
-      if (specificCoverage.sharedDomainParents.length > 0) {
-        score += Math.min(10, specificCoverage.sharedDomainParents.length * 4);
-        reasons.push(
-          ...specificCoverage.sharedDomainParents.slice(0, 2).map((tag) => `shared-domain-parent:${tag}`)
-        );
-      }
-      if (specificQuestionTags.length > 0 && specificCoverage.matchedSpecificTags.length === 0) {
+      if (specificQuestionTags.length > 0 && sharedSpecificSignals.length === 0) {
         score -= 18;
-        reasons.push("missing-specific-capability-match");
-      }
-      if (specificCoverage.adjacentConfusers.length > 0) {
-        score -= Math.min(32, specificCoverage.adjacentConfusers.length * 12);
-        reasons.push(
-          ...specificCoverage.adjacentConfusers.slice(0, 3).map((tag) => `adjacent-capability:${tag}`)
-        );
+        reasons.push("missing-specific-signal-match");
       }
       if (!/(취소|cancel|delete)/i.test(options.question) && /delete|cancel/.test(fullFlowText)) {
         score -= 14;
@@ -316,8 +305,7 @@ export function buildLinkedFlowEvidence(options: {
       }
       if (
         questionTags.length > 0 &&
-        !hasStrongFlowCapabilityAlignment(questionTags, capabilityTags, {
-          domainPacks: options.domainPacks,
+        !hasStrongOntologySignalAlignment(questionTags, capabilityTags, {
           question: options.question,
           pathText: [link.frontend.screenPath, link.backend.filePath, link.backend.path].join(" "),
           apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
@@ -363,7 +351,6 @@ export function buildDeterministicFlowAnswer(options: {
   questionTags?: string[];
   linkedFlowEvidence: LinkedFlowEvidence[];
   downstreamTraces?: DownstreamFlowTrace[];
-  domainPacks?: DomainPack[];
 }): DeterministicFlowAnswer {
   const primary = options.linkedFlowEvidence[0];
   if (!primary) {
@@ -375,11 +362,8 @@ export function buildDeterministicFlowAnswer(options: {
     };
   }
 
-  const questionTags =
-    options.questionTags ?? extractQuestionCapabilityTags(options.question, { domainPacks: options.domainPacks });
-  const specificQuestionTags = extractSpecificQuestionCapabilityTags(questionTags, {
-    domainPacks: options.domainPacks
-  });
+  const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const specificQuestionTags = extractSpecificOntologySignals(questionTags);
   const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
   const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
   const minSharedNonActionTags =
@@ -401,6 +385,13 @@ export function buildDeterministicFlowAnswer(options: {
     const itemTagSet = new Set(item.capabilityTags ?? []);
     const sharedQuestionTags = questionTags.filter((tag) => itemTagSet.has(tag));
     const actionAlignment = scoreActionAlignment(inferFlowActionTags(item), desiredActions);
+    const genericAlignment = scoreOntologySignalAlignment(questionTags, item.capabilityTags ?? [], {
+      question: options.question,
+      pathText: [item.routePath, item.screenPath, item.backendPath].join(" "),
+      apiText: item.apiUrl,
+      methodText: [item.gatewayControllerMethod, item.backendControllerMethod, ...(item.serviceHints ?? [])].join(" ")
+    });
+    score += genericAlignment.score;
     score += actionAlignment.score;
     if (sharedQuestionTags.length > 0) {
       score += Math.min(140, sharedQuestionTags.length * 42);
@@ -432,17 +423,12 @@ export function buildDeterministicFlowAnswer(options: {
         score -= 120;
       }
     }
-    const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, item.capabilityTags ?? [], {
-      domainPacks: options.domainPacks
-    });
-    if (specificCoverage.matchedSpecificTags.length > 0) {
-      score += specificCoverage.matchedSpecificTags.length * 60;
+    const specificSignalMatches = specificQuestionTags.filter((tag) => (item.capabilityTags ?? []).includes(tag));
+    if (specificSignalMatches.length > 0) {
+      score += specificSignalMatches.length * 60;
     }
-    if (specificQuestionTags.length > 0 && specificCoverage.matchedSpecificTags.length === 0) {
+    if (specificQuestionTags.length > 0 && specificSignalMatches.length === 0) {
       score -= 140;
-    }
-    if (specificCoverage.adjacentConfusers.length > 0) {
-      score -= specificCoverage.adjacentConfusers.length * 90;
     }
     return score;
   };
@@ -551,17 +537,9 @@ export function buildDeterministicFlowAnswer(options: {
   });
 
   const mentionedEaiIds = unique((options.downstreamTraces ?? []).flatMap((trace) => trace.eaiInterfaces)).slice(0, 4);
-  const primarySpecificCoverage = scoreSpecificCapabilityCoverage(questionTags, primary.capabilityTags ?? [], {
-    domainPacks: options.domainPacks
-  });
+  const primarySpecificMatches = specificQuestionTags.filter((tag) => (primary.capabilityTags ?? []).includes(tag));
   const primaryFlowActions = inferFlowActionTags(primary);
-  const flowSpecificMatches = unique(
-    orderedFlows.flatMap((flow) =>
-      scoreSpecificCapabilityCoverage(questionTags, flow.capabilityTags ?? [], {
-        domainPacks: options.domainPacks
-      }).matchedSpecificTags
-    )
-  );
+  const flowSpecificMatches = unique(orderedFlows.flatMap((flow) => specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag))));
   const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
   let confidence = 0.34;
   confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
@@ -570,7 +548,7 @@ export function buildDeterministicFlowAnswer(options: {
   confidence += (options.downstreamTraces ?? []).length > 0 ? 0.12 : 0;
   confidence += mentionedEaiIds.length > 0 ? 0.06 : 0;
   confidence += Math.min(0.08, distinctFlowActions.length * 0.02);
-  if (primarySpecificCoverage.matchedSpecificTags.length > 0) {
+  if (primarySpecificMatches.length > 0) {
     confidence += 0.18;
   } else if (specificQuestionTags.length === 0 && questionTags.some((tag) => (primary.capabilityTags ?? []).includes(tag))) {
     confidence += 0.08;
@@ -581,16 +559,13 @@ export function buildDeterministicFlowAnswer(options: {
   if (flowSpecificMatches.length > 1) {
     confidence += 0.05;
   }
-  if (specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0) {
+  if (specificQuestionTags.length > 0 && primarySpecificMatches.length === 0) {
     confidence -= 0.26;
-  }
-  if (primarySpecificCoverage.adjacentConfusers.length > 0) {
-    confidence -= Math.min(0.24, primarySpecificCoverage.adjacentConfusers.length * 0.12);
   }
   if ((options.downstreamTraces ?? []).length === 0) {
     confidence = Math.min(confidence, 0.78);
   }
-  if (specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0) {
+  if (specificQuestionTags.length > 0 && primarySpecificMatches.length === 0) {
     confidence = Math.min(confidence, 0.62);
   }
   confidence = Math.max(0.18, Math.min(0.86, Number(confidence.toFixed(2))));
@@ -616,7 +591,7 @@ export function buildDeterministicFlowAnswer(options: {
     evidence,
     caveats: [
       "static-flow-evidence",
-      ...(specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0
+      ...(specificQuestionTags.length > 0 && primarySpecificMatches.length === 0
         ? ["specific-capability-mismatch"]
         : []),
       ...((options.downstreamTraces ?? []).some((trace) => trace.steps.length > 0)

@@ -344,7 +344,6 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         workspaceDir?: string;
         linkedWorkspaceDirs?: string[];
         description?: string;
-        presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
         defaultDryRun?: boolean;
         llm?: {
@@ -392,7 +391,6 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         workspaceDir: payload.workspaceDir ?? "",
         linkedWorkspaceDirs: payload.linkedWorkspaceDirs ?? [],
         description: payload.description,
-        presetId: payload.presetId,
         defaultMode: payload.defaultMode ? RunModeSchema.parse(payload.defaultMode) : undefined,
         defaultDryRun: payload.defaultDryRun,
         llm: payload.llm,
@@ -441,7 +439,6 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         workspaceDir?: string;
         linkedWorkspaceDirs?: string[];
         description?: string;
-        presetId?: string;
         defaultMode?: "auto" | "feature" | "refactor" | "medium" | "microservice";
         defaultDryRun?: boolean;
         retrieval?: {
@@ -494,7 +491,6 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         workspaceDir: payload.workspaceDir ?? existing.workspaceDir,
         linkedWorkspaceDirs: payload.linkedWorkspaceDirs ?? existing.linkedWorkspaceDirs ?? [],
         description: payload.description ?? existing.description,
-        presetId: payload.presetId ?? existing.presetId,
         defaultMode: payload.defaultMode
           ? RunModeSchema.parse(payload.defaultMode)
           : existing.defaultMode,
@@ -644,8 +640,6 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         limit?: number;
         maxLlmCalls?: number;
         deterministicOnly?: boolean;
-        domainPackIds?: string[];
-        domainSelectionMode?: "auto" | "lock";
       };
       const result = await askServerProject({
         projectId: projectAskId,
@@ -653,9 +647,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         maxAttempts: payload.maxAttempts,
         limit: payload.limit,
         maxLlmCalls: payload.maxLlmCalls,
-        deterministicOnly: payload.deterministicOnly,
-        domainPackIds: payload.domainPackIds,
-        domainSelectionMode: payload.domainSelectionMode
+        deterministicOnly: payload.deterministicOnly
       });
       routeTrace("project/ask:success", {
         projectId: projectAskId,

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isCrossLayerFlowQuestion } from "./flow-capabilities.js";
+import { isCrossLayerFlowQuestion } from "./ontology-signals.js";
 
 export const AskQuestionTypeSchema = z.enum([
   "cross_layer_flow",

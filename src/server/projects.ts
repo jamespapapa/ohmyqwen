@@ -14,18 +14,15 @@ import {
 import {
   getProjectPresetById,
   listProjectPresets,
-  matchProjectPreset,
   ProjectPreset,
   removeProjectPreset,
   UpsertProjectPresetInput,
   upsertProjectPreset
 } from "./presets.js";
 import {
-  detectQuestionDomainPacks,
   getDomainPackById,
   listDomainPacks,
   removeDomainPack,
-  resolveDomainPacksByIds,
   type DomainPack,
   type UpsertDomainPackInput,
   upsertDomainPack
@@ -56,13 +53,6 @@ import {
 } from "./analyze-input-compaction.js";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
-import { computeDomainMaturity, type DomainMaturityOutput, type DomainMaturityResult } from "./domain-maturity.js";
-import {
-  expandCapabilitySearchTerms,
-  extractQuestionCapabilityTags,
-  isCrossLayerFlowQuestion,
-  resolveQuestionCapabilityTags
-} from "./flow-capabilities.js";
 import {
   applyLearnedKnowledgePromotionActions,
   applyLearnedKnowledgeObservation,
@@ -188,6 +178,10 @@ import {
   type AskQuestionType
 } from "./question-types.js";
 import {
+  buildQuestionOntologySignals,
+  isCrossLayerFlowQuestion
+} from "./ontology-signals.js";
+import {
   compareAskRetryEvidence,
   decideAskRetry,
   summarizeAskRetryEvidence
@@ -199,7 +193,6 @@ const ServerProjectSchema = z.object({
   workspaceDir: z.string().min(1),
   linkedWorkspaceDirs: z.array(z.string().min(1)).default([]),
   description: z.string().default(""),
-  presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.default("feature"),
   defaultDryRun: z.boolean().default(false),
   retrieval: RetrievalConfigOverrideSchema.optional(),
@@ -226,7 +219,6 @@ const UpsertServerProjectInputSchema = z.object({
   workspaceDir: z.string().min(1),
   linkedWorkspaceDirs: z.array(z.string().min(1)).optional(),
   description: z.string().optional(),
-  presetId: z.string().min(1).optional(),
   defaultMode: RunModeSchema.optional(),
   defaultDryRun: z.boolean().optional(),
   retrieval: RetrievalConfigOverrideSchema.optional(),
@@ -294,6 +286,7 @@ export interface ProjectSearchResult {
     ontologyProjectionLoaded?: boolean;
     ontologyInputLoaded?: boolean;
     ontologyReviewLoaded?: boolean;
+    matchedOntologyConcepts?: string[];
     matchedOntologyNodeIds?: string[];
     matchedOntologyNodeTypes?: string[];
     matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
@@ -315,14 +308,6 @@ export interface ProjectAnalysisResult {
   analyzedAt: string;
   memoryHome: string;
   memoryFiles: string[];
-  projectPreset?: {
-    id?: string;
-    name: string;
-    summary: string;
-    domainPackIds?: string[];
-  };
-  domains?: DomainMaturityResult[];
-  maturitySummary?: DomainMaturityOutput["summary"];
   learnedKnowledge?: {
     generatedAt: string;
     candidateCount: number;
@@ -521,7 +506,7 @@ export interface ProjectAnalysisResult {
     asOfDate: string;
     interfaceCount: number;
     manualOverridesApplied: number;
-    source: "preset-enabled" | "disabled";
+    source: "auto-discovered" | "disabled";
     topInterfaces: Array<{
       interfaceId: string;
       interfaceName: string;
@@ -589,13 +574,10 @@ export interface ProjectAnalysisResult {
     lowConfidenceSignals: string[];
     usedFallback: boolean;
     llmCallCount: number;
-    profileApplied: boolean;
     eaiCatalogCount: number;
     structureIndexCount: number;
     frontCatalogCount?: number;
     frontBackLinkCount?: number;
-    activeDomainCount?: number;
-    overallDomainMaturityScore?: number;
     learnedKnowledgeCount?: number;
     validatedKnowledgeCount?: number;
     knowledgeSchemaEntityCount?: number;
@@ -636,10 +618,6 @@ export interface ProjectAskResponse {
     hydratedEvidenceCount?: number;
     linkedEaiEvidenceCount?: number;
     downstreamTraceCount?: number;
-    domainSelectionMode?: "auto" | "lock";
-    activeDomainIds?: string[];
-    matchedDomainIds?: string[];
-    lockedDomainIds?: string[];
     matchedLearnedKnowledgeIds?: string[];
     frontBackGraphLoaded?: boolean;
     frontBackLinkCount?: number;
@@ -652,6 +630,7 @@ export interface ProjectAskResponse {
     ontologyProjectionLoaded?: boolean;
     ontologyInputLoaded?: boolean;
     ontologyReviewLoaded?: boolean;
+    matchedOntologyConcepts?: string[];
     matchedOntologyNodeIds?: string[];
     matchedOntologyNodeTypes?: string[];
     matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
@@ -898,11 +877,9 @@ const ANALYSIS_CACHE_MAX_AGE_MS = Number.parseInt(
   10
 );
 const ANALYSIS_MEMORY_DIR = "project-analysis";
-const PROFILE_MEMORY_DIR = "project-profile";
 const EAI_MEMORY_DIR = "eai-dictionary";
 const FRONT_CATALOG_MEMORY_DIR = "front-catalog";
 const FRONT_BACK_GRAPH_MEMORY_DIR = "front-back-graph";
-const DOMAIN_MATURITY_MEMORY_DIR = "domain-maturity";
 const LEARNED_KNOWLEDGE_MEMORY_DIR = "learned-knowledge";
 const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
@@ -1337,16 +1314,20 @@ async function syncInternalQmdProjectContexts(options: {
       name: options.analysis.project.name,
       description: options.analysis.project.description,
     },
-    projectPreset: options.analysis.projectPreset,
     summary: options.analysis.summary,
     architecture: options.analysis.architecture,
     keyModules: options.analysis.keyModules,
-    domains: (options.analysis.domains ?? []).map((domain) => ({
-      id: domain.id,
-      name: domain.name,
-      score: domain.score,
-      band: domain.band,
-    })),
+    ontologyGraph: options.analysis.ontologyGraph
+      ? {
+          topChannels: options.analysis.ontologyGraph.topChannels,
+          topDomains: options.analysis.ontologyGraph.topDomains
+        }
+      : undefined,
+    ontologyProjections: options.analysis.ontologyProjections
+      ? {
+          topProjectionTypes: options.analysis.ontologyProjections.topProjectionTypes
+        }
+      : undefined,
     eaiCatalog: options.analysis.eaiCatalog,
     frontBackGraph: options.analysis.frontBackGraph,
     learnedKnowledge: options.analysis.learnedKnowledge,
@@ -1404,13 +1385,24 @@ function compactQueryForSearch(query: string): string {
   return tokens.join(" ");
 }
 
+function summarizeOntologyConceptSignals(signals: string[], limit = 10): string[] {
+  return unique(
+    signals.filter((signal) =>
+      signal.startsWith("channel:") ||
+      signal.startsWith("concept:") ||
+      signal.startsWith("module-role:") ||
+      signal.startsWith("process:") ||
+      signal.startsWith("module:")
+    )
+  ).slice(0, limit);
+}
+
 function buildAskQueryCandidates(options: {
   question: string;
   strategy: AskStrategyType;
   questionType?: AskQuestionType;
   targetSymbols?: string[];
   moduleCandidates?: string[];
-  domainPacks?: DomainPack[];
   questionTags?: string[];
   learnedMatches?: LearnedKnowledgeMatch[];
   retrievalUnitTerms?: string[];
@@ -1423,14 +1415,12 @@ function buildAskQueryCandidates(options: {
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
   const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
-  const questionTags =
-    options.questionTags ??
-    extractQuestionCapabilityTags(question, {
-      domainPacks: options.domainPacks
-    });
-  const capabilityTerms = expandCapabilitySearchTerms(questionTags, {
-    domainPacks: options.domainPacks
-  }).slice(0, 8);
+  const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question });
+  const capabilityTerms = unique(
+    questionTags
+      .flatMap((tag) => tag.replace(/^(channel:|concept:|module-role:|process:|module:)/, "").split(/[:/_-]+/))
+      .filter((term) => term.length >= 3 && !term.startsWith("action"))
+  ).slice(0, 8);
   const retrievalContract = getAskQuestionTypeRetrievalContract(
     options.questionType ?? classifyAskQuestionType({ question, strategy: options.strategy, moduleCandidates }).type
   );
@@ -2155,15 +2145,7 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
   const resolvedWorkspace = await ensureWorkspaceDir(parsed.workspaceDir);
   const hasLinkedWorkspaceUpdate = Array.isArray(parsed.linkedWorkspaceDirs);
   const resolvedLinkedWorkspaces = await ensureLinkedWorkspaceDirs(parsed.linkedWorkspaceDirs);
-  const normalizedPresetId = parsed.presetId?.trim() || undefined;
   const normalizedModelId = parsed.llm?.modelId?.trim() || undefined;
-  if (normalizedPresetId) {
-    const preset = await getProjectPresetById(normalizedPresetId);
-    if (!preset) {
-      throw new Error(`preset not found: ${normalizedPresetId}`);
-    }
-  }
-
   if (normalizedModelId) {
     const settings = await loadLlmRuntimeSettings();
     if (!settings.models.some((model) => model.id === normalizedModelId)) {
@@ -2188,7 +2170,6 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
         ? resolvedLinkedWorkspaces
         : (existing.linkedWorkspaceDirs ?? []),
       description: parsed.description ?? existing.description,
-      presetId: normalizedPresetId ?? existing.presetId,
       defaultMode: parsed.defaultMode ?? existing.defaultMode,
       defaultDryRun: parsed.defaultDryRun ?? existing.defaultDryRun,
       retrieval: parsed.retrieval ?? existing.retrieval,
@@ -2207,7 +2188,6 @@ export async function upsertServerProject(input: UpsertServerProjectInput): Prom
     workspaceDir: resolvedWorkspace,
     linkedWorkspaceDirs: resolvedLinkedWorkspaces,
     description: parsed.description ?? "",
-    presetId: normalizedPresetId,
     defaultMode: parsed.defaultMode ?? "feature",
     defaultDryRun: parsed.defaultDryRun ?? false,
     retrieval: parsed.retrieval,
@@ -2554,131 +2534,6 @@ function buildAnalysisMarkdown(input: {
   lines.push("## Low Confidence Signals");
   for (const signal of input.lowConfidenceSignals) {
     lines.push(`- ${signal}`);
-  }
-  lines.push("");
-  return `${lines.join("\n")}\n`;
-}
-
-function buildProjectPresetMarkdown(input: {
-  project: ServerProject;
-  preset: ProjectPreset;
-  updatedAt: string;
-  activeDomains?: DomainPack[];
-  maturity?: DomainMaturityOutput;
-}): string {
-  const lines: string[] = [];
-  lines.push("# Project Preset Context");
-  lines.push("");
-  lines.push(`- projectId: ${input.project.id}`);
-  lines.push(`- projectName: ${input.project.name}`);
-  lines.push(`- preset: ${input.preset.name}`);
-  lines.push(`- updatedAt: ${input.updatedAt}`);
-  lines.push("");
-  lines.push("## Summary");
-  lines.push(input.preset.summary);
-  lines.push("");
-  lines.push("## Key Facts");
-  for (const fact of input.preset.keyFacts) {
-    lines.push(`- ${fact}`);
-  }
-  lines.push("");
-  if ((input.activeDomains ?? []).length > 0) {
-    lines.push("## Active Domains");
-    for (const domain of input.activeDomains ?? []) {
-      lines.push(`- ${domain.name} (${domain.id})`);
-    }
-    lines.push("");
-  }
-  if (input.maturity && input.maturity.domains.length > 0) {
-    lines.push("## Domain Maturity");
-    for (const domain of input.maturity.domains.slice(0, 12)) {
-      lines.push(`- ${domain.name} | score=${domain.score} | band=${domain.band} | signals=${domain.strongestSignals.join(", ") || "-"}`);
-    }
-    lines.push("");
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-async function resolveProjectDomainPacks(preset?: ProjectPreset): Promise<DomainPack[]> {
-  const allDomainPacks = await listDomainPacks();
-  if (!preset) {
-    return [];
-  }
-  return resolveDomainPacksByIds(allDomainPacks, preset.domainPackIds);
-}
-
-function uniqueText(items: string[]): string[] {
-  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
-}
-
-function resolveAskDomainSelection(options: {
-  question: string;
-  activeDomainPacks: DomainPack[];
-  requestedDomainIds?: string[];
-  mode?: "auto" | "lock";
-}): {
-  effectiveDomainPacks: DomainPack[];
-  matchedDomains: Array<{ id: string; name: string; score: number; matchedTags: string[]; reasons: string[] }>;
-  lockedDomainIds: string[];
-  mode: "auto" | "lock";
-} {
-  const mode = options.mode === "lock" ? "lock" : "auto";
-  const lockedDomainIds = uniqueText(options.requestedDomainIds ?? []).filter((id) =>
-    options.activeDomainPacks.some((domainPack) => domainPack.id === id)
-  );
-  const matchedDomains = detectQuestionDomainPacks(options.question, options.activeDomainPacks);
-
-  if (mode === "lock" && lockedDomainIds.length > 0) {
-    return {
-      effectiveDomainPacks: resolveDomainPacksByIds(options.activeDomainPacks, lockedDomainIds),
-      matchedDomains,
-      lockedDomainIds,
-      mode
-    };
-  }
-
-  const autoMatchedIds = matchedDomains.map((domain) => domain.id);
-  return {
-    effectiveDomainPacks:
-      autoMatchedIds.length > 0
-        ? resolveDomainPacksByIds(options.activeDomainPacks, autoMatchedIds)
-        : options.activeDomainPacks,
-    matchedDomains,
-    lockedDomainIds: [],
-    mode: "auto"
-  };
-}
-
-function buildDomainMaturityMarkdown(input: {
-  project: ServerProject;
-  analyzedAt: string;
-  maturity: DomainMaturityOutput;
-}): string {
-  const lines: string[] = [];
-  lines.push("# Domain Maturity");
-  lines.push("");
-  lines.push(`- projectId: ${input.project.id}`);
-  lines.push(`- projectName: ${input.project.name}`);
-  lines.push(`- analyzedAt: ${input.analyzedAt}`);
-  lines.push(`- overallScore: ${input.maturity.summary.overallScore}`);
-  lines.push(`- activeCount: ${input.maturity.summary.activeCount}`);
-  lines.push(`- matureCount: ${input.maturity.summary.matureCount}`);
-  lines.push("");
-  lines.push("## Domains");
-  for (const domain of input.maturity.domains) {
-    lines.push(`- ${domain.name} (${domain.id}) | score=${domain.score} | band=${domain.band}`);
-    lines.push(
-      `  - counts: capabilities=${domain.counts.capabilitiesMatched}, screens=${domain.counts.screenCount}, backend=${domain.counts.backendRouteCount}, links=${domain.counts.linkCount}, downstream=${domain.counts.downstreamTraceCount}, eai=${domain.counts.eaiCount}, exemplars=${domain.counts.exemplarPassed}/${domain.counts.exemplarTotal}`
-    );
-    lines.push(
-      `  - breakdown: vocab=${domain.breakdown.vocabularyCoverage}, front=${domain.breakdown.frontendCoverage}, back=${domain.breakdown.backendCoverage}, link=${domain.breakdown.crossLayerCoverage}, downstream=${domain.breakdown.downstreamCoverage}, integration=${domain.breakdown.integrationCoverage}, regression=${domain.breakdown.regressionCoverage}`
-    );
-    if (domain.strongestSignals.length > 0) {
-      lines.push(`  - strongest: ${domain.strongestSignals.join(", ")}`);
-    }
-    if (domain.weakestSignals.length > 0) {
-      lines.push(`  - weakest: ${domain.weakestSignals.join(", ")}`);
-    }
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
@@ -6026,30 +5881,9 @@ export async function analyzeServerProject(options: {
 
     const extStats = buildFileExtensionStats(files);
     const topDirs = buildTopDirectoryStats(files);
-    const presetList = await listProjectPresets();
-    let projectPreset =
-      (warmup.project.presetId ? await getProjectPresetById(warmup.project.presetId) : undefined) ??
-      matchProjectPreset({
-        project: warmup.project,
-        files,
-        presets: presetList
-      });
-    if (warmup.project.presetId && !projectPreset) {
-      await appendProjectDebugEvent({
-        timestamp: nowIso(),
-        projectId: options.projectId,
-        stage: "analyze",
-        status: "info",
-        message: `configured preset not found: ${warmup.project.presetId}`
-      });
-    }
     const generatedAt = nowIso();
-    const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
-
-    let presetMemoryFiles: string[] = [];
-
-    const eaiEnabled = Boolean(projectPreset?.eai?.enabled);
-    const eaiPresetAsOfDate = projectPreset?.eai?.asOfDate?.trim();
+    const eaiEnabled = true;
+    const eaiPresetAsOfDate = "";
     let eaiEntries: EaiDictionaryEntry[] = [];
     let eaiMemoryFiles: string[] = [];
     let eaiAsOfDate = eaiPresetAsOfDate || generatedAt.slice(0, 10);
@@ -6068,7 +5902,6 @@ export async function analyzeServerProject(options: {
       const autoEaiEntries = await buildEaiDictionary({
         workspaceDir: project.workspaceDir,
         files,
-        servicePathIncludes: projectPreset?.eai?.servicePathIncludes,
         onProgress: async (progress) => {
           await appendProjectDebugEvent({
             timestamp: nowIso(),
@@ -6087,7 +5920,6 @@ export async function analyzeServerProject(options: {
       });
       const overridePayload = await loadEaiOverrides({
         workspaceDir: project.workspaceDir,
-        manualOverridesFile: projectPreset?.eai?.manualOverridesFile
       });
       const overridden = applyEaiOverrides({
         baseEntries: autoEaiEntries,
@@ -6120,7 +5952,7 @@ export async function analyzeServerProject(options: {
           asOfDate: eaiAsOfDate,
           interfaceCount: eaiEntries.length,
           manualOverridesApplied: eaiManualOverridesApplied,
-          overridesSource: projectPreset?.eai?.manualOverridesFile ?? null,
+          overridesSource: null,
           entries: eaiEntries
         }
       });
@@ -6128,7 +5960,7 @@ export async function analyzeServerProject(options: {
         project: warmup.project,
         generatedAt,
         asOfDate: eaiAsOfDate,
-        manualOverridesFile: projectPreset?.eai?.manualOverridesFile
+        manualOverridesFile: undefined
       });
       const maintenancePath = path.resolve(memoryRoot, EAI_MEMORY_DIR, "maintenance-guide.md");
       await fs.mkdir(path.dirname(maintenancePath), { recursive: true });
@@ -6168,8 +6000,7 @@ export async function analyzeServerProject(options: {
       });
       frontBackGraph = await buildFrontBackGraph({
         backendWorkspaceDir: project.workspaceDir,
-        frontendWorkspaceDirs,
-        domainPacks: activeDomainPacks
+        frontendWorkspaceDirs
       });
       const frontCatalogDocs = await writeMemoryDocs({
         memoryRoot,
@@ -6230,15 +6061,6 @@ export async function analyzeServerProject(options: {
         }
       });
     }
-
-    const domainMaturity = computeDomainMaturity({
-      domainPacks: activeDomainPacks,
-      frontBackGraph,
-      structure: {
-        entries: structure.snapshot.entries
-      },
-      eaiEntries
-    });
 
     const analyzeInputCompactionLimits = resolveAnalyzeInputCompactionLimits({
       structureEntryCount: Object.keys(structure.snapshot.entries).length,
@@ -6342,8 +6164,7 @@ export async function analyzeServerProject(options: {
       },
       frontBackGraph: analyzeInputs.frontBackGraph,
       eaiEntries: analyzeInputs.eaiEntries,
-      learnedKnowledge,
-      domainPacks: activeDomainPacks
+      learnedKnowledge
     });
     await appendProjectDebugEvent({
       timestamp: nowIso(),
@@ -6504,43 +6325,6 @@ export async function analyzeServerProject(options: {
       }
     });
 
-    if (projectPreset) {
-      const presetMarkdown = buildProjectPresetMarkdown({
-        project: warmup.project,
-        preset: projectPreset,
-        updatedAt: generatedAt,
-        activeDomains: activeDomainPacks,
-        maturity: domainMaturity
-      });
-      const presetDocs = await writeMemoryDocs({
-        memoryRoot,
-        groupDir: PROFILE_MEMORY_DIR,
-        latestFileName: "latest.md",
-        content: presetMarkdown
-      });
-      presetMemoryFiles = [presetDocs.latestPath, presetDocs.snapshotPath];
-    }
-    const domainMaturityDocs = await writeMemoryDocs({
-      memoryRoot,
-      groupDir: DOMAIN_MATURITY_MEMORY_DIR,
-      latestFileName: "latest.md",
-      content: buildDomainMaturityMarkdown({
-        project: warmup.project,
-        analyzedAt: generatedAt,
-        maturity: domainMaturity
-      })
-    });
-    const domainMaturityJsonPath = await writeMemoryJson({
-      memoryRoot,
-      groupDir: DOMAIN_MATURITY_MEMORY_DIR,
-      fileName: "latest.json",
-      payload: domainMaturity
-    });
-    const domainMaturityMemoryFiles = [
-      domainMaturityDocs.latestPath,
-      domainMaturityDocs.snapshotPath,
-      domainMaturityJsonPath
-    ];
     const learnedKnowledgeDocs = await writeMemoryDocs({
       memoryRoot,
       groupDir: LEARNED_KNOWLEDGE_MEMORY_DIR,
@@ -6707,25 +6491,6 @@ export async function analyzeServerProject(options: {
         description: warmup.project.description,
         workspaceDir: warmup.project.workspaceDir
       },
-      knownProjectContext: projectPreset
-        ? {
-            preset: projectPreset.name,
-            summary: projectPreset.summary,
-            keyFacts: projectPreset.keyFacts,
-            domainPackIds: projectPreset.domainPackIds ?? []
-          }
-        : null,
-      domainMaturity: {
-        overallScore: domainMaturity.summary.overallScore,
-        domains: domainMaturity.domains.slice(0, 12).map((domain) => ({
-          id: domain.id,
-          name: domain.name,
-          score: domain.score,
-          band: domain.band,
-          strongestSignals: domain.strongestSignals,
-          weakestSignals: domain.weakestSignals
-        }))
-      },
       learnedKnowledge: {
         candidateCount: learnedKnowledge.summary.candidateCount,
         validatedCount: learnedKnowledge.summary.validatedCount,
@@ -6838,7 +6603,6 @@ export async function analyzeServerProject(options: {
       systemPrompt: [
         "You are an architecture analyst for a local coding runtime.",
         "Return ONLY one JSON object.",
-        "Use knownProjectContext as prior domain context when provided.",
         "If confidence is low, explicitly include missing-coverage risks and lower confidence.",
         "Do not fabricate files or dependencies."
       ].join("\n"),
@@ -6900,10 +6664,7 @@ export async function analyzeServerProject(options: {
         `seedAverageConfidence=${avgConfidence.toFixed(2)}`,
         `structureFiles=${structure.snapshot.stats.fileCount}`,
         `structureMethods=${structure.snapshot.stats.methodCount}`,
-        projectPreset ? `projectPreset=${projectPreset.name}` : "",
         `eaiCatalogCount=${eaiEntries.length}`,
-        `activeDomainCount=${activeDomainPacks.length}`,
-        `overallDomainMaturity=${domainMaturity.summary.overallScore}`,
         `knowledgeEntities=${knowledgeSchema.summary.entityCount}`,
         `knowledgeEdges=${knowledgeSchema.summary.edgeCount}`,
         `retrievalUnits=${retrievalUnits.summary.unitCount}`
@@ -6930,10 +6691,8 @@ export async function analyzeServerProject(options: {
       );
       const extraMemoryFiles = [
         ...structure.memoryFiles,
-        ...presetMemoryFiles,
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
-        ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
         ...knowledgeSchemaMemoryFiles,
         ...retrievalUnitMemoryFiles,
@@ -6971,10 +6730,8 @@ export async function analyzeServerProject(options: {
         analysisFiles.latestPath,
         analysisFiles.snapshotPath,
         ...structure.memoryFiles,
-        ...presetMemoryFiles,
         ...eaiMemoryFiles,
         ...frontBackMemoryFiles,
-        ...domainMaturityMemoryFiles,
         ...learnedKnowledgeMemoryFiles,
         ...knowledgeSchemaMemoryFiles,
         ...retrievalUnitMemoryFiles,
@@ -6983,16 +6740,6 @@ export async function analyzeServerProject(options: {
         ...ontologyInputMemoryFiles,
         ...ontologyReviewMemoryFiles
       ]),
-      projectPreset: projectPreset
-        ? {
-            id: projectPreset.id,
-            name: projectPreset.name,
-            summary: projectPreset.summary,
-            domainPackIds: projectPreset.domainPackIds ?? []
-          }
-        : undefined,
-      domains: domainMaturity.domains,
-      maturitySummary: domainMaturity.summary,
       learnedKnowledge: {
         generatedAt: learnedKnowledge.generatedAt,
         candidateCount: learnedKnowledge.summary.candidateCount,
@@ -7054,7 +6801,7 @@ export async function analyzeServerProject(options: {
             asOfDate: eaiAsOfDate,
             interfaceCount: eaiEntries.length,
             manualOverridesApplied: eaiManualOverridesApplied,
-            source: "preset-enabled",
+            source: "auto-discovered",
             topInterfaces: rankEaiDictionaryEntriesForSummary(eaiEntries, 20).map((entry) => ({
               interfaceId: entry.interfaceId,
               interfaceName: entry.interfaceName,
@@ -7127,13 +6874,10 @@ export async function analyzeServerProject(options: {
         lowConfidenceSignals,
         usedFallback: generation.usedFallback,
         llmCallCount: generation.liveCallCount,
-        profileApplied: Boolean(projectPreset),
         eaiCatalogCount: eaiEntries.length,
         structureIndexCount: structure.snapshot.stats.fileCount,
         frontCatalogCount: frontBackGraph?.frontend.screenCount ?? 0,
         frontBackLinkCount: frontBackGraph?.links.length ?? 0,
-        activeDomainCount: activeDomainPacks.length,
-        overallDomainMaturityScore: domainMaturity.summary.overallScore,
         learnedKnowledgeCount: learnedKnowledge.summary.candidateCount,
         validatedKnowledgeCount: learnedKnowledge.summary.validatedCount,
         knowledgeSchemaEntityCount: knowledgeSchema.summary.entityCount,
@@ -7211,7 +6955,6 @@ function qualityGateForAsk(options: {
     serviceHints?: string[];
   }>;
   moduleCandidates?: string[];
-  domainPacks?: DomainPack[];
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
@@ -7237,7 +6980,6 @@ function qualityGateForAsk(options: {
     linkedEaiEvidence: options.linkedEaiEvidence,
     linkedFlowEvidence: options.linkedFlowEvidence,
     moduleCandidates: options.moduleCandidates,
-    domainPacks: options.domainPacks,
     questionTags: options.questionTags,
     matchedKnowledgeIds: options.matchedKnowledgeIds,
     matchedRetrievalUnitStatuses: options.matchedRetrievalUnitStatuses,
@@ -7321,8 +7063,6 @@ export async function askServerProject(options: {
   limit?: number;
   maxLlmCalls?: number;
   deterministicOnly?: boolean;
-  domainPackIds?: string[];
-  domainSelectionMode?: "auto" | "lock";
 }): Promise<ProjectAskResponse> {
   await appendProjectDebugEvent({
     timestamp: nowIso(),
@@ -7332,9 +7072,7 @@ export async function askServerProject(options: {
     message: "project ask started",
     metadata: {
       question: options.question,
-      deterministicOnly: Boolean(options.deterministicOnly),
-      domainSelectionMode: options.domainSelectionMode ?? "auto",
-      requestedDomainIds: options.domainPackIds ?? []
+      deterministicOnly: Boolean(options.deterministicOnly)
     }
   });
 
@@ -7478,8 +7216,6 @@ export async function askServerProject(options: {
       response: Pick<ProjectAskResponse, "question" | "confidence" | "qualityGatePassed" | "attempts" | "evidence" | "caveats" | "retrieval" | "diagnostics">;
       matchedRetrievalUnits?: Array<{ unit: { id: string; validatedStatus: "candidate" | "validated" | "derived" | "stale" } }>;
       matchedLearnedKnowledgeIds?: string[];
-      activeDomainIds?: string[];
-      matchedDomainIds?: string[];
       plannedQuery?: string;
     }) => {
       const artifact = buildProjectAskEvaluationArtifact({
@@ -7504,8 +7240,6 @@ export async function askServerProject(options: {
         matchedOntologyNodeStatuses: input.response.diagnostics.matchedOntologyNodeStatuses ?? [],
         matchedOntologyProjectionIds: input.response.diagnostics.matchedOntologyProjectionIds ?? [],
         matchedKnowledgeIds: input.matchedLearnedKnowledgeIds ?? [],
-        activeDomainIds: input.activeDomainIds ?? [],
-        matchedDomainIds: input.matchedDomainIds ?? [],
         qualityGateFailures: input.response.diagnostics.qualityGateFailures,
         retryStopReason: input.response.diagnostics.retryStopReason,
         evidenceCount: input.response.evidence.length,
@@ -7797,20 +7531,6 @@ export async function askServerProject(options: {
       });
     }
 
-    const activeDomainPacks = analysis.projectPreset?.domainPackIds?.length
-      ? resolveDomainPacksByIds(await listDomainPacks(), analysis.projectPreset.domainPackIds)
-      : await resolveProjectDomainPacks(project.presetId ? await getProjectPresetById(project.presetId) : undefined);
-    const domainSelection = resolveAskDomainSelection({
-      question,
-      activeDomainPacks,
-      requestedDomainIds: options.domainPackIds,
-      mode: options.domainSelectionMode
-    });
-    const effectiveDomainPacks = domainSelection.effectiveDomainPacks;
-    const pinnedDomainPacks = domainSelection.lockedDomainIds.length > 0
-      ? resolveDomainPacksByIds(effectiveDomainPacks, domainSelection.lockedDomainIds)
-      : [];
-
     const eaiSnapshot = await readEaiDictionarySnapshot(memoryRoot);
     if (eaiSnapshot) {
       await appendProjectDebugEvent({
@@ -7893,11 +7613,6 @@ export async function askServerProject(options: {
       });
     }
     const crossLayerFlowQuestion = isCrossLayerFlowQuestion(question);
-    const baseQuestionCapabilityTags = resolveQuestionCapabilityTags({
-      question,
-      domainPacks: effectiveDomainPacks,
-      pinnedDomainPacks
-    });
     const loadAskMemoryPreview = async () => {
       const memoryMarkdownFiles = await collectMemoryMarkdownFiles(memoryRoot, 240);
       const selectedMemoryFiles = selectAskMemoryFiles(memoryMarkdownFiles, intent, questionTypeDecision.type);
@@ -7918,20 +7633,24 @@ export async function askServerProject(options: {
 
     const buildAskEvidenceBundle = async (round: number) => {
       const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
-      const questionTags = unique([...baseQuestionCapabilityTags, ...matchedKnowledge.map((item) => item.id)]);
-      const questionType = classifyAskQuestionType({
+      const seedQuestionSignals = buildQuestionOntologySignals({
+        question,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
+      });
+      const seedQuestionType = classifyAskQuestionType({
         question,
         strategy: strategyDecision.strategy,
         moduleCandidates: strategyDecision.moduleCandidates,
-        questionTags,
+        questionTags: seedQuestionSignals,
         matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
       });
       const rankedRetrievalUnits = retrievalUnitSnapshot
         ? rankRetrievalUnitsForQuestion({
             snapshot: retrievalUnitSnapshot,
             question,
-            questionType: questionType.type,
-            questionTags,
+            questionType: seedQuestionType.type,
+            questionTags: seedQuestionSignals,
             matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
             moduleCandidates: strategyDecision.moduleCandidates,
             limit: 6
@@ -7944,8 +7663,8 @@ export async function askServerProject(options: {
         ? rankOntologyNodesForQuestion({
             snapshot: ontologyGraphSnapshot,
             question,
-            questionType: questionType.type,
-            questionTags,
+            questionType: seedQuestionType.type,
+            questionTags: seedQuestionSignals,
             moduleCandidates: strategyDecision.moduleCandidates,
             matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
             matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
@@ -7956,31 +7675,43 @@ export async function askServerProject(options: {
         ? rankOntologyProjectionsForQuestion({
             snapshot: ontologyProjectionSnapshot,
             question,
-            questionType: questionType.type,
+            questionType: seedQuestionType.type,
             matchedNodeIds: rankedOntologyNodes.map((item) => item.node.id),
             limit: 4
           })
         : [];
+      const questionTags = buildQuestionOntologySignals({
+        question,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
+        matchedOntologyNodes: rankedOntologyNodes.map((item) => item.node),
+        matchedOntologyLabels: rankedOntologyNodes.map((item) => item.node.label),
+        matchedRetrievalUnitTerms: rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 4))
+      });
+      const questionType = classifyAskQuestionType({
+        question,
+        strategy: strategyDecision.strategy,
+        moduleCandidates: strategyDecision.moduleCandidates,
+        questionTags,
+        matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
+      });
       const ontologyTerms = collectOntologyQueryTerms(rankedOntologyNodes, 10);
+      const matchedOntologyConcepts = summarizeOntologyConceptSignals(questionTags);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
         stage: "ask",
         status: "info",
-        message: round === 1 ? "resolved ask domains" : `refined ask evidence context (round ${round})`,
+        message: round === 1 ? "resolved ask ontology context" : `refined ask ontology context (round ${round})`,
         metadata: {
           round,
-          mode: domainSelection.mode,
-          activeDomainIds: activeDomainPacks.map((item) => item.id),
-          matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+          matchedOntologyConcepts,
           matchedLearnedKnowledgeIds: matchedKnowledge.map((item) => item.id),
           matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
           matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
           matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
           matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
-          lockedDomainIds: domainSelection.lockedDomainIds,
-          effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
-          questionCapabilityTags: questionTags,
+          questionOntologySignals: questionTags,
           questionType: questionType.type
         }
       });
@@ -7991,7 +7722,6 @@ export async function askServerProject(options: {
         questionType: questionType.type,
         targetSymbols: strategyDecision.targetSymbols,
         moduleCandidates: strategyDecision.moduleCandidates,
-        domainPacks: effectiveDomainPacks,
         questionTags,
         learnedMatches: matchedKnowledge,
         retrievalUnitTerms,
@@ -8140,7 +7870,6 @@ export async function askServerProject(options: {
             })),
             snapshot: frontBackGraphSnapshot,
             limit: 10,
-            domainPacks: effectiveDomainPacks,
             learnedKnowledge: learnedKnowledgeSnapshot
           })
         : [];
@@ -8282,8 +8011,7 @@ export async function askServerProject(options: {
             question,
             questionTags: questionCapabilityTags,
             linkedFlowEvidence,
-            downstreamTraces: downstreamFlowTraces,
-            domainPacks: effectiveDomainPacks
+            downstreamTraces: downstreamFlowTraces
           })
         : null;
 
@@ -8309,7 +8037,6 @@ export async function askServerProject(options: {
           linkedEaiEvidence,
           linkedFlowEvidence,
           moduleCandidates: strategyDecision.moduleCandidates,
-          domainPacks: effectiveDomainPacks,
           questionTags: questionCapabilityTags,
           matchedKnowledgeIds: [
             ...matchedLearnedKnowledge.map((item) => item.id),
@@ -8322,11 +8049,7 @@ export async function askServerProject(options: {
         })
       : null;
 
-    const domainSpecificCrossLayerQuestion = questionCapabilityTags.some((tag) =>
-      /^(sunshine-loan|credit-low-worker-loan|benefit-claim|accident-benefit-claim|agent-benefit-claim|diff-benefit-claim|claim-doc|claim-submit|claim-inquiry|low-worker-loan-)/.test(
-        tag
-      )
-    );
+    const ontologySpecificCrossLayerQuestion = summarizeOntologyConceptSignals(questionCapabilityTags).length > 0;
 
     const askRetryTargetConfidence = 0.65;
     const askRetryMinConfidenceGain = 0.04;
@@ -8343,7 +8066,7 @@ export async function askServerProject(options: {
       Boolean(deterministicCrossLayerOutput) &&
       Boolean(deterministicCrossLayerGate?.passed) &&
       deterministicCrossLayerConfidence >= askRetryTargetConfidence &&
-      (domainSpecificCrossLayerQuestion || downstreamFlowTraces.length > 0 || linkedFlowEvidence.length >= 4);
+      (ontologySpecificCrossLayerQuestion || downstreamFlowTraces.length > 0 || linkedFlowEvidence.length >= 4);
 
     if (acceptDeterministicCrossLayer) {
       passed = true;
@@ -8433,12 +8156,11 @@ export async function askServerProject(options: {
               moduleCandidates: strategyDecision.moduleCandidates,
               requireCrossLayerFlow: crossLayerFlowQuestion,
               questionType: questionTypeDecision.type,
-              domainSelectionMode: domainSelection.mode,
-              matchedDomains: domainSelection.matchedDomains.map((item) => item.id),
+              matchedOntologyConcepts: summarizeOntologyConceptSignals(questionCapabilityTags),
               matchedLearnedKnowledge: matchedLearnedKnowledge.map((item) => item.id),
               matchedRetrievalUnits: matchedRetrievalUnits.map((item) => item.unit.id),
-              lockedDomains: domainSelection.lockedDomainIds,
-              effectiveDomains: effectiveDomainPacks.map((item) => item.id)
+              matchedOntologyNodes: rankedOntologyNodes.map((item) => item.node.id),
+              matchedOntologyProjections: rankedOntologyProjections.map((item) => item.projection.id)
             },
             projectAnalysis: {
               summary: analysis.summary,
@@ -8446,7 +8168,8 @@ export async function askServerProject(options: {
               keyModules: analysis.keyModules,
               confidence: analysis.confidence,
               risks: analysis.risks,
-              projectPreset: analysis.projectPreset ?? null,
+              ontologyGraph: analysis.ontologyGraph ?? null,
+              ontologyProjections: analysis.ontologyProjections ?? null,
               eaiCatalog: analysis.eaiCatalog ?? null,
               structureCatalog: analysis.structureCatalog ?? null
             },
@@ -8537,7 +8260,6 @@ export async function askServerProject(options: {
           linkedEaiEvidence,
           linkedFlowEvidence,
           moduleCandidates: strategyDecision.moduleCandidates,
-          domainPacks: effectiveDomainPacks,
           questionTags: questionCapabilityTags,
           matchedKnowledgeIds: [
             ...matchedLearnedKnowledge.map((item) => item.id),
@@ -8697,9 +8419,7 @@ export async function askServerProject(options: {
       `- questionType: ${questionTypeDecision.type}`,
       `- questionTypeConfidence: ${questionTypeDecision.confidence.toFixed(2)}`,
       `- strategyConfidence: ${strategyDecision.confidence.toFixed(2)}`,
-      `- domainSelectionMode: ${domainSelection.mode}`,
-      `- activeDomains: ${activeDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
-      `- matchedDomains: ${domainSelection.matchedDomains.map((item) => item.id).join(", ") || "(none)"}`,
+      `- matchedOntologyConcepts: ${summarizeOntologyConceptSignals(questionCapabilityTags).join(", ") || "(none)"}`,
       `- matchedLearnedKnowledge: ${matchedLearnedKnowledge.map((item) => item.id).join(", ") || "(none)"}`,
       `- matchedRetrievalUnits: ${matchedRetrievalUnits.map((item) => item.unit.id).join(", ") || "(none)"}`,
       `- matchedRetrievalUnitStatuses: ${
@@ -8708,8 +8428,6 @@ export async function askServerProject(options: {
       `- matchedOntologyNodes: ${rankedOntologyNodes.map((item) => item.node.id).join(", ") || "(none)"}`,
       `- matchedOntologyNodeStatuses: ${rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus).join(", ") || "(none)"}`,
       `- matchedOntologyProjections: ${rankedOntologyProjections.map((item) => item.projection.id).join(", ") || "(none)"}`,
-      `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
-      `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
         strategyDecision.moduleCandidates.length > 0 ? strategyDecision.moduleCandidates.join(", ") : "(none)"
       }`,
@@ -8804,13 +8522,10 @@ export async function askServerProject(options: {
         strategyConfidence: strategyDecision.confidence,
         strategyLlmUsed: strategyDecision.llmUsed,
         strategyReason: strategyDecision.reason,
-        domainSelectionMode: domainSelection.mode,
-        activeDomainIds: activeDomainPacks.map((item) => item.id),
-        matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
+        matchedOntologyConcepts: summarizeOntologyConceptSignals(questionCapabilityTags),
         matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         matchedRetrievalUnitIds: matchedRetrievalUnits.map((item) => item.unit.id),
         matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
-        lockedDomainIds: domainSelection.lockedDomainIds,
         scopeModules: strategyDecision.moduleCandidates,
         hydratedEvidenceCount: hydratedEvidence.length,
         linkedEaiEvidenceCount: linkedEaiEvidence.length,
@@ -8842,8 +8557,6 @@ export async function askServerProject(options: {
       response,
       matchedRetrievalUnits,
       matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-      activeDomainIds: activeDomainPacks.map((item) => item.id),
-      matchedDomainIds: domainSelection.matchedDomains.map((item) => item.id),
       plannedQuery: expandedQueries[0] ?? question
     });
     response.diagnostics.memoryFiles = unique([
@@ -9270,8 +8983,7 @@ export async function executeServerProjectReplay(options: {
         projectId: project.id,
         question: candidate.questionOrQuery,
         maxAttempts: 2,
-        deterministicOnly: false,
-        domainSelectionMode: "auto"
+        deterministicOnly: false
       });
       results.push({
         kind: "ask",
@@ -9364,8 +9076,6 @@ export async function searchServerProject(options: {
       mergeRetrievalWithModelCaps(retrievalOverrides, llmContext.stageTokenCaps)
     );
     const memoryRoot = resolveMemoryHome(project.workspaceDir);
-    const projectPreset = project.presetId ? await getProjectPresetById(project.presetId) : undefined;
-    const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
     let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
     const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
     const ontologyGraphSnapshot = await readOntologyGraphSnapshot(memoryRoot);
@@ -9375,8 +9085,10 @@ export async function searchServerProject(options: {
     const moduleCandidates = extractModuleCandidates(query);
     const strategyDecision = classifyQuestionIntentFallback(query);
     const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6);
-    const questionTags = extractQuestionCapabilityTags(query, {
-      domainPacks: activeDomainPacks
+    const questionTags = buildQuestionOntologySignals({
+      question: query,
+      moduleCandidates,
+      matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
     });
     const questionTypeDecision = classifyAskQuestionType({
       question: query,

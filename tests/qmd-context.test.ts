@@ -8,10 +8,6 @@ describe("buildProjectQmdContextPayload", () => {
         name: "dcp-services",
         description: "backend monorepo",
       },
-      projectPreset: {
-        name: "dcp-services",
-        summary: "gateway + domain services + EAI",
-      },
       summary: "퇴직연금과 보험 도메인이 공통 게이트웨이와 EAI를 통해 연결된다.",
       architecture: [
         "dcp-gateway routes /gw/api to domain services",
@@ -29,14 +25,13 @@ describe("buildProjectQmdContextPayload", () => {
           role: "retire-pension business services",
         },
       ],
-      domains: [
-        {
-          id: "retire-pension",
-          name: "Retire Pension",
-          score: 88,
-          band: "strong",
-        },
-      ],
+      ontologyGraph: {
+        topChannels: [{ id: "monimo", count: 3 }],
+        topDomains: [{ id: "retire-pension", count: 8 }],
+      },
+      ontologyProjections: {
+        topProjectionTypes: ["front-back-flow", "integration"],
+      },
       eaiCatalog: {
         interfaceCount: 12,
         topInterfaces: [
@@ -67,7 +62,9 @@ describe("buildProjectQmdContextPayload", () => {
     });
 
     expect(payload.globalContext).toContain("dcp-services");
-    expect(payload.globalContext).toContain("active-domains: retire-pension");
+    expect(payload.globalContext).toContain("ontology-concepts: retire-pension(8)");
+    expect(payload.globalContext).toContain("ontology-channels: monimo(3)");
+    expect(payload.globalContext).toContain("ontology-projections: front-back-flow, integration");
     expect(payload.globalContext).toContain("front-back-graph: 1 frontend workspaces, 42 links");
     expect(payload.globalContext).toContain("learned-knowledge: 3 candidates, 1 validated, 1 stale");
 

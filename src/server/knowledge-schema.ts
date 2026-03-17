@@ -1,6 +1,5 @@
 import path from "node:path";
 import { z } from "zod";
-import type { DomainPack } from "./domain-packs.js";
 import type { EaiDictionaryEntry } from "./eai-dictionary.js";
 import type { FrontBackGraphSnapshot } from "./front-back-graph.js";
 import type { LearnedKnowledgeCandidate, LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
@@ -158,7 +157,6 @@ interface BuildKnowledgeSchemaOptions {
   frontBackGraph?: FrontBackGraphSnapshot;
   eaiEntries?: EaiDictionaryEntry[];
   learnedKnowledge?: LearnedKnowledgeSnapshot;
-  domainPacks?: DomainPack[];
 }
 
 function toForwardSlash(value: string): string {
@@ -314,7 +312,7 @@ function extractModuleName(relativePath: string, fallback?: string): string {
   return fallback ? slugify(fallback) : "workspace-root";
 }
 
-function classifyCapabilityTags(tags: string[], domainPacks?: DomainPack[]): Pick<KnowledgeMetadata, "domains" | "subdomains" | "actions"> {
+function classifyCapabilityTags(tags: string[]): Pick<KnowledgeMetadata, "domains" | "subdomains" | "actions"> {
   const domains = new Set<string>();
   const subdomains = new Set<string>();
   const actions = new Set<string>();
@@ -323,26 +321,20 @@ function classifyCapabilityTags(tags: string[], domainPacks?: DomainPack[]): Pic
   for (const tag of tagSet) {
     if (tag.startsWith("action-")) {
       actions.add(tag);
+      continue;
     }
-  }
-
-  for (const pack of domainPacks ?? []) {
-    let matchedPack = false;
-    for (const capability of pack.capabilityTags) {
-      if (!tagSet.has(capability.tag)) {
-        continue;
+    if (tag.startsWith("concept:")) {
+      const value = tag.replace(/^concept:/, "");
+      if (value) {
+        domains.add(value);
       }
-      matchedPack = true;
-      if (capability.kind === "action") {
-        actions.add(capability.tag);
-      } else if (capability.kind === "subdomain") {
-        subdomains.add(capability.tag);
-      } else {
-        domains.add(capability.tag);
-      }
+      continue;
     }
-    if (matchedPack) {
-      domains.add(pack.id);
+    if (tag.startsWith("subdomain:")) {
+      const value = tag.replace(/^subdomain:/, "");
+      if (value) {
+        subdomains.add(value);
+      }
     }
   }
 
@@ -1259,7 +1251,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   const frontendModuleId = options.frontBackGraph ? ensureModule("frontend-linked-workspaces", "front-back-graph") : undefined;
 
   for (const screen of options.frontBackGraph?.frontend.screens ?? []) {
-    const tags = classifyCapabilityTags(screen.capabilityTags ?? [], options.domainPacks);
+    const tags = classifyCapabilityTags(screen.capabilityTags ?? []);
     const channels = inferChannels([screen.filePath, screen.screenCode, ...(screen.labels ?? [])]);
     const fileId = `file:frontend:${screen.filePath}`;
     upsertEntity({
@@ -1305,7 +1297,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       if (!httpCall.functionName) {
         continue;
       }
-      const actionTags = classifyCapabilityTags(screen.capabilityTags ?? [], options.domainPacks);
+      const actionTags = classifyCapabilityTags(screen.capabilityTags ?? []);
       const actionHints = inferActionsFromTexts(
         httpCall.functionName,
         httpCall.rawUrl,
@@ -1370,7 +1362,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   }
 
   for (const route of options.frontBackGraph?.frontend.routes ?? []) {
-    const tags = classifyCapabilityTags(route.capabilityTags ?? [], options.domainPacks);
+    const tags = classifyCapabilityTags(route.capabilityTags ?? []);
     const channels = inferChannels([route.routePath, route.screenPath, route.screenCode, ...(route.notes ?? [])]);
     const fileId = `file:frontend:${route.screenPath}`;
     const routeId = `route:${route.routePath}:${route.screenPath}`;
@@ -1414,7 +1406,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   }
 
   for (const link of options.frontBackGraph?.links ?? []) {
-    const tags = classifyCapabilityTags(link.capabilityTags ?? [], options.domainPacks);
+    const tags = classifyCapabilityTags(link.capabilityTags ?? []);
     const channels = inferChannels([
       link.frontend.screenCode,
       link.frontend.screenPath,
@@ -2017,30 +2009,6 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
-  for (const pack of options.domainPacks ?? []) {
-    const packId = `knowledge:pack:${pack.id}`;
-    upsertEntity({
-      id: packId,
-      type: "knowledge-cluster",
-      label: pack.name,
-      summary: pack.description || `${pack.name} domain pack`,
-      metadata: makeMetadata({
-        domains: [pack.id],
-        confidence: 0.96,
-        evidencePaths: [],
-        sourceType: "domain-pack",
-        validatedStatus: "validated"
-      }),
-      attributes: {
-        packId: pack.id,
-        families: pack.families,
-        capabilityCount: pack.capabilityTags.length,
-        exemplarCount: pack.exemplars.length,
-        clusterKind: "domain-pack"
-      }
-    });
-  }
-
   const matchableEntities = (): MatchableEntity[] =>
     Array.from(entities.values())
       .filter((entity) => entity.type !== "knowledge-cluster" && entity.type !== "eai-interface")
@@ -2128,33 +2096,6 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
-  for (const entity of Array.from(entities.values())) {
-    if (entity.type === "knowledge-cluster") {
-      continue;
-    }
-    for (const domainId of entity.metadata.domains) {
-      const packId = `knowledge:pack:${domainId}`;
-      if (!entities.has(packId)) {
-        continue;
-      }
-      upsertEdge({
-        id: `edge:belongs-to-domain:${entity.id}:${packId}`,
-        type: "belongs-to-domain",
-        fromId: entity.id,
-        toId: packId,
-        label: `${entity.type} belongs to domain pack`,
-        metadata: makeMetadata({
-          domains: [domainId],
-          confidence: Math.max(0.65, entity.metadata.confidence),
-          evidencePaths: entity.metadata.evidencePaths,
-          sourceType: entity.metadata.sourceType,
-          validatedStatus: entity.metadata.validatedStatus
-        }),
-        attributes: {}
-      });
-    }
-  }
-
   const orderedEntities = Array.from(entities.values()).sort((a, b) => a.id.localeCompare(b.id));
   const orderedEdges = Array.from(edges.values()).sort((a, b) => a.id.localeCompare(b.id));
   const clusterEntities = orderedEntities.filter((entity) => entity.type === "knowledge-cluster");
@@ -2173,7 +2114,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       validatedClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "validated").length,
       candidateClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "candidate").length,
       staleClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "stale").length,
-      activeDomainCount: (options.domainPacks ?? []).length,
+      activeDomainCount: summarizeCounts(orderedEntities.flatMap((entity) => entity.metadata.domains)).length,
       topDomains: summarizeCounts(orderedEntities.flatMap((entity) => entity.metadata.domains)),
       topModules: summarizeCounts(
         orderedEntities
@@ -2316,7 +2257,6 @@ export function buildKnowledgeSchemaMarkdown(snapshot: KnowledgeSchemaSnapshot):
   lines.push(`- validatedClusters: ${snapshot.summary.validatedClusterCount}`);
   lines.push(`- candidateClusters: ${snapshot.summary.candidateClusterCount}`);
   lines.push(`- staleClusters: ${snapshot.summary.staleClusterCount}`);
-  lines.push(`- activeDomains: ${snapshot.summary.activeDomainCount}`);
   lines.push("");
   lines.push("## Entity Types");
   for (const [type, count] of Object.entries(snapshot.summary.entityTypeCounts)) {

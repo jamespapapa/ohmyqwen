@@ -1,65 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildKnowledgeSchemaMarkdown, buildKnowledgeSchemaSnapshot, compactKnowledgeSchemaSnapshot } from "../src/server/knowledge-schema.js";
-import type { DomainPack } from "../src/server/domain-packs.js";
 import type { LearnedKnowledgeSnapshot } from "../src/server/learned-knowledge.js";
 import type { FrontBackGraphSnapshot } from "../src/server/front-back-graph.js";
 import type { EaiDictionaryEntry } from "../src/server/eai-dictionary.js";
-
-const domainPacks: DomainPack[] = [
-  {
-    id: "member-auth",
-    name: "Member Auth",
-    description: "Member login and identity verification",
-    families: [],
-    enabledByDefault: true,
-    capabilityTags: [
-      {
-        tag: "member-auth",
-        kind: "domain",
-        aliases: ["회원인증", "member auth"],
-        questionPatterns: [],
-        textPatterns: [],
-        searchTerms: [],
-        pathHints: ["/member/monimo"],
-        symbolHints: ["EmbededMemberLogin"],
-        apiHints: ["/member/monimo"],
-        parents: [],
-        adjacentConfusers: []
-      },
-      {
-        tag: "embedded-login",
-        kind: "subdomain",
-        aliases: ["embedded member login"],
-        questionPatterns: [],
-        textPatterns: [],
-        searchTerms: [],
-        pathHints: ["/member/monimo/registe"],
-        symbolHints: ["EmbededMemberLoginService"],
-        apiHints: ["/member/monimo/registe"],
-        parents: ["member-auth"],
-        adjacentConfusers: []
-      },
-      {
-        tag: "action-check",
-        kind: "action",
-        aliases: ["check"],
-        questionPatterns: [],
-        textPatterns: [],
-        searchTerms: [],
-        pathHints: ["check"],
-        symbolHints: [],
-        apiHints: [],
-        parents: [],
-        adjacentConfusers: []
-      }
-    ],
-    rankingPriors: [],
-    exemplars: [],
-    createdAt: "2026-03-16T00:00:00.000Z",
-    updatedAt: "2026-03-16T00:00:00.000Z",
-    builtIn: false
-  }
-];
 
 const frontBackGraph: FrontBackGraphSnapshot = {
   version: 1,
@@ -361,13 +304,12 @@ describe("knowledge schema foundation", () => {
       },
       frontBackGraph,
       eaiEntries,
-      learnedKnowledge,
-      domainPacks
+      learnedKnowledge
     });
 
     expect(snapshot.summary.entityCount).toBeGreaterThan(0);
     expect(snapshot.summary.edgeCount).toBeGreaterThan(0);
-    expect(snapshot.summary.entityTypeCounts["knowledge-cluster"]).toBeGreaterThanOrEqual(3);
+    expect(snapshot.summary.entityTypeCounts["knowledge-cluster"]).toBeGreaterThanOrEqual(2);
     expect(snapshot.summary.edgeTypeCounts["routes-to"]).toBeGreaterThanOrEqual(2);
     expect(snapshot.summary.edgeTypeCounts["uses-eai"]).toBeGreaterThanOrEqual(1);
     expect(snapshot.summary.staleClusterCount).toBeGreaterThanOrEqual(1);
@@ -389,7 +331,6 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "MemberAuthValidator")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "validateSessionToken")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:candidate:channel:monimo")).toBe(true);
-    expect(snapshot.entities.some((entity) => entity.id === "knowledge:pack:member-auth")).toBe(true);
 
     expect(
       snapshot.edges.some(
@@ -526,8 +467,7 @@ describe("knowledge schema foundation", () => {
     const snapshot = buildKnowledgeSchemaSnapshot({
       generatedAt: "2026-03-16T00:00:00.000Z",
       workspaceDir: "/workspace/dcp-services",
-      structure: { entries: {} },
-      domainPacks
+      structure: { entries: {} }
     });
 
     const markdown = buildKnowledgeSchemaMarkdown(snapshot);
@@ -572,8 +512,7 @@ describe("knowledge schema foundation", () => {
       },
       frontBackGraph,
       eaiEntries,
-      learnedKnowledge,
-      domainPacks
+      learnedKnowledge
     });
 
     const compacted = compactKnowledgeSchemaSnapshot(base, {

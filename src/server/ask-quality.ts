@@ -1,11 +1,3 @@
-import type { DomainPack } from "./domain-packs.js";
-import {
-  extractFlowCapabilityTagsFromTexts,
-  extractSpecificQuestionCapabilityTags,
-  extractQuestionCapabilityTags,
-  hasStrongFlowCapabilityAlignment,
-  isCrossLayerFlowQuestion
-} from "./flow-capabilities.js";
 import {
   classifyAskQuestionType,
   inferQuestionActionHints,
@@ -13,6 +5,13 @@ import {
   type AskQuestionType,
   type AskStrategyLike
 } from "./question-types.js";
+import {
+  buildQuestionOntologySignals,
+  extractOntologyTextSignalsFromTexts,
+  extractSpecificOntologySignals,
+  hasStrongOntologySignalAlignment,
+  isCrossLayerFlowQuestion
+} from "./ontology-signals.js";
 
 export type AskQualityStrategy = AskStrategyLike;
 
@@ -140,7 +139,6 @@ export function qualityGateForAskOutput(options: {
   linkedEaiEvidence?: AskLinkedEaiQualityEvidence[];
   linkedFlowEvidence?: AskLinkedFlowQualityEvidence[];
   moduleCandidates?: string[];
-  domainPacks?: DomainPack[];
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
@@ -369,33 +367,30 @@ export function qualityGateForAskOutput(options: {
   }
   if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
     const questionCapabilities =
-      options.questionTags ??
-      extractQuestionCapabilityTags(options.question, {
-        domainPacks: options.domainPacks
-      });
-    const specificQuestionCapabilities = extractSpecificQuestionCapabilityTags(questionCapabilities, {
-      domainPacks: options.domainPacks
-    });
+      options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+    const specificQuestionCapabilities = extractSpecificOntologySignals(questionCapabilities);
+    const flowSignals = linkedFlowEvidence.map((item) => ({
+      item,
+      signals:
+        item.capabilityTags ??
+        extractOntologyTextSignalsFromTexts([
+          item.screenCode,
+          item.routePath,
+          item.apiUrl,
+          item.gatewayPath,
+          item.gatewayControllerMethod,
+          item.backendPath,
+          item.backendControllerMethod,
+          ...(item.serviceHints ?? [])
+        ])
+    }));
     const alignedFlowEvidence = questionCapabilities.length > 0
-      ? linkedFlowEvidence.filter((item) =>
-          hasStrongFlowCapabilityAlignment(
+      ? flowSignals
+          .filter(({ item, signals }) =>
+          hasStrongOntologySignalAlignment(
             questionCapabilities,
-            item.capabilityTags ??
-              extractFlowCapabilityTagsFromTexts([
-                item.screenCode,
-                item.routePath,
-                item.apiUrl,
-                item.gatewayPath,
-                item.gatewayControllerMethod,
-                item.backendPath,
-                item.backendControllerMethod,
-                ...(item.serviceHints ?? [])
-              ], {
-                domainPacks: options.domainPacks
-              })
-            ,
+            signals,
             {
-              domainPacks: options.domainPacks,
               question: options.question,
               pathText: [item.routePath, item.backendPath].join(" "),
               apiText: item.apiUrl,
@@ -403,18 +398,19 @@ export function qualityGateForAskOutput(options: {
             }
           )
         )
+          .map(({ item }) => item)
       : linkedFlowEvidence;
 
     if (questionCapabilities.length > 0 && alignedFlowEvidence.length === 0) {
-      failures.push("missing-question-capability-match");
+      failures.push("missing-question-signal-match");
     }
     if (
       specificQuestionCapabilities.length > 0 &&
-      !linkedFlowEvidence.some((item) =>
-        specificQuestionCapabilities.some((tag) => (item.capabilityTags ?? []).includes(tag))
+      !flowSignals.some(({ signals }) =>
+        specificQuestionCapabilities.some((tag) => signals.includes(tag))
       )
     ) {
-      failures.push("missing-specific-business-capability-evidence");
+      failures.push("missing-specific-ontology-signal-evidence");
     }
     const answerAlignedFlow = alignedFlowEvidence.some(
       (item) =>
@@ -427,9 +423,9 @@ export function qualityGateForAskOutput(options: {
     );
     const answerSpecificFlow = specificQuestionCapabilities.length === 0
       ? true
-      : linkedFlowEvidence.some(
-          (item) =>
-            specificQuestionCapabilities.some((tag) => (item.capabilityTags ?? []).includes(tag)) &&
+      : flowSignals.some(
+          ({ item, signals }) =>
+            specificQuestionCapabilities.some((tag) => signals.includes(tag)) &&
             (
               (item.screenCode && options.output.answer.includes(item.screenCode)) ||
               (item.routePath && options.output.answer.includes(item.routePath)) ||
@@ -463,7 +459,7 @@ export function qualityGateForAskOutput(options: {
       failures.push("missing-aligned-flow-detail");
     }
     if (specificQuestionCapabilities.length > 0 && !answerSpecificFlow) {
-      failures.push("missing-specific-business-capability-detail");
+      failures.push("missing-specific-ontology-signal-detail");
     }
     if (!/(->|거쳐|호출|이어|gateway|controller|service|route)/i.test(options.output.answer)) {
       failures.push("missing-cross-layer-chain-detail");

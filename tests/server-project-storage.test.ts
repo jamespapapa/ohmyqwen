@@ -1,5 +1,7 @@
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import os from "node:os";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resolveServerProjectContextCachePath,
   resolveServerProjectHome,
@@ -9,6 +11,8 @@ import {
 
 const originalProjectHome = process.env.OHMYQWEN_PROJECT_HOME;
 const originalMemoryHome = process.env.OHMYQWEN_MEMORY_HOME;
+const originalCwd = process.cwd();
+const tempDirs: string[] = [];
 
 afterEach(() => {
   if (originalProjectHome === undefined) {
@@ -22,6 +26,8 @@ afterEach(() => {
   } else {
     process.env.OHMYQWEN_MEMORY_HOME = originalMemoryHome;
   }
+
+  process.chdir(originalCwd);
 });
 
 describe("server project storage paths", () => {
@@ -71,4 +77,43 @@ describe("server project storage paths", () => {
       path.resolve(expectedProjectHome, ".ohmyqwen", "cache", "context-index.json")
     );
   });
+
+  it("stores projects without preset metadata in ontology-first mode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-project-store-"));
+    tempDirs.push(root);
+    process.chdir(root);
+
+    const workspaceDir = path.join(root, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    vi.resetModules();
+    const { listServerProjects, upsertServerProject } = await import("../src/server/projects.js");
+
+    const project = await upsertServerProject({
+      name: "ontology-first-demo",
+      workspaceDir,
+      description: "demo"
+    });
+
+    expect("presetId" in project).toBe(false);
+
+    const projects = await listServerProjects();
+    expect(projects).toHaveLength(1);
+    expect("presetId" in projects[0]).toBe(false);
+
+    const rawStore = JSON.parse(
+      await readFile(path.join(root, ".ohmyqwen", "server", "projects.json"), "utf8")
+    ) as { projects?: Array<Record<string, unknown>> };
+    expect(rawStore.projects?.[0]).toBeTruthy();
+    expect("presetId" in (rawStore.projects?.[0] ?? {})).toBe(false);
+  });
+});
+
+afterEach(async () => {
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
 });

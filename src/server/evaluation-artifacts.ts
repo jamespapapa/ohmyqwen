@@ -48,8 +48,6 @@ export const ProjectAskEvaluationArtifactSchema = EvaluationArtifactBaseSchema.e
   retrievalHitCount: z.number().int().min(0),
   retrievalTopConfidence: z.number().min(0).max(1),
   matchedKnowledgeIds: z.array(z.string().min(1)).default([]),
-  activeDomainIds: z.array(z.string().min(1)).default([]),
-  matchedDomainIds: z.array(z.string().min(1)).default([]),
   qualityGateFailures: z.array(z.string().min(1)).default([]),
   retryStopReason: z.string().optional(),
   evidenceCount: z.number().int().min(0),
@@ -177,8 +175,6 @@ export function buildProjectAskEvaluationArtifact(input: {
   matchedOntologyNodeStatuses?: OntologyNodeStatus[];
   matchedOntologyProjectionIds?: string[];
   matchedKnowledgeIds?: string[];
-  activeDomainIds?: string[];
-  matchedDomainIds?: string[];
   qualityGateFailures?: string[];
   retryStopReason?: string;
   evidenceCount: number;
@@ -213,8 +209,6 @@ export function buildProjectAskEvaluationArtifact(input: {
     matchedOntologyNodeStatuses: input.matchedOntologyNodeStatuses ?? [],
     matchedOntologyProjectionIds: input.matchedOntologyProjectionIds ?? [],
     matchedKnowledgeIds: input.matchedKnowledgeIds ?? [],
-    activeDomainIds: input.activeDomainIds ?? [],
-    matchedDomainIds: input.matchedDomainIds ?? [],
     qualityGateFailures: input.qualityGateFailures ?? [],
     retryStopReason: input.retryStopReason,
     evidenceCount: input.evidenceCount,

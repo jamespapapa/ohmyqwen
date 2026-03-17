@@ -77,7 +77,9 @@ export default {
     expect(catalog.screens[0]?.httpCalls[0]?.functionName).toBe("loadAppSbSearch");
     expect(catalog.screens[0]?.httpCalls[0]?.rawUrl).toBe("/gw/api/insurance/division/appexpiry/inqury");
     expect(catalog.screens[0]?.httpCalls[0]?.normalizedUrl).toBe("/insurance/division/appexpiry/inqury");
-    expect(catalog.screens[0]?.capabilityTags).toContain("division-expiry");
+    expect(catalog.screens[0]?.capabilityTags).toEqual(
+      expect.arrayContaining(["frontend-flow", "action-read", "insurance", "division", "appexpiry"])
+    );
   });
 
 
@@ -127,9 +129,11 @@ export default {
 
     const catalog = await buildFrontendCatalog(workspace);
     expect(catalog.routes[0]?.notes).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성"]));
-    expect(catalog.routes[0]?.capabilityTags).toContain("benefit-claim");
+    expect(catalog.routes[0]?.capabilityTags).toEqual(expect.arrayContaining(["frontend-flow", "보험금청구", "청구서"]));
     expect(catalog.screens[0]?.labels).toEqual(expect.arrayContaining(["보험금청구 - 본인 보험금 청구 - 청구서 작성", "보험금 청구"]));
-    expect(catalog.screens[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "insurance-internet", "action-submit"]));
+    expect(catalog.screens[0]?.capabilityTags).toEqual(
+      expect.arrayContaining(["frontend-flow", "action-write", "보험금", "청구", "insurance", "benefit"])
+    );
   });
 
 
