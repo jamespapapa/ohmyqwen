@@ -133,21 +133,21 @@ function actionAlignmentScore(nodeActions: string[], desiredActions: string[]): 
 function preferredNodeTypes(questionType: AskQuestionType): string[] {
   switch (questionType) {
     case "cross_layer_flow":
-      return ["route", "api", "controller", "service", "control-guard", "path", "retrieval-unit", "knowledge-input"];
+      return ["route", "api", "controller", "service", "control-guard", "decision-path", "path", "retrieval-unit", "knowledge-input"];
     case "symbol_deep_trace":
-      return ["symbol", "service", "controller", "control-guard", "retrieval-unit", "path"];
+      return ["symbol", "service", "controller", "control-guard", "decision-path", "retrieval-unit", "path"];
     case "module_role_explanation":
       return ["module", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "process_or_batch_trace":
       return ["service", "path", "knowledge-input", "retrieval-unit", "module"];
     case "channel_or_partner_integration":
-      return ["route", "api", "controller", "service", "control-guard", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
+      return ["route", "api", "controller", "service", "control-guard", "decision-path", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "state_store_schema":
-      return ["data-store", "data-contract", "data-model", "data-query", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
+      return ["data-store", "data-contract", "data-model", "data-query", "data-table", "cache-key", "service", "symbol", "control-guard", "decision-path", "knowledge-input", "retrieval-unit", "file"];
     case "config_or_resource_explanation":
       return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-contract", "data-model", "data-query", "data-table", "cache-key", "service", "symbol"];
     case "business_capability_trace":
-      return ["service", "controller", "control-guard", "api", "route", "retrieval-unit", "knowledge-cluster"];
+      return ["service", "controller", "control-guard", "decision-path", "api", "route", "retrieval-unit", "knowledge-cluster"];
     case "domain_capability_overview":
       return ["module", "knowledge-cluster", "knowledge-input", "service", "retrieval-unit"];
   }

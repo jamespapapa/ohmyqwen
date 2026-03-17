@@ -237,7 +237,7 @@ export function buildRetrievalUnitSnapshot(options: {
   };
 
   for (const entity of knowledgeSchema.entities) {
-    if (!["symbol", "controller", "service", "control-guard", "data-query"].includes(entity.type)) {
+    if (!["symbol", "controller", "service", "control-guard", "decision-path", "data-query"].includes(entity.type)) {
       continue;
     }
     const declaredBy = (incoming.get(entity.id) ?? []).find((edge) => edge.type === "declares");
@@ -350,7 +350,8 @@ export function buildRetrievalUnitSnapshot(options: {
               "stores-model",
               "maps-to-table",
               "queries-table",
-              "validates"
+              "validates",
+              "branches-to"
             ].includes(edge.type)
           )
         );

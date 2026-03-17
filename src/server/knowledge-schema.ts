@@ -23,6 +23,7 @@ const KnowledgeEntityTypeSchema = z.enum([
   "data-table",
   "cache-key",
   "control-guard",
+  "decision-path",
   "knowledge-cluster"
 ]);
 
@@ -42,6 +43,7 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "queries-table",
   "uses-cache-key",
   "validates",
+  "branches-to",
   "depends-on",
   "belongs-to-domain",
   "belongs-to-channel",
@@ -148,6 +150,7 @@ interface StructureFileEntryLike {
     dbTableNames?: string[];
     dbQueryNames?: string[];
     controlGuardNames?: string[];
+    decisionPathNames?: string[];
   };
 }
 
@@ -364,6 +367,7 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "data-store":
     case "data-contract":
     case "control-guard":
+    case "decision-path":
     case "knowledge-cluster":
       return 110;
     case "data-model":
@@ -396,6 +400,7 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "queries-table":
     case "uses-cache-key":
     case "validates":
+    case "branches-to":
     case "supports-module-role":
       return 105;
     case "contains":
@@ -817,6 +822,36 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }),
       attributes: {
         guardName: options.label,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    return id;
+  };
+
+  const ensureDecisionPath = (options: {
+    label: string;
+    ownerName?: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `decision-path:${slugify(options.ownerName ?? "file")}:${slugify(options.label)}:${slugify(options.evidencePath)}`;
+    upsertEntity({
+      id,
+      type: "decision-path",
+      label: options.ownerName ? `${options.ownerName} :: ${options.label}` : options.label,
+      summary: `${options.label} decision/branch path`,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.label, options.ownerName, "decision branch if switch guard"),
+        moduleRoles: ["decision-control"],
+        confidence: 0.72,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        decisionLabel: options.label,
+        ownerName: options.ownerName ?? null,
         moduleName: options.moduleName,
         path: options.evidencePath
       }
@@ -1391,6 +1426,56 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             actions: inferActionsFromTexts(guardName, "validate guard check verify"),
             moduleRoles: ["validation-control"],
             confidence: 0.84,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
+    }
+
+    for (const decisionPathName of unique(resourceHints.decisionPathNames ?? [])) {
+      const [ownerCandidate, ...labelParts] = decisionPathName.split("::");
+      const decisionLabel = (labelParts.length > 0 ? labelParts.join("::") : ownerCandidate).trim();
+      const ownerName = labelParts.length > 0 ? ownerCandidate.trim() : undefined;
+      const decisionId = ensureDecisionPath({
+        label: decisionLabel,
+        ownerName,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${decisionId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: decisionId,
+        label: "file declares decision path",
+        metadata: makeMetadata({
+          actions: inferActionsFromTexts(decisionLabel, ownerName, "decision branch if switch"),
+          moduleRoles: ["decision-control"],
+          confidence: 0.74,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+
+      const matchingMethodSymbol = ownerName
+        ? Array.from(methodSymbolMap.entries()).find(([key]) => key.endsWith(`.${ownerName}`) || key === ownerName)?.[1]
+        : undefined;
+      if (matchingMethodSymbol) {
+        upsertEdge({
+          id: `edge:branches-to:${matchingMethodSymbol}:${decisionId}`,
+          type: "branches-to",
+          fromId: matchingMethodSymbol,
+          toId: decisionId,
+          label: "method branches through decision path",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(decisionLabel, ownerName, "decision branch if switch"),
+            moduleRoles: ["decision-control"],
+            confidence: 0.78,
             evidencePaths: [normalizedPath],
             sourceType: "derived",
             validatedStatus: "derived"
@@ -1995,10 +2080,46 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       });
     }
 
+    for (const decisionPathName of unique(backendResourceHints.decisionPathNames ?? [])) {
+      const [ownerCandidate, ...labelParts] = decisionPathName.split("::");
+      const decisionLabel = (labelParts.length > 0 ? labelParts.join("::") : ownerCandidate).trim();
+      const ownerName = labelParts.length > 0 ? ownerCandidate.trim() : undefined;
+      const controllerMethodName = link.backend.controllerMethod.split(".")[1] ?? link.backend.controllerMethod;
+      if (ownerName && ownerName !== controllerMethodName) {
+        continue;
+      }
+      const decisionId = ensureDecisionPath({
+        label: decisionLabel,
+        ownerName,
+        evidencePath: backendPath,
+        moduleName: backendModuleName
+      });
+      upsertEdge({
+        id: `edge:branches-to:${controllerId}:${decisionId}`,
+        type: "branches-to",
+        fromId: controllerId,
+        toId: decisionId,
+        label: "controller branches through decision path",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          actions: inferActionsFromTexts(link.backend.controllerMethod, decisionLabel, "decision branch if switch"),
+          moduleRoles: ["decision-control"],
+          confidence: Math.max(0.76, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+    }
+
     for (const serviceHint of link.backend.serviceHints) {
       const serviceClass = serviceHint.split(".")[0] ?? serviceHint;
       const serviceFilePath = classFileMap.get(serviceClass);
       const serviceModuleName = extractModuleName(serviceFilePath ?? backendPath, backendWorkspaceBase);
+      const serviceStructureEntry = serviceFilePath ? options.structure?.entries?.[serviceFilePath] : undefined;
+      const serviceResourceHints = serviceStructureEntry?.resources ?? {};
       if (serviceFilePath) {
         const serviceModuleId = ensureModule(serviceModuleName, "derived", serviceFilePath);
         const serviceFileId = `file:backend:${serviceFilePath}`;
@@ -2098,6 +2219,40 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }),
         attributes: {}
       });
+
+      for (const decisionPathName of unique(serviceResourceHints.decisionPathNames ?? [])) {
+        const [ownerCandidate, ...labelParts] = decisionPathName.split("::");
+        const decisionLabel = (labelParts.length > 0 ? labelParts.join("::") : ownerCandidate).trim();
+        const ownerName = labelParts.length > 0 ? ownerCandidate.trim() : undefined;
+        const serviceMethodName = serviceHint.split(".")[1] ?? serviceHint;
+        if (ownerName && ownerName !== serviceMethodName) {
+          continue;
+        }
+        const decisionId = ensureDecisionPath({
+          label: decisionLabel,
+          ownerName,
+          evidencePath: serviceFilePath ?? backendPath,
+          moduleName: serviceModuleName
+        });
+        upsertEdge({
+          id: `edge:branches-to:${serviceId}:${decisionId}`,
+          type: "branches-to",
+          fromId: serviceId,
+          toId: decisionId,
+          label: "service branches through decision path",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            actions: inferActionsFromTexts(serviceHint, decisionLabel, "decision branch if switch"),
+            moduleRoles: ["decision-control"],
+            confidence: Math.max(0.74, link.confidence),
+            evidencePaths: unique([serviceFilePath ?? "", backendPath]),
+            sourceType: serviceFilePath ? "derived" : "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
     }
   }
 

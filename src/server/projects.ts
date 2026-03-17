@@ -769,6 +769,7 @@ interface StructureResourceHints {
   dbTableNames: string[];
   dbQueryNames: string[];
   controlGuardNames: string[];
+  decisionPathNames?: string[];
   requestModelNames: string[];
   responseModelNames: string[];
 }
@@ -2078,6 +2079,31 @@ function pushContractHints(options: {
   }
 }
 
+function summarizeDecisionExpression(raw: string): string | undefined {
+  const normalized = raw
+    .replace(/["'`][^"'`]{0,120}["'`]/g, " ")
+    .replace(/\b(this|return|await|const|let|var|final|public|private|protected)\b/g, " ")
+    .replace(/[^A-Za-z0-9가-힣_.$]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.split(/\s+/).slice(0, 8).join(" ");
+}
+
+function pushDecisionPathHint(options: {
+  kind: "if" | "switch" | "guard";
+  expression?: string;
+  ownerName?: string;
+  targets: Set<string>;
+}) {
+  const expressionSummary = summarizeDecisionExpression(options.expression ?? "");
+  const owner = options.ownerName?.trim();
+  const base = expressionSummary ? `${options.kind} ${expressionSummary}` : options.kind;
+  options.targets.add(owner ? `${owner}::${base}` : base);
+}
+
 function buildStructureResourceHints(options: {
   relativePath: string;
   content: string;
@@ -2095,10 +2121,16 @@ function buildStructureResourceHints(options: {
   const dbTableNames = new Set<string>();
   const dbQueryNames = new Set<string>();
   const controlGuardNames = new Set<string>();
+  const decisionPathNames = new Set<string>();
   const requestModelNames = new Set<string>();
   const responseModelNames = new Set<string>();
   const classNames = options.classes.map((entry) => entry.name);
   const methodNames = options.methods.map((entry) => entry.name);
+  const scopeMarkers = [...options.methods]
+    .sort((a, b) => a.line - b.line)
+    .map((entry) => ({ line: entry.line, name: entry.name }));
+  let scopeIndex = 0;
+  let currentScopeName: string | undefined;
 
   const maybeGuardName = (value: string) => {
     if (
@@ -2119,10 +2151,16 @@ function buildStructureResourceHints(options: {
     }
   }
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
     const trimmed = line.trim();
     if (!trimmed || trimmed.length > 2000) {
       continue;
+    }
+    const lineNumber = index + 1;
+    while (scopeIndex < scopeMarkers.length && scopeMarkers[scopeIndex] && scopeMarkers[scopeIndex].line <= lineNumber) {
+      currentScopeName = scopeMarkers[scopeIndex]?.name;
+      scopeIndex += 1;
     }
 
     const tableMatch =
@@ -2161,9 +2199,41 @@ function buildStructureResourceHints(options: {
     }
     if (/\bObjects\.requireNonNull\s*\(|\bAssert\.[A-Za-z_][A-Za-z0-9_]*\s*\(|\bPreconditions\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(trimmed)) {
       controlGuardNames.add("guard-assertion");
+      pushDecisionPathHint({
+        kind: "guard",
+        expression: trimmed,
+        ownerName: currentScopeName,
+        targets: decisionPathNames
+      });
     }
     if (/\bif\s*\([^)]{1,200}\)\s*\{?\s*(?:throw new|return false|return null|continue;|break;)/.test(trimmed)) {
       controlGuardNames.add("conditional-guard");
+    }
+    const ifMatch = trimmed.match(/\bif\s*\(([^)]{1,240})\)/);
+    if (ifMatch?.[1]) {
+      pushDecisionPathHint({
+        kind: "if",
+        expression: ifMatch[1],
+        ownerName: currentScopeName,
+        targets: decisionPathNames
+      });
+    }
+    const switchMatch = trimmed.match(/\bswitch\s*\(([^)]{1,240})\)/);
+    if (switchMatch?.[1]) {
+      pushDecisionPathHint({
+        kind: "switch",
+        expression: switchMatch[1],
+        ownerName: currentScopeName,
+        targets: decisionPathNames
+      });
+    }
+    for (const throwIfMatch of trimmed.matchAll(/\b(throwIf[A-Z][A-Za-z0-9_]*)\s*\(([^)]{0,240})\)/g)) {
+      pushDecisionPathHint({
+        kind: "guard",
+        expression: `${throwIfMatch[1] ?? ""} ${throwIfMatch[2] ?? ""}`.trim(),
+        ownerName: currentScopeName,
+        targets: decisionPathNames
+      });
     }
 
     const dependencyMatch = trimmed.match(
@@ -2301,6 +2371,7 @@ function buildStructureResourceHints(options: {
     dbTableNames: uniqueStructureHints([...dbTableNames]),
     dbQueryNames: uniqueStructureHints([...dbQueryNames]),
     controlGuardNames: uniqueStructureHints([...controlGuardNames]),
+    decisionPathNames: uniqueStructureHints([...decisionPathNames]),
     requestModelNames: uniqueStructureHints([...requestModelNames]),
     responseModelNames: uniqueStructureHints([...responseModelNames])
   };

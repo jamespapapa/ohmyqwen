@@ -264,6 +264,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { contractName: "MonimoAuthRequest", direction: "request" }
     },
     {
+      id: "decision-path:authenticate:switch-auth-status:service",
+      type: "decision-path",
+      label: "authenticate :: switch auth status",
+      summary: "switch auth status decision/branch path",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-status-read"],
+        moduleRoles: ["decision-control"],
+        processRoles: [],
+        confidence: 0.76,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { decisionLabel: "switch auth status", ownerName: "authenticate" }
+    },
+    {
       id: "data-table:tb_member_session",
       type: "data-table",
       label: "TB_MEMBER_SESSION",
@@ -605,6 +624,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:branches-to:service:decision",
+      type: "branches-to",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "decision-path:authenticate:switch-auth-status:service",
+      label: "service branches through decision path",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-status-read"],
+        moduleRoles: ["decision-control"],
+        processRoles: [],
+        confidence: 0.77,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:maps-to-table:model:table",
       type: "maps-to-table",
       fromId: "data-model:membersessionentity",
@@ -686,13 +725,14 @@ const snapshot: KnowledgeSchemaSnapshot = {
     }
   ],
   summary: {
-    entityCount: 14,
-    edgeCount: 13,
+    entityCount: 15,
+    edgeCount: 14,
     entityTypeCounts: {
       api: 1,
       "cache-key": 1,
       controller: 1,
       "data-contract": 1,
+      "decision-path": 1,
       "data-model": 1,
       "data-store": 2,
       "data-table": 1,
@@ -710,6 +750,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
       contains: 1,
       declares: 1,
       "accepts-contract": 1,
+      "branches-to": 1,
       "maps-to-table": 1,
       "queries-table": 1,
       "routes-to": 2,
@@ -750,11 +791,13 @@ describe("retrieval unit standardization", () => {
     expect(uiActionFlowUnit?.searchText).toContain("requestMonimoAuth");
     expect(uiActionFlowUnit?.searchText).toContain("RouteController.route");
     expect(uiActionFlowUnit?.searchText).toContain("MonimoAuthRequest");
+    expect(uiActionFlowUnit?.searchText).toContain("authenticate :: switch auth status");
     expect(uiActionFlowUnit?.entityIds).toEqual(
       expect.arrayContaining([
         "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
         "gateway-handler:RouteController.route",
-        "data-contract:monimoauthrequest"
+        "data-contract:monimoauthrequest",
+        "decision-path:authenticate:switch-auth-status:service"
       ])
     );
 

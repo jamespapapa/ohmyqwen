@@ -230,6 +230,7 @@ describe("knowledge schema foundation", () => {
               dbTableNames: [],
               dbQueryNames: [],
               controlGuardNames: [],
+              decisionPathNames: ["registe::if monimo sessionToken missing"],
               requestModelNames: ["MonimoAuthRequest"],
               responseModelNames: ["MonimoAuthResponse"]
             }
@@ -249,6 +250,7 @@ describe("knowledge schema foundation", () => {
               dbAccessTypes: ["MonimoUntyPlatfMbrBasDao"],
               dbModelNames: ["MonimoUntyPlatfMbrBasDaoModel"],
               dbTableNames: ["TB_MONIMO_MEMBER"],
+              decisionPathNames: ["authenticate::switch auth status"],
               requestModelNames: ["MonimoAuthRequest"],
               responseModelNames: ["MonimoAuthResponse"]
             }
@@ -348,6 +350,8 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "cache-key:member.login.status")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-contract:monimoauthrequest")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-contract:monimoauthresponse")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "decision-path" && /registe :: if monimo sessiontoken missing/i.test(entity.label))).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "decision-path" && /authenticate :: switch auth status/i.test(entity.label))).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
@@ -432,6 +436,20 @@ describe("knowledge schema foundation", () => {
           edge.type === "uses-store" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "store:redis"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "branches-to" &&
+          edge.fromId === "controller:RegisteUseDcpChnelController.registe"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "branches-to" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate"
       )
     ).toBe(true);
     expect(
