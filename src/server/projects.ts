@@ -769,6 +769,8 @@ interface StructureResourceHints {
   dbTableNames: string[];
   dbQueryNames: string[];
   controlGuardNames: string[];
+  requestModelNames: string[];
+  responseModelNames: string[];
 }
 
 interface StructureFileEntry {
@@ -1998,6 +2000,84 @@ function normalizeInjectedType(raw: string): string {
   return raw.replace(/<[^>]+>/g, "").replace(/\[\]/g, "").trim();
 }
 
+function extractTypeNameCandidates(raw: string): string[] {
+  return unique(
+    Array.from(
+      raw.matchAll(
+        /\b([A-Z][A-Za-z0-9_]*(?:Request|Req|Command|Input|Param|Params|Parameters|Response|Res|Result|Output|Dto|Payload))\b/g
+      )
+    ).map((match) => match[1] ?? "")
+  );
+}
+
+function classifyContractHint(options: {
+  name: string;
+  relativePath: string;
+}): "request" | "response" | undefined {
+  const normalizedName = options.name.trim();
+  const lowerName = normalizedName.toLowerCase();
+  const lowerPath = options.relativePath.toLowerCase();
+
+  if (/(request|req|command|input|param|params|parameters)$/.test(lowerName)) {
+    return "request";
+  }
+  if (/(response|res|result|output|payload)$/.test(lowerName)) {
+    return "response";
+  }
+  if (/dto$/.test(lowerName)) {
+    if (/\/request\/|\/requests\/|\/dto\/request\/|\/command\/|\/input\//.test(lowerPath)) {
+      return "request";
+    }
+    if (/\/response\/|\/responses\/|\/dto\/response\/|\/result\/|\/output\//.test(lowerPath)) {
+      return "response";
+    }
+  }
+  return undefined;
+}
+
+function parseJavaLikeMethodSignature(line: string): { returnType?: string; params: string[] } | undefined {
+  const match = line.match(
+    /^\s*(?:public|protected|private|static|final|native|synchronized|abstract|default|\s)+(?:<[^>]+>\s*)?([A-Za-z_][A-Za-z0-9_<>\[\],.? ]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^;{}()]*)\)\s*(?:throws [^{]+)?\{/
+  );
+  if (!match) {
+    return undefined;
+  }
+  const returnType = match[1]?.trim();
+  const paramsRaw = match[3]?.trim() ?? "";
+  const params = paramsRaw
+    ? paramsRaw
+        .split(",")
+        .map((part) =>
+          part
+            .replace(/@\w+(?:\([^)]*\))?\s*/g, " ")
+            .replace(/\bfinal\b/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+        )
+        .filter(Boolean)
+    : [];
+  return { returnType, params };
+}
+
+function pushContractHints(options: {
+  raw: string;
+  relativePath: string;
+  requests: Set<string>;
+  responses: Set<string>;
+}) {
+  for (const candidate of extractTypeNameCandidates(options.raw)) {
+    const kind = classifyContractHint({
+      name: candidate,
+      relativePath: options.relativePath
+    });
+    if (kind === "request") {
+      options.requests.add(candidate);
+    } else if (kind === "response") {
+      options.responses.add(candidate);
+    }
+  }
+}
+
 function buildStructureResourceHints(options: {
   relativePath: string;
   content: string;
@@ -2015,6 +2095,8 @@ function buildStructureResourceHints(options: {
   const dbTableNames = new Set<string>();
   const dbQueryNames = new Set<string>();
   const controlGuardNames = new Set<string>();
+  const requestModelNames = new Set<string>();
+  const responseModelNames = new Set<string>();
   const classNames = options.classes.map((entry) => entry.name);
   const methodNames = options.methods.map((entry) => entry.name);
 
@@ -2058,6 +2140,17 @@ function buildStructureResourceHints(options: {
         }
       }
     }
+    if (/^(?:export\s+)?(?:interface|type|class)\s+([A-Z][A-Za-z0-9_]*)\b/.test(trimmed)) {
+      const name = trimmed.match(/^(?:export\s+)?(?:interface|type|class)\s+([A-Z][A-Za-z0-9_]*)\b/)?.[1];
+      if (name) {
+        const kind = classifyContractHint({ name, relativePath: options.relativePath });
+        if (kind === "request") {
+          requestModelNames.add(name);
+        } else if (kind === "response") {
+          responseModelNames.add(name);
+        }
+      }
+    }
     const redisHashMatch = trimmed.match(/@RedisHash\s*\(\s*(?:value\s*=\s*)?["']([^"'`]+)["']/);
     if (redisHashMatch?.[1]) {
       storeKinds.add("redis");
@@ -2090,6 +2183,30 @@ function buildStructureResourceHints(options: {
       if (/(DaoModel|Entity|Model)\b/i.test(typeName)) {
         storeKinds.add("database");
         dbModelNames.add(typeName);
+      }
+    }
+
+    const methodSignature = parseJavaLikeMethodSignature(trimmed);
+    if (methodSignature) {
+      if (methodSignature.returnType) {
+        pushContractHints({
+          raw: methodSignature.returnType,
+          relativePath: options.relativePath,
+          requests: requestModelNames,
+          responses: responseModelNames
+        });
+      }
+      for (const param of methodSignature.params) {
+        const typeName = normalizeInjectedType(param.split(/\s+/).slice(0, -1).join(" "));
+        if (!typeName) {
+          continue;
+        }
+        pushContractHints({
+          raw: typeName,
+          relativePath: options.relativePath,
+          requests: requestModelNames,
+          responses: responseModelNames
+        });
       }
     }
 
@@ -2147,6 +2264,15 @@ function buildStructureResourceHints(options: {
       storeKinds.add("redis");
       redisAccessTypes.add(className);
     }
+    const contractKind = classifyContractHint({
+      name: className,
+      relativePath: options.relativePath
+    });
+    if (contractKind === "request") {
+      requestModelNames.add(className);
+    } else if (contractKind === "response") {
+      responseModelNames.add(className);
+    }
   }
   for (const methodName of methodNames) {
     maybeGuardName(methodName);
@@ -2174,7 +2300,9 @@ function buildStructureResourceHints(options: {
     dbModelNames: uniqueStructureHints([...dbModelNames]),
     dbTableNames: uniqueStructureHints([...dbTableNames]),
     dbQueryNames: uniqueStructureHints([...dbQueryNames]),
-    controlGuardNames: uniqueStructureHints([...controlGuardNames])
+    controlGuardNames: uniqueStructureHints([...controlGuardNames]),
+    requestModelNames: uniqueStructureHints([...requestModelNames]),
+    responseModelNames: uniqueStructureHints([...responseModelNames])
   };
 }
 

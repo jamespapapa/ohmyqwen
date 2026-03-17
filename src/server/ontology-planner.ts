@@ -143,9 +143,9 @@ function preferredNodeTypes(questionType: AskQuestionType): string[] {
     case "channel_or_partner_integration":
       return ["route", "api", "controller", "service", "control-guard", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "state_store_schema":
-      return ["data-store", "data-model", "data-query", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
+      return ["data-store", "data-contract", "data-model", "data-query", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
     case "config_or_resource_explanation":
-      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-model", "data-query", "data-table", "cache-key", "service", "symbol"];
+      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-contract", "data-model", "data-query", "data-table", "cache-key", "service", "symbol"];
     case "business_capability_trace":
       return ["service", "controller", "control-guard", "api", "route", "retrieval-unit", "knowledge-cluster"];
     case "domain_capability_overview":

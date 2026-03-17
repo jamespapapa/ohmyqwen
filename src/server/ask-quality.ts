@@ -346,7 +346,7 @@ export function qualityGateForAskOutput(options: {
 
   if (questionType === "state_store_schema") {
     const storeNodePresent = matchedOntologyNodeTypes.some((type) =>
-      ["data-store", "data-model", "data-table", "cache-key"].includes(type)
+      ["data-store", "data-contract", "data-model", "data-table", "cache-key"].includes(type)
     );
     const storageHitPathPresent = options.hitPaths.some((entry) => looksLikeStoreOrDataPath(entry));
     const directStoreLabels = matchedOntologyNodeLabels.filter((label) =>

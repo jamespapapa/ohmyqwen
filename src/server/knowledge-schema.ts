@@ -17,6 +17,7 @@ const KnowledgeEntityTypeSchema = z.enum([
   "service",
   "eai-interface",
   "data-store",
+  "data-contract",
   "data-model",
   "data-query",
   "data-table",
@@ -34,6 +35,8 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "maps-to",
   "uses-eai",
   "uses-store",
+  "accepts-contract",
+  "returns-contract",
   "stores-model",
   "maps-to-table",
   "queries-table",
@@ -139,6 +142,8 @@ interface StructureFileEntryLike {
     redisOps?: string[];
     redisKeys?: string[];
     dbAccessTypes?: string[];
+    requestModelNames?: string[];
+    responseModelNames?: string[];
     dbModelNames?: string[];
     dbTableNames?: string[];
     dbQueryNames?: string[];
@@ -357,6 +362,7 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "service":
     case "eai-interface":
     case "data-store":
+    case "data-contract":
     case "control-guard":
     case "knowledge-cluster":
       return 110;
@@ -381,6 +387,8 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "calls":
     case "uses-eai":
     case "uses-store":
+    case "accepts-contract":
+    case "returns-contract":
       return 120;
     case "maps-to":
     case "stores-model":
@@ -605,6 +613,42 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }),
       attributes: {
         storeKind
+      }
+    });
+    return id;
+  };
+
+  const ensureDataContract = (options: {
+    label: string;
+    direction: "request" | "response";
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `data-contract:${slugify(options.label)}`;
+    upsertEntity({
+      id,
+      type: "data-contract",
+      label: options.label,
+      summary:
+        options.direction === "request"
+          ? `${options.label} request/input contract`
+          : `${options.label} response/output contract`,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(
+          options.label,
+          options.direction === "request" ? "request input payload command param" : "response output result payload"
+        ),
+        moduleRoles: ["data-contract"],
+        confidence: 0.76,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        contractName: options.label,
+        direction: options.direction,
+        moduleName: options.moduleName,
+        path: options.evidencePath
       }
     });
     return id;
@@ -842,6 +886,61 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }),
         attributes: {
           storeKind
+        }
+      });
+    }
+
+    const requestModelNames = unique(resourceHints.requestModelNames ?? []);
+    const responseModelNames = unique(resourceHints.responseModelNames ?? []);
+    for (const requestModelName of requestModelNames) {
+      const requestContractId = ensureDataContract({
+        label: requestModelName,
+        direction: "request",
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${requestContractId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: requestContractId,
+        label: "file declares request contract",
+        metadata: makeMetadata({
+          actions: inferActionsFromTexts(requestModelName, normalizedPath, "request input payload"),
+          moduleRoles: ["data-contract"],
+          confidence: 0.76,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "request"
+        }
+      });
+    }
+    for (const responseModelName of responseModelNames) {
+      const responseContractId = ensureDataContract({
+        label: responseModelName,
+        direction: "response",
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${responseContractId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: responseContractId,
+        label: "file declares response contract",
+        metadata: makeMetadata({
+          actions: inferActionsFromTexts(responseModelName, normalizedPath, "response output result payload"),
+          moduleRoles: ["data-contract"],
+          confidence: 0.76,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "response"
         }
       });
     }
@@ -1176,6 +1275,60 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           }),
           attributes: {
             redisOps: resourceHints.redisOps
+          }
+        });
+      }
+
+      for (const requestModelName of requestModelNames) {
+        const requestContractId = ensureDataContract({
+          label: requestModelName,
+          direction: "request",
+          evidencePath: normalizedPath,
+          moduleName
+        });
+        upsertEdge({
+          id: `edge:accepts-contract:${symbolId}:${requestContractId}`,
+          type: "accepts-contract",
+          fromId: symbolId,
+          toId: requestContractId,
+          label: "method accepts request contract",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(methodRef.name, requestModelName, "request input payload"),
+            moduleRoles: ["data-contract"],
+            confidence: 0.72,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            direction: "request"
+          }
+        });
+      }
+
+      for (const responseModelName of responseModelNames) {
+        const responseContractId = ensureDataContract({
+          label: responseModelName,
+          direction: "response",
+          evidencePath: normalizedPath,
+          moduleName
+        });
+        upsertEdge({
+          id: `edge:returns-contract:${symbolId}:${responseContractId}`,
+          type: "returns-contract",
+          fromId: symbolId,
+          toId: responseContractId,
+          label: "method returns response contract",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(methodRef.name, responseModelName, "response output result payload"),
+            moduleRoles: ["data-contract"],
+            confidence: 0.72,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            direction: "response"
           }
         });
       }

@@ -245,6 +245,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { modelName: "MemberSessionEntity", tableName: "TB_MEMBER_SESSION" }
     },
     {
+      id: "data-contract:monimoauthrequest",
+      type: "data-contract",
+      label: "MonimoAuthRequest",
+      summary: "MonimoAuthRequest request/input contract",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["data-contract"],
+        processRoles: [],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { contractName: "MonimoAuthRequest", direction: "request" }
+    },
+    {
       id: "data-table:tb_member_session",
       type: "data-table",
       label: "TB_MEMBER_SESSION",
@@ -566,6 +585,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:accepts-contract:controller:request",
+      type: "accepts-contract",
+      fromId: "controller:RegisteUseDcpChnelController.registe",
+      toId: "data-contract:monimoauthrequest",
+      label: "controller accepts request contract",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["data-contract"],
+        processRoles: [],
+        confidence: 0.78,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:maps-to-table:model:table",
       type: "maps-to-table",
       fromId: "data-model:membersessionentity",
@@ -653,6 +692,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
       api: 1,
       "cache-key": 1,
       controller: 1,
+      "data-contract": 1,
       "data-model": 1,
       "data-store": 2,
       "data-table": 1,
@@ -669,6 +709,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
       calls: 1,
       contains: 1,
       declares: 1,
+      "accepts-contract": 1,
       "maps-to-table": 1,
       "queries-table": 1,
       "routes-to": 2,
@@ -718,8 +759,11 @@ describe("retrieval unit standardization", () => {
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");
 
-    const resourceUnit = units.units.find((unit) => unit.type === "resource-schema");
-    expect(resourceUnit?.searchText.join(" ")).toMatch(/redis|session|member\.login\.status/i);
+    const resourceTexts = units.units
+      .filter((unit) => unit.type === "resource-schema")
+      .map((unit) => unit.searchText.join(" "));
+    expect(resourceTexts.some((text) => /redis|session|member\.login\.status/i.test(text))).toBe(true);
+    expect(resourceTexts.some((text) => /monimoauthrequest/i.test(text))).toBe(true);
 
     const knowledgeUnit = units.units.find((unit) => unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
     expect(knowledgeUnit?.channels).toContain("monimo");

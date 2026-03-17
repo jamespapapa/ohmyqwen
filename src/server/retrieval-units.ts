@@ -421,14 +421,14 @@ export function buildRetrievalUnitSnapshot(options: {
   }
 
   for (const entity of knowledgeSchema.entities) {
-    if (!["data-store", "data-model", "data-table", "cache-key"].includes(entity.type)) {
+    if (!["data-store", "data-contract", "data-model", "data-table", "cache-key"].includes(entity.type)) {
       continue;
     }
     const relatedOutgoing = (outgoing.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedIncoming = (incoming.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedEdges = unique([...relatedOutgoing, ...relatedIncoming].map((edge) => edge.id))
       .map((id) => knowledgeSchema.edges.find((edge) => edge.id === id))

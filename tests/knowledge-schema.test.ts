@@ -219,7 +219,20 @@ describe("knowledge schema foundation", () => {
             summary: "member controller",
             classes: [{ name: "RegisteUseDcpChnelController", line: 10 }],
             methods: [{ name: "registe", className: "RegisteUseDcpChnelController", line: 20 }],
-            functions: []
+            functions: [],
+            resources: {
+              storeKinds: [],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              dbAccessTypes: [],
+              dbModelNames: [],
+              dbTableNames: [],
+              dbQueryNames: [],
+              controlGuardNames: [],
+              requestModelNames: ["MonimoAuthRequest"],
+              responseModelNames: ["MonimoAuthResponse"]
+            }
           },
           "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java": {
             path: "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java",
@@ -235,7 +248,9 @@ describe("knowledge schema foundation", () => {
               redisKeys: ["member.login.status", "member.profile"],
               dbAccessTypes: ["MonimoUntyPlatfMbrBasDao"],
               dbModelNames: ["MonimoUntyPlatfMbrBasDaoModel"],
-              dbTableNames: ["TB_MONIMO_MEMBER"]
+              dbTableNames: ["TB_MONIMO_MEMBER"],
+              requestModelNames: ["MonimoAuthRequest"],
+              responseModelNames: ["MonimoAuthResponse"]
             }
           },
           "dcp-async/src/main/java/com/example/MonimoAsyncController.java": {
@@ -261,7 +276,9 @@ describe("knowledge schema foundation", () => {
               dbAccessTypes: [],
               dbModelNames: [],
               dbTableNames: [],
-              controlGuardNames: ["MemberAuthValidator", "validateSessionToken"]
+              controlGuardNames: ["MemberAuthValidator", "validateSessionToken"],
+              requestModelNames: [],
+              responseModelNames: []
             }
           },
           "dcp-member/src/main/java/com/example/MemberSessionRepository.java": {
@@ -280,7 +297,9 @@ describe("knowledge schema foundation", () => {
               dbModelNames: [],
               dbTableNames: ["TB_MONIMO_MEMBER"],
               dbQueryNames: ["findActiveSession"],
-              controlGuardNames: []
+              controlGuardNames: [],
+              requestModelNames: [],
+              responseModelNames: []
             }
           },
           "dcp-member/src/main/java/com/example/MonimoUntyPlatfMbrBasDaoModel.java": {
@@ -297,7 +316,9 @@ describe("knowledge schema foundation", () => {
               redisKeys: [],
               dbAccessTypes: [],
               dbModelNames: ["MonimoUntyPlatfMbrBasDaoModel"],
-              dbTableNames: ["TB_MONIMO_MEMBER"]
+              dbTableNames: ["TB_MONIMO_MEMBER"],
+              requestModelNames: [],
+              responseModelNames: []
             }
           }
         }
@@ -325,6 +346,8 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "store:redis")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "store:database")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "cache-key:member.login.status")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "data-contract:monimoauthrequest")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "data-contract:monimoauthresponse")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
@@ -409,6 +432,22 @@ describe("knowledge schema foundation", () => {
           edge.type === "uses-store" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "store:redis"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "accepts-contract" &&
+          edge.fromId === "symbol:method:RegisteUseDcpChnelController.registe:dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java" &&
+          edge.toId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "returns-contract" &&
+          edge.fromId === "symbol:method:RegisteUseDcpChnelController.registe:dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java" &&
+          edge.toId === "data-contract:monimoauthresponse"
       )
     ).toBe(true);
     expect(
