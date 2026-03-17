@@ -434,4 +434,101 @@ describe("flow linking", () => {
     expect(output.confidence).toBeLessThanOrEqual(0.68);
     expect(output.answer).toContain("대표 E2E 경로군");
   });
+
+  it("prefers coherent namespace clusters during linked flow discovery", () => {
+    const coherentSnapshot = {
+      ...snapshot,
+      links: [
+        {
+          confidence: 0.97,
+          frontend: {
+            screenCode: "MDP-MYLOT021200M",
+            screenPath: "src/views/mo/mysamsunglife/loan/request/MDP-MYLOT021200M.vue",
+            routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021200M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/loan/v2/realty/request/house/collateral/status/check/customer",
+            normalizedUrl: "/loan/v2/realty/request/house/collateral/status/check/customer",
+            functionName: "checkCustomer",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/loan/v2/realty/request/house/collateral/status/check/customer",
+            controllerMethod: "RealtyCollateralLoanV2StatusController.checkCustomer",
+            filePath: "dcp-loan/src/main/java/com/acme/RealtyCollateralLoanV2StatusController.java",
+            serviceHints: ["RealtyCollateralLoanV2StatusService.callF1CLN0130"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        },
+        {
+          confidence: 0.84,
+          frontend: {
+            screenCode: "MDP-MYINT020200M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/benefit/claim/inquiry",
+            normalizedUrl: "/insurance/benefit/claim/inquiry",
+            functionName: "benefitClaimInquiry",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/benefit/claim/inquiry",
+            controllerMethod: "BenefitClaimController.benefitClaimInquiry",
+            filePath: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.loadBenefitClaim"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        },
+        {
+          confidence: 0.85,
+          frontend: {
+            screenCode: "MDP-MYINT020210M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/benefit/claim/insert",
+            normalizedUrl: "/insurance/benefit/claim/insert",
+            functionName: "insertBenefitClaim",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/benefit/claim/insert",
+            controllerMethod: "BenefitClaimController.insertBenefitClaim",
+            filePath: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.saveBenefitClaim"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        }
+      ]
+    } satisfies FrontBackGraphSnapshot;
+
+    const linked = buildLinkedFlowEvidence({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write"],
+      hits: [],
+      snapshot: coherentSnapshot,
+      limit: 3
+    });
+
+    expect(linked[0]?.backendControllerMethod).toContain("BenefitClaim");
+    expect(linked.slice(0, 2).every((item) => item.backendPath.startsWith("/insurance/"))).toBe(true);
+  });
 });

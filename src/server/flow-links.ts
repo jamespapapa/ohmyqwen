@@ -202,6 +202,13 @@ function topNamespaceFromPath(value?: string): string | undefined {
   return segments[0];
 }
 
+function collectFlowTopNamespaces(item: {
+  apiUrl: string;
+  backendPath: string;
+}): string[] {
+  return unique([topNamespaceFromPath(item.apiUrl), topNamespaceFromPath(item.backendPath)].filter(Boolean) as string[]);
+}
+
 function classifyFlowPhase(flow: LinkedFlowEvidence): DownstreamFlowTrace["phase"] {
   const text = `${flow.apiUrl} ${flow.backendControllerMethod} ${(flow.serviceHints ?? []).join(" ")}`.toLowerCase();
   if (/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment|document/.test(text)) {
@@ -472,7 +479,7 @@ export function buildLinkedFlowEvidence(options: {
   const hitPaths = (options.hits ?? []).map((hit) => hit.path.toLowerCase());
   const crossLayer = isCrossLayerFlowQuestion(options.question);
 
-  return options.snapshot.links
+  const ranked = options.snapshot.links
     .map((link) => {
       const capabilityTags = resolveLinkCapabilityTags(link, options.learnedKnowledge);
       const flowActions = inferFlowActionTags({
@@ -558,6 +565,10 @@ export function buildLinkedFlowEvidence(options: {
         serviceHints: link.backend.serviceHints
       });
       const sharedNamespaceTokens = questionNamespaceTokens.filter((tag) => flowNamespaceTokens.includes(tag));
+      const topNamespaces = collectFlowTopNamespaces({
+        apiUrl: link.api.normalizedUrl,
+        backendPath: link.backend.path
+      });
       if (sharedNamespaceTokens.length > 0) {
         score += Math.min(42, sharedNamespaceTokens.length * 14);
         reasons.push(`namespace-match:${sharedNamespaceTokens.slice(0, 3).join(",")}`);
@@ -577,15 +588,13 @@ export function buildLinkedFlowEvidence(options: {
         score -= 8;
         reasons.push("draft-flow-penalty");
       }
-      if (
-        questionTags.length > 0 &&
-        !hasStrongOntologySignalAlignment(questionTags, capabilityTags, {
-          question: options.question,
-          pathText: [link.frontend.screenPath, link.backend.filePath, link.backend.path].join(" "),
-          apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
-          methodText: [link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
-        })
-      ) {
+      const strongQuestionAlignment = hasStrongOntologySignalAlignment(questionTags, capabilityTags, {
+        question: options.question,
+        pathText: [link.frontend.screenPath, link.backend.filePath, link.backend.path].join(" "),
+        apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
+        methodText: [link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
+      });
+      if (questionTags.length > 0 && !strongQuestionAlignment) {
         score -= 24;
         reasons.push("weak-capability-alignment");
       }
@@ -602,7 +611,64 @@ export function buildLinkedFlowEvidence(options: {
         capabilityTags,
         confidence: Math.min(0.99, Number((score / 100).toFixed(2))),
         reasons: unique(reasons),
-        _score: score
+        _score: score,
+        _topNamespaces: topNamespaces,
+        _namespaceOverlapCount: sharedNamespaceTokens.length,
+        _specificMatchCount: sharedSpecificSignals.length,
+        _strongQuestionAlignment: strongQuestionAlignment
+      };
+    })
+    .map((item) => ({
+      ...item,
+      _namespaceSupportWeight:
+        Math.max(0, item._score) +
+        item._namespaceOverlapCount * 18 +
+        item._specificMatchCount * 28 +
+        (item._strongQuestionAlignment ? 16 : 0)
+    }));
+
+  const namespaceSupport = new Map<string, number>();
+  for (const item of ranked) {
+    for (const namespace of item._topNamespaces) {
+      namespaceSupport.set(namespace, (namespaceSupport.get(namespace) ?? 0) + item._namespaceSupportWeight);
+    }
+  }
+  const maxNamespaceSupport = Math.max(0, ...namespaceSupport.values());
+
+  return ranked
+    .map((item) => {
+      const strongestNamespaceSupport = Math.max(
+        0,
+        ...item._topNamespaces.map((namespace) => namespaceSupport.get(namespace) ?? 0)
+      );
+      const peerNamespaceSupport = Math.max(0, strongestNamespaceSupport - item._namespaceSupportWeight);
+      let adjustedScore = item._score;
+
+      if (peerNamespaceSupport > 0) {
+        adjustedScore += Math.min(26, peerNamespaceSupport / 55);
+      }
+
+      if (
+        maxNamespaceSupport >= 180 &&
+        strongestNamespaceSupport > 0 &&
+        strongestNamespaceSupport < maxNamespaceSupport * 0.48 &&
+        item._specificMatchCount === 0 &&
+        item._namespaceOverlapCount === 0
+      ) {
+        adjustedScore -= 34;
+      }
+
+      if (
+        maxNamespaceSupport >= 180 &&
+        strongestNamespaceSupport >= maxNamespaceSupport * 0.72 &&
+        (item._specificMatchCount > 0 || item._namespaceOverlapCount > 0)
+      ) {
+        adjustedScore += 14;
+      }
+
+      return {
+        ...item,
+        _score: adjustedScore
       };
     })
     .sort((a, b) =>
@@ -616,7 +682,17 @@ export function buildLinkedFlowEvidence(options: {
           candidate.screenCode === item.screenCode
       ) === index
     )
-    .map(({ _score: _unusedScore, ...item }) => item)
+    .map(
+      ({
+        _score: _unusedScore,
+        _topNamespaces: _unusedTopNamespaces,
+        _namespaceOverlapCount: _unusedNamespaceOverlapCount,
+        _specificMatchCount: _unusedSpecificMatchCount,
+        _strongQuestionAlignment: _unusedStrongQuestionAlignment,
+        _namespaceSupportWeight: _unusedNamespaceSupportWeight,
+        ...item
+      }) => item
+    )
     .slice(0, Math.max(1, options.limit ?? 6));
 }
 
