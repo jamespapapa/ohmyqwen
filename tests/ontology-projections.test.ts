@@ -86,6 +86,25 @@ const knowledgeSchema: KnowledgeSchemaSnapshot = {
       attributes: { controllerMethod: "MonimoAsyncController.jellyPayRes" }
     },
     {
+      id: "async-channel:monimo.auth.callback",
+      type: "async-channel",
+      label: "monimo.auth.callback",
+      summary: "async callback boundary",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["monimo"],
+        actions: ["action-callback"],
+        moduleRoles: ["async-support"],
+        processRoles: ["async-process"],
+        confidence: 0.83,
+        evidencePaths: ["dcp-async/src/main/java/com/example/MonimoAsyncController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { channel: "monimo.auth.callback" }
+    },
+    {
       id: "eai:F14090150",
       type: "eai-interface",
       label: "F14090150 가입자일괄조회",
@@ -165,13 +184,33 @@ const knowledgeSchema: KnowledgeSchemaSnapshot = {
         validatedStatus: "derived"
       },
       attributes: {}
+    },
+    {
+      id: "edge:controller-async",
+      type: "consumes-from",
+      fromId: "controller:MonimoAsyncController.jellyPayRes",
+      toId: "async-channel:monimo.auth.callback",
+      label: "controller consumes from async channel",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["monimo"],
+        actions: ["action-callback"],
+        moduleRoles: ["async-support"],
+        processRoles: ["async-process"],
+        confidence: 0.8,
+        evidencePaths: ["dcp-async/src/main/java/com/example/MonimoAsyncController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
     }
   ],
   summary: {
-    entityCount: 5,
-    edgeCount: 3,
-    entityTypeCounts: { api: 1, controller: 1, "eai-interface": 1, module: 1, route: 1 },
-    edgeTypeCounts: { "routes-to": 2, "uses-eai": 1 },
+    entityCount: 6,
+    edgeCount: 4,
+    entityTypeCounts: { api: 1, "async-channel": 1, controller: 1, "eai-interface": 1, module: 1, route: 1 },
+    edgeTypeCounts: { "consumes-from": 1, "routes-to": 2, "uses-eai": 1 },
     validatedClusterCount: 0,
     candidateClusterCount: 0,
     staleClusterCount: 0,
@@ -193,9 +232,9 @@ const retrievalUnits: RetrievalUnitSnapshot = {
       summary: "route -> api -> controller",
       confidence: 0.89,
       validatedStatus: "derived",
-      entityIds: ["route:/monimo/callback", "api:/monimo/jellyPayRes", "controller:MonimoAsyncController.jellyPayRes"],
-      edgeIds: ["edge:route-api", "edge:api-controller"],
-      searchText: ["monimo", "callback"],
+      entityIds: ["route:/monimo/callback", "api:/monimo/jellyPayRes", "controller:MonimoAsyncController.jellyPayRes", "async-channel:monimo.auth.callback"],
+      edgeIds: ["edge:route-api", "edge:api-controller", "edge:controller-async"],
+      searchText: ["monimo", "callback", "monimo.auth.callback"],
       domains: ["member-auth"],
       subdomains: [],
       channels: ["monimo"],
@@ -249,9 +288,11 @@ describe("ontology projections", () => {
     const frontBack = snapshot.projections.find((projection) => projection.type === "front-back-flow");
     expect(frontBack?.representativePaths.length).toBeGreaterThan(0);
     expect(frontBack?.statusCounts.derived).toBeGreaterThan(0);
+    expect(frontBack?.nodeIds).toContain("async-channel:monimo.auth.callback");
     const integration = snapshot.projections.find((projection) => projection.type === "integration");
     expect(integration?.representativePaths.length).toBeGreaterThan(0);
     expect(integration?.statusCounts.validated).toBeGreaterThan(0);
+    expect(integration?.nodeIds).toContain("async-channel:monimo.auth.callback");
     expect(snapshot.summary.topProjectionTypes.some((item) => item.id === "front-back-flow")).toBe(true);
 
     const markdown = buildOntologyProjectionMarkdown(snapshot);

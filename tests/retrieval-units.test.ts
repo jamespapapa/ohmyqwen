@@ -245,6 +245,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { storeKind: "database" }
     },
     {
+      id: "async-channel:monimo.auth.callback",
+      type: "async-channel",
+      label: "monimo.auth.callback",
+      summary: "Async/message boundary monimo.auth.callback",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-callback"],
+        moduleRoles: ["async-support"],
+        processRoles: ["async-process"],
+        confidence: 0.8,
+        evidencePaths: ["dcp-async/src/main/java/com/example/MonimoAsyncController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { channel: "monimo.auth.callback" }
+    },
+    {
       id: "data-model:membersessionentity",
       type: "data-model",
       label: "MemberSessionEntity",
@@ -583,6 +602,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:consumes-from:service:async",
+      type: "consumes-from",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "async-channel:monimo.auth.callback",
+      label: "service consumes from async channel",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-callback"],
+        moduleRoles: ["async-support"],
+        processRoles: ["async-process"],
+        confidence: 0.79,
+        evidencePaths: ["dcp-async/src/main/java/com/example/MonimoAsyncController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:uses-cache-key:service:key",
       type: "uses-cache-key",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -852,9 +891,12 @@ describe("retrieval unit standardization", () => {
       .map((unit) => unit.searchText.join(" "));
     expect(resourceTexts.some((text) => /redis|session|member\.login\.status/i.test(text))).toBe(true);
     expect(resourceTexts.some((text) => /monimoauthrequest/i.test(text))).toBe(true);
+    expect(resourceTexts.some((text) => /monimo\.auth\.callback/i.test(text))).toBe(true);
 
     const knowledgeUnit = units.units.find((unit) => unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
     expect(knowledgeUnit?.channels).toContain("monimo");
+    expect(uiActionFlowUnit?.searchText).toContain("monimo.auth.callback");
+    expect(uiActionFlowUnit?.entityIds).toContain("async-channel:monimo.auth.callback");
   });
 
   it("renders a markdown summary of retrieval units", () => {

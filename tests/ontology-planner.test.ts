@@ -208,4 +208,78 @@ describe("ontology planner", () => {
       "action-mismatch"
     );
   });
+
+  it("includes async channels for process and callback questions", () => {
+    const snapshot = OntologyGraphSnapshotSchema.parse({
+      version: 1,
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      workspaceDir: "/workspace",
+      nodes: [
+        {
+          id: "async-channel:monimo.auth.callback",
+          type: "async-channel",
+          label: "monimo.auth.callback",
+          summary: "async callback queue/topic boundary",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: ["embedded-login"],
+            channels: ["monimo"],
+            actions: ["action-callback"],
+            moduleRoles: ["async-support"],
+            processRoles: ["async-process"],
+            confidence: 0.82,
+            evidencePaths: ["dcp-async/src/MonimoAsyncController.java"],
+            sourceType: "ontology-review",
+            validatedStatus: "validated"
+          },
+          attributes: {}
+        },
+        {
+          id: "service:EmbededMemberLoginService.authenticate",
+          type: "service",
+          label: "EmbededMemberLoginService.authenticate",
+          summary: "member authentication service",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: ["embedded-login"],
+            channels: ["monimo"],
+            actions: ["action-auth"],
+            moduleRoles: [],
+            processRoles: [],
+            confidence: 0.8,
+            evidencePaths: ["dcp-member/src/EmbededMemberLoginService.java"],
+            sourceType: "ontology-review",
+            validatedStatus: "validated"
+          },
+          attributes: {}
+        }
+      ],
+      edges: [],
+      summary: {
+        nodeCount: 2,
+        edgeCount: 0,
+        nodeTypeCounts: { "async-channel": 1, service: 1 },
+        edgeTypeCounts: {},
+        feedbackNodeCount: 0,
+        replayNodeCount: 0,
+        pathNodeCount: 0,
+        validatedNodeCount: 2,
+        candidateNodeCount: 0,
+        staleNodeCount: 0,
+        contestedNodeCount: 0,
+        deprecatedNodeCount: 0,
+        topDomains: [{ id: "member-auth", count: 2 }],
+        topChannels: [{ id: "monimo", count: 2 }]
+      }
+    });
+
+    const ranked = rankOntologyNodesForQuestion({
+      snapshot,
+      question: "모니모 비동기 콜백 처리 흐름을 추적해줘.",
+      questionType: "process_or_batch_trace",
+      questionTags: ["monimo", "callback"]
+    });
+
+    expect(ranked[0]?.node.id).toBe("async-channel:monimo.auth.callback");
+  });
 });

@@ -261,7 +261,19 @@ describe("knowledge schema foundation", () => {
             summary: "monimo async callback controller",
             classes: [{ name: "MonimoAsyncController", line: 11 }],
             methods: [{ name: "jellyPayRes", className: "MonimoAsyncController", line: 25 }],
-            functions: []
+            functions: [],
+            resources: {
+              storeKinds: [],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              asyncChannelNames: ["monimo.auth.callback"],
+              dbAccessTypes: [],
+              dbModelNames: [],
+              dbTableNames: [],
+              requestModelNames: [],
+              responseModelNames: []
+            }
           },
           "dcp-member/src/main/java/com/example/MemberAuthValidator.java": {
             path: "dcp-member/src/main/java/com/example/MemberAuthValidator.java",
@@ -354,6 +366,7 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.type === "decision-path" && /authenticate :: switch auth status/i.test(entity.label))).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "async-channel:monimo.auth.callback")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "MemberAuthValidator")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "validateSessionToken")).toBe(true);
@@ -554,6 +567,13 @@ describe("knowledge schema foundation", () => {
           edge.type === "uses-cache-key" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "cache-key:member.login.status"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "consumes-from" &&
+          edge.toId === "async-channel:monimo.auth.callback"
       )
     ).toBe(true);
     const guardIds = snapshot.entities

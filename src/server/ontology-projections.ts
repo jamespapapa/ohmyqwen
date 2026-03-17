@@ -100,10 +100,10 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
   const { nodesById } = nodeTypeGroups(ontologyGraph);
 
   const codeStructureNodeIds = ontologyGraph.nodes
-    .filter((node) => ["module", "file", "symbol", "ui-action", "gateway-handler", "controller", "service", "control-guard", "decision-path", "data-contract", "data-model", "data-query", "data-table", "cache-key", "data-store"].includes(node.type))
+    .filter((node) => ["module", "file", "symbol", "ui-action", "gateway-handler", "controller", "service", "control-guard", "decision-path", "data-contract", "data-model", "data-query", "data-table", "cache-key", "data-store", "async-channel"].includes(node.type))
     .map((node) => node.id);
   const codeStructureEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["contains", "declares", "calls", "proxies-to", "depends-on", "supports-module-role", "uses-store", "accepts-contract", "returns-contract", "stores-model", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to"].includes(edge.type))
+    .filter((edge) => ["contains", "declares", "calls", "proxies-to", "depends-on", "supports-module-role", "uses-store", "dispatches-to", "consumes-from", "accepts-contract", "returns-contract", "stores-model", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to"].includes(edge.type))
     .map((edge) => edge.id);
 
   const flowPaths = ontologyGraph.nodes
@@ -117,17 +117,17 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     }));
 
   const frontBackNodeIds = ontologyGraph.nodes
-    .filter((node) => ["route", "ui-action", "api", "gateway-handler", "controller", "service", "decision-path", "retrieval-unit"].includes(node.type) && (node.type !== "retrieval-unit" || node.attributes.unitType === "flow"))
+    .filter((node) => ["route", "ui-action", "api", "gateway-handler", "controller", "service", "decision-path", "async-channel", "retrieval-unit"].includes(node.type) && (node.type !== "retrieval-unit" || node.attributes.unitType === "flow"))
     .map((node) => node.id);
   const frontBackEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["routes-to", "calls", "proxies-to", "branches-to", "maps-to", "references-entity", "references-edge"].includes(edge.type))
+    .filter((edge) => ["routes-to", "calls", "proxies-to", "branches-to", "dispatches-to", "consumes-from", "maps-to", "references-entity", "references-edge"].includes(edge.type))
     .map((edge) => edge.id);
 
   const integrationNodeIds = ontologyGraph.nodes
-    .filter((node) => node.type === "eai-interface" || node.type === "data-store" || node.type === "data-contract" || node.type === "data-query" || node.type === "data-table" || node.type === "cache-key" || node.type === "control-guard" || node.type === "decision-path" || node.type === "gateway-handler" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow")))
+    .filter((node) => node.type === "eai-interface" || node.type === "data-store" || node.type === "async-channel" || node.type === "data-contract" || node.type === "data-query" || node.type === "data-table" || node.type === "cache-key" || node.type === "control-guard" || node.type === "decision-path" || node.type === "gateway-handler" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow" || node.attributes.unitType === "resource-schema")))
     .map((node) => node.id);
   const integrationEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["uses-eai", "uses-store", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to", "belongs-to-channel", "references-entity", "routes-to", "proxies-to"].includes(edge.type))
+    .filter((edge) => ["uses-eai", "uses-store", "dispatches-to", "consumes-from", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to", "belongs-to-channel", "references-entity", "routes-to", "proxies-to"].includes(edge.type))
     .map((edge) => edge.id);
   const integrationPaths = ontologyGraph.nodes
     .filter((node) => node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.metadata.channels.length > 0))

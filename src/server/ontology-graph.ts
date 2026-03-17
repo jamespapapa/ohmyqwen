@@ -34,6 +34,7 @@ const OntologyNodeTypeSchema = z.enum([
   "service",
   "eai-interface",
   "data-store",
+  "async-channel",
   "data-contract",
   "data-model",
   "data-query",
@@ -59,6 +60,8 @@ const OntologyEdgeTypeSchema = z.enum([
   "maps-to",
   "uses-eai",
   "uses-store",
+  "dispatches-to",
+  "consumes-from",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -272,6 +275,7 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "service":
     case "eai-interface":
     case "data-store":
+    case "async-channel":
     case "data-contract":
     case "control-guard":
     case "decision-path":
@@ -298,6 +302,8 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "calls":
     case "uses-eai":
     case "uses-store":
+    case "dispatches-to":
+    case "consumes-from":
     case "accepts-contract":
     case "returns-contract":
       return 120;

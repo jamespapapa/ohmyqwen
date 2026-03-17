@@ -764,6 +764,7 @@ interface StructureResourceHints {
   redisAccessTypes: string[];
   redisOps: string[];
   redisKeys: string[];
+  asyncChannelNames?: string[];
   dbAccessTypes: string[];
   dbModelNames: string[];
   dbTableNames: string[];
@@ -2116,6 +2117,7 @@ function buildStructureResourceHints(options: {
   const redisAccessTypes = new Set<string>();
   const redisOps = new Set<string>();
   const redisKeys = new Set<string>();
+  const asyncChannelNames = new Set<string>();
   const dbAccessTypes = new Set<string>();
   const dbModelNames = new Set<string>();
   const dbTableNames = new Set<string>();
@@ -2196,6 +2198,18 @@ function buildStructureResourceHints(options: {
     }
     if (/@Repository\b/.test(trimmed) || /@Mapper\b/.test(trimmed)) {
       storeKinds.add("database");
+    }
+    const asyncChannelAnnotationPatterns = [
+      /@KafkaListener\s*\([^)]*topics?\s*=\s*["']([^"'`]+)["']/i,
+      /@RabbitListener\s*\([^)]*queues?\s*=\s*["']([^"'`]+)["']/i,
+      /@JmsListener\s*\([^)]*destination\s*=\s*["']([^"'`]+)["']/i,
+      /@SqsListener\s*\(\s*["']([^"'`]+)["']/i
+    ];
+    for (const pattern of asyncChannelAnnotationPatterns) {
+      const match = trimmed.match(pattern);
+      if (match?.[1]) {
+        asyncChannelNames.add(match[1].trim());
+      }
     }
     if (/\bObjects\.requireNonNull\s*\(|\bAssert\.[A-Za-z_][A-Za-z0-9_]*\s*\(|\bPreconditions\.[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(trimmed)) {
       controlGuardNames.add("guard-assertion");
@@ -2309,6 +2323,16 @@ function buildStructureResourceHints(options: {
       }
     }
 
+    if (/(queue|topic|channel|event|callback|webhook|listener|consumer|dispatcher|processor|emit|publish|enqueue|dispatch|send)/i.test(trimmed)) {
+      for (const literal of trimmed.matchAll(/["'`]([A-Za-z0-9_.:-]{3,120})["'`]/g)) {
+        const value = literal[1]?.trim() ?? "";
+        if (!value) continue;
+        if (/(queue|topic|channel|event|callback|webhook)/i.test(value) || /[.:-]/.test(value)) {
+          asyncChannelNames.add(value);
+        }
+      }
+    }
+
     if (/(select|insert|update|delete)\s+/i.test(trimmed) || /\b(from|into|join)\s+[A-Za-z0-9_$.]+\b/i.test(trimmed)) {
       storeKinds.add("database");
       for (const sqlMatch of trimmed.matchAll(/\b(?:from|into|join|update)\s+([A-Za-z0-9_$.]+)/gi)) {
@@ -2333,6 +2357,16 @@ function buildStructureResourceHints(options: {
     if (/Redis/i.test(className)) {
       storeKinds.add("redis");
       redisAccessTypes.add(className);
+    }
+    if (/(Listener|Consumer|Dispatcher|Processor|Worker|Callback|Webhook|Async)/i.test(className)) {
+      const inferred = className
+        .replace(/(Listener|Consumer|Dispatcher|Processor|Worker|Callback|Webhook|Async)/gi, ".")
+        .replace(/\.+/g, ".")
+        .replace(/^\.|\.$/g, "")
+        .toLowerCase();
+      if (inferred) {
+        asyncChannelNames.add(inferred);
+      }
     }
     const contractKind = classifyContractHint({
       name: className,
@@ -2359,6 +2393,9 @@ function buildStructureResourceHints(options: {
     ) {
       dbQueryNames.add(methodName);
     }
+    if (/(consume|listener|receive|callback|webhook|processor|dispatcher|worker|queue|publish|send|emit|dispatch|enqueue)/i.test(methodName)) {
+      asyncChannelNames.add(methodName.toLowerCase());
+    }
   }
 
   return {
@@ -2366,6 +2403,7 @@ function buildStructureResourceHints(options: {
     redisAccessTypes: uniqueStructureHints([...redisAccessTypes]),
     redisOps: uniqueStructureHints([...redisOps]),
     redisKeys: uniqueStructureHints([...redisKeys]),
+    asyncChannelNames: uniqueStructureHints([...asyncChannelNames]),
     dbAccessTypes: uniqueStructureHints([...dbAccessTypes]),
     dbModelNames: uniqueStructureHints([...dbModelNames]),
     dbTableNames: uniqueStructureHints([...dbTableNames]),

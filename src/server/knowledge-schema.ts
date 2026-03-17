@@ -17,6 +17,7 @@ const KnowledgeEntityTypeSchema = z.enum([
   "service",
   "eai-interface",
   "data-store",
+  "async-channel",
   "data-contract",
   "data-model",
   "data-query",
@@ -36,6 +37,8 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "maps-to",
   "uses-eai",
   "uses-store",
+  "dispatches-to",
+  "consumes-from",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -143,6 +146,7 @@ interface StructureFileEntryLike {
     redisAccessTypes?: string[];
     redisOps?: string[];
     redisKeys?: string[];
+    asyncChannelNames?: string[];
     dbAccessTypes?: string[];
     requestModelNames?: string[];
     responseModelNames?: string[];
@@ -365,6 +369,7 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "service":
     case "eai-interface":
     case "data-store":
+    case "async-channel":
     case "data-contract":
     case "control-guard":
     case "decision-path":
@@ -391,6 +396,8 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "calls":
     case "uses-eai":
     case "uses-store":
+    case "dispatches-to":
+    case "consumes-from":
     case "accepts-contract":
     case "returns-contract":
       return 120;
@@ -618,6 +625,35 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }),
       attributes: {
         storeKind
+      }
+    });
+    return id;
+  };
+
+  const ensureAsyncChannel = (options: {
+    channel: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `async-channel:${slugify(options.channel)}`;
+    upsertEntity({
+      id,
+      type: "async-channel",
+      label: options.channel,
+      summary: `Async/message boundary ${options.channel}`,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.channel, "async callback queue topic event"),
+        moduleRoles: ["async-support"],
+        processRoles: ["async-process"],
+        confidence: 0.74,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        channel: options.channel,
+        moduleName: options.moduleName,
+        path: options.evidencePath
       }
     });
     return id;
@@ -859,6 +895,20 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     return id;
   };
 
+  const inferAsyncEdgeType = (...values: Array<string | undefined>): "dispatches-to" | "consumes-from" | undefined => {
+    const joined = values.filter(Boolean).join(" ").toLowerCase();
+    if (!joined) {
+      return undefined;
+    }
+    if (/(send|publish|emit|enqueue|dispatch|produce|push)/.test(joined)) {
+      return "dispatches-to";
+    }
+    if (/(consume|listen|listener|receive|callback|webhook|process|processor|worker|handler|subscriber|async)/.test(joined)) {
+      return "consumes-from";
+    }
+    return undefined;
+  };
+
   for (const [relativePath, entry] of Object.entries(options.structure?.entries ?? {})) {
     const normalizedPath = toForwardSlash(relativePath);
     const moduleName = extractModuleName(normalizedPath, backendWorkspaceBase);
@@ -927,6 +977,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
 
     const requestModelNames = unique(resourceHints.requestModelNames ?? []);
     const responseModelNames = unique(resourceHints.responseModelNames ?? []);
+    const asyncChannelNames = unique(resourceHints.asyncChannelNames ?? []);
+    const asyncChannelIds = asyncChannelNames.map((channel) =>
+      ensureAsyncChannel({
+        channel,
+        evidencePath: normalizedPath,
+        moduleName
+      })
+    );
     for (const requestModelName of requestModelNames) {
       const requestContractId = ensureDataContract({
         label: requestModelName,
@@ -1147,6 +1205,29 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       });
     }
 
+    if (asyncChannelIds.length > 0) {
+      for (const asyncChannelId of asyncChannelIds) {
+        const asyncEdgeType = inferAsyncEdgeType(normalizedPath, entry.summary) ?? "consumes-from";
+        upsertEdge({
+          id: `edge:${asyncEdgeType}:${fileId}:${asyncChannelId}`,
+          type: asyncEdgeType,
+          fromId: fileId,
+          toId: asyncChannelId,
+          label: asyncEdgeType === "dispatches-to" ? "file dispatches to async channel" : "file consumes from async channel",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(entry.summary, normalizedPath, "async callback queue topic event"),
+            moduleRoles: ["async-support"],
+            processRoles: ["async-process"],
+            confidence: 0.68,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
+    }
+
     for (const classRef of entry.classes) {
       const symbolId = `symbol:class:${classRef.name}:${normalizedPath}`;
       classFileMap.set(classRef.name, normalizedPath);
@@ -1229,6 +1310,30 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           attributes: {
             accessType: classRef.name
           }
+        });
+      }
+
+      for (const asyncChannelId of asyncChannelIds) {
+        const asyncEdgeType = inferAsyncEdgeType(classRef.name, normalizedPath, entry.summary);
+        if (!asyncEdgeType) {
+          continue;
+        }
+        upsertEdge({
+          id: `edge:${asyncEdgeType}:${symbolId}:${asyncChannelId}`,
+          type: asyncEdgeType,
+          fromId: symbolId,
+          toId: asyncChannelId,
+          label: asyncEdgeType === "dispatches-to" ? "class dispatches to async channel" : "class consumes from async channel",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(classRef.name, "async callback queue topic event"),
+            moduleRoles: ["async-support"],
+            processRoles: ["async-process"],
+            confidence: 0.74,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
         });
       }
     }
@@ -1365,6 +1470,30 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           attributes: {
             direction: "response"
           }
+        });
+      }
+
+      for (const asyncChannelId of asyncChannelIds) {
+        const asyncEdgeType = inferAsyncEdgeType(methodRef.name, methodRef.className, normalizedPath, entry.summary);
+        if (!asyncEdgeType) {
+          continue;
+        }
+        upsertEdge({
+          id: `edge:${asyncEdgeType}:${symbolId}:${asyncChannelId}`,
+          type: asyncEdgeType,
+          fromId: symbolId,
+          toId: asyncChannelId,
+          label: asyncEdgeType === "dispatches-to" ? "method dispatches to async channel" : "method consumes from async channel",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(methodRef.name, methodRef.className, "async callback queue topic event"),
+            moduleRoles: ["async-support"],
+            processRoles: ["async-process"],
+            confidence: 0.78,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
         });
       }
     }
@@ -2637,6 +2766,7 @@ export function compactKnowledgeSchemaSnapshot(
       "service",
       "knowledge-cluster",
       "data-store",
+      "async-channel",
       "eai-interface",
       "control-guard",
       "data-query",
