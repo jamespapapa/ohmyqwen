@@ -107,7 +107,7 @@ function preferredNodeTypes(questionType: AskQuestionType): string[] {
     case "channel_or_partner_integration":
       return ["route", "api", "controller", "service", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
     case "config_or_resource_explanation":
-      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface"];
+      return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-model", "data-table", "cache-key", "service", "symbol"];
     case "business_capability_trace":
       return ["service", "controller", "api", "route", "retrieval-unit", "knowledge-cluster"];
     case "domain_capability_overview":

@@ -99,10 +99,10 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
   const { nodesById } = nodeTypeGroups(ontologyGraph);
 
   const codeStructureNodeIds = ontologyGraph.nodes
-    .filter((node) => ["module", "file", "symbol", "controller", "service"].includes(node.type))
+    .filter((node) => ["module", "file", "symbol", "controller", "service", "data-model", "data-table", "cache-key", "data-store"].includes(node.type))
     .map((node) => node.id);
   const codeStructureEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["contains", "declares", "calls", "depends-on", "supports-module-role"].includes(edge.type))
+    .filter((edge) => ["contains", "declares", "calls", "depends-on", "supports-module-role", "uses-store", "stores-model", "maps-to-table", "queries-table", "uses-cache-key"].includes(edge.type))
     .map((edge) => edge.id);
 
   const flowPaths = ontologyGraph.nodes
@@ -123,10 +123,10 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     .map((edge) => edge.id);
 
   const integrationNodeIds = ontologyGraph.nodes
-    .filter((node) => node.type === "eai-interface" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow")))
+    .filter((node) => node.type === "eai-interface" || node.type === "data-store" || node.type === "data-table" || node.type === "cache-key" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow")))
     .map((node) => node.id);
   const integrationEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["uses-eai", "belongs-to-channel", "references-entity", "routes-to"].includes(edge.type))
+    .filter((edge) => ["uses-eai", "uses-store", "maps-to-table", "queries-table", "uses-cache-key", "belongs-to-channel", "references-entity", "routes-to"].includes(edge.type))
     .map((edge) => edge.id);
   const integrationPaths = ontologyGraph.nodes
     .filter((node) => node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.metadata.channels.length > 0))

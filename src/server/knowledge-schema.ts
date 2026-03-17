@@ -14,6 +14,10 @@ const KnowledgeEntityTypeSchema = z.enum([
   "controller",
   "service",
   "eai-interface",
+  "data-store",
+  "data-model",
+  "data-table",
+  "cache-key",
   "knowledge-cluster"
 ]);
 
@@ -24,6 +28,11 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "routes-to",
   "maps-to",
   "uses-eai",
+  "uses-store",
+  "stores-model",
+  "maps-to-table",
+  "queries-table",
+  "uses-cache-key",
   "depends-on",
   "belongs-to-domain",
   "belongs-to-channel",
@@ -118,6 +127,15 @@ interface StructureFileEntryLike {
   classes: StructureSymbolLike[];
   methods: StructureSymbolLike[];
   functions: StructureSymbolLike[];
+  resources?: {
+    storeKinds?: string[];
+    redisAccessTypes?: string[];
+    redisOps?: string[];
+    redisKeys?: string[];
+    dbAccessTypes?: string[];
+    dbModelNames?: string[];
+    dbTableNames?: string[];
+  };
 }
 
 interface StructureSnapshotLike {
@@ -221,6 +239,31 @@ function inferProcessRoles(moduleName: string): string[] {
   const normalized = normalizeComparable(moduleName);
   if (normalized.includes("batch")) return ["batch-process"];
   return [];
+}
+
+function normalizeStoreKind(value: string): "redis" | "database" | undefined {
+  const normalized = normalizeComparable(value);
+  if (normalized.includes("redis")) {
+    return "redis";
+  }
+  if (
+    normalized.includes("database") ||
+    normalized.includes("db") ||
+    normalized.includes("repository") ||
+    normalized.includes("mapper") ||
+    normalized.includes("dao")
+  ) {
+    return "database";
+  }
+  return undefined;
+}
+
+function inferStoreLabel(kind: "redis" | "database"): string {
+  return kind === "redis" ? "Redis Store" : "Database Store";
+}
+
+function normalizeTableName(value: string): string {
+  return value.replace(/[`"'[\]]/g, "").trim();
 }
 
 function extractModuleName(relativePath: string, fallback?: string): string {
@@ -440,6 +483,134 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     return id;
   };
 
+  const ensureDataStore = (storeKind: "redis" | "database", evidencePath?: string) => {
+    const id = `store:${storeKind}`;
+    upsertEntity({
+      id,
+      type: "data-store",
+      label: inferStoreLabel(storeKind),
+      summary: storeKind === "redis" ? "Redis-backed state/session/cache store" : "Database-backed persistence store",
+      metadata: makeMetadata({
+        channels: storeKind === "redis" ? ["cache-session"] : [],
+        moduleRoles: storeKind === "redis" ? ["state-store"] : ["data-persistence"],
+        confidence: 0.86,
+        evidencePaths: evidencePath ? [evidencePath] : [],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        storeKind
+      }
+    });
+    return id;
+  };
+
+  const ensureDataModel = (options: {
+    label: string;
+    tableName?: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const normalizedLabel = slugify(options.label || options.tableName || "data-model");
+    const id = `data-model:${normalizedLabel}`;
+    upsertEntity({
+      id,
+      type: "data-model",
+      label: options.label,
+      summary: options.tableName
+        ? `${options.label} maps to table ${options.tableName}`
+        : `${options.label} database model`,
+      metadata: makeMetadata({
+        moduleRoles: ["data-model"],
+        confidence: 0.78,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        modelName: options.label,
+        tableName: options.tableName ?? null,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    return id;
+  };
+
+  const ensureDataTable = (options: {
+    tableName: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const normalizedTableName = normalizeTableName(options.tableName);
+    const id = `data-table:${slugify(normalizedTableName || options.tableName)}`;
+    upsertEntity({
+      id,
+      type: "data-table",
+      label: normalizedTableName || options.tableName,
+      summary: `Database table ${normalizedTableName || options.tableName}`,
+      metadata: makeMetadata({
+        moduleRoles: ["data-persistence"],
+        confidence: 0.8,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        tableName: normalizedTableName || options.tableName,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    const databaseStoreId = ensureDataStore("database", options.evidencePath);
+    upsertEdge({
+      id: `edge:uses-store:${id}:${databaseStoreId}`,
+      type: "uses-store",
+      fromId: id,
+      toId: databaseStoreId,
+      label: "table stored in database",
+      metadata: makeMetadata({
+        moduleRoles: ["data-persistence"],
+        confidence: 0.78,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        storeKind: "database"
+      }
+    });
+    return id;
+  };
+
+  const ensureCacheKey = (options: {
+    key: string;
+    evidencePath: string;
+    moduleName: string;
+  }) => {
+    const id = `cache-key:${slugify(options.key)}`;
+    upsertEntity({
+      id,
+      type: "cache-key",
+      label: options.key,
+      summary: `Redis/cache key hint ${options.key}`,
+      metadata: makeMetadata({
+        channels: ["cache-session"],
+        moduleRoles: ["state-store"],
+        confidence: 0.72,
+        evidencePaths: [options.evidencePath],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        key: options.key,
+        moduleName: options.moduleName,
+        path: options.evidencePath
+      }
+    });
+    return id;
+  };
+
   for (const [relativePath, entry] of Object.entries(options.structure?.entries ?? {})) {
     const normalizedPath = toForwardSlash(relativePath);
     const moduleName = extractModuleName(normalizedPath, backendWorkspaceBase);
@@ -478,6 +649,146 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }),
       attributes: {}
     });
+
+    const resourceHints = entry.resources ?? {};
+    const storeKinds = unique((resourceHints.storeKinds ?? []).map((value) => normalizeStoreKind(value) ?? "")).filter(
+      (value): value is "redis" | "database" => value === "redis" || value === "database"
+    );
+    for (const storeKind of storeKinds) {
+      const storeId = ensureDataStore(storeKind, normalizedPath);
+      upsertEdge({
+        id: `edge:uses-store:${fileId}:${storeId}`,
+        type: "uses-store",
+        fromId: fileId,
+        toId: storeId,
+        label: `file uses ${storeKind} store`,
+        metadata: makeMetadata({
+          moduleRoles: storeKind === "redis" ? ["state-store"] : ["data-persistence"],
+          confidence: 0.82,
+          evidencePaths: [normalizedPath],
+          sourceType: "structure-index",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          storeKind
+        }
+      });
+    }
+
+    const dbTableNames = unique((resourceHints.dbTableNames ?? []).map(normalizeTableName));
+    const dbTableName = dbTableNames[0];
+    for (const tableName of dbTableNames) {
+      const tableId = ensureDataTable({
+        tableName,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:queries-table:${fileId}:${tableId}`,
+        type: "queries-table",
+        fromId: fileId,
+        toId: tableId,
+        label: "file queries database table",
+        metadata: makeMetadata({
+          moduleRoles: ["data-persistence"],
+          confidence: 0.78,
+          evidencePaths: [normalizedPath],
+          sourceType: "structure-index",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+    }
+    for (const modelName of unique(resourceHints.dbModelNames ?? [])) {
+      const modelId = ensureDataModel({
+        label: modelName,
+        tableName: dbTableName,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:stores-model:${fileId}:${modelId}`,
+        type: "stores-model",
+        fromId: fileId,
+        toId: modelId,
+        label: "file defines or uses database model",
+        metadata: makeMetadata({
+          moduleRoles: ["data-model"],
+          confidence: 0.78,
+          evidencePaths: [normalizedPath],
+          sourceType: "structure-index",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          tableName: dbTableName ?? null
+        }
+      });
+      if (dbTableName) {
+        const tableId = ensureDataTable({
+          tableName: dbTableName,
+          evidencePath: normalizedPath,
+          moduleName
+        });
+        upsertEdge({
+          id: `edge:maps-to-table:${modelId}:${tableId}`,
+          type: "maps-to-table",
+          fromId: modelId,
+          toId: tableId,
+          label: "model maps to database table",
+          metadata: makeMetadata({
+            moduleRoles: ["data-model", "data-persistence"],
+            confidence: 0.82,
+            evidencePaths: [normalizedPath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
+    }
+
+    for (const redisKey of unique(resourceHints.redisKeys ?? [])) {
+      const cacheKeyId = ensureCacheKey({
+        key: redisKey,
+        evidencePath: normalizedPath,
+        moduleName
+      });
+      upsertEdge({
+        id: `edge:uses-cache-key:${fileId}:${cacheKeyId}`,
+        type: "uses-cache-key",
+        fromId: fileId,
+        toId: cacheKeyId,
+        label: "file uses cache/session key",
+        metadata: makeMetadata({
+          channels: ["cache-session"],
+          moduleRoles: ["state-store"],
+          confidence: 0.76,
+          evidencePaths: [normalizedPath],
+          sourceType: "structure-index",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+      const redisStoreId = ensureDataStore("redis", normalizedPath);
+      upsertEdge({
+        id: `edge:uses-store:${cacheKeyId}:${redisStoreId}`,
+        type: "uses-store",
+        fromId: cacheKeyId,
+        toId: redisStoreId,
+        label: "cache key stored in redis",
+        metadata: makeMetadata({
+          channels: ["cache-session"],
+          moduleRoles: ["state-store"],
+          confidence: 0.74,
+          evidencePaths: [normalizedPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          storeKind: "redis"
+        }
+      });
+    }
 
     for (const classRef of entry.classes) {
       const symbolId = `symbol:class:${classRef.name}:${normalizedPath}`;
@@ -518,6 +829,48 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }),
         attributes: {}
       });
+
+      if ((resourceHints.dbAccessTypes ?? []).includes(classRef.name)) {
+        const databaseStoreId = ensureDataStore("database", normalizedPath);
+        upsertEdge({
+          id: `edge:uses-store:${symbolId}:${databaseStoreId}`,
+          type: "uses-store",
+          fromId: symbolId,
+          toId: databaseStoreId,
+          label: "class accesses database store",
+          metadata: makeMetadata({
+            moduleRoles: ["data-persistence"],
+            confidence: 0.8,
+            evidencePaths: [normalizedPath],
+            sourceType: "structure-index",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            accessType: classRef.name
+          }
+        });
+      }
+
+      if ((resourceHints.redisAccessTypes ?? []).includes(classRef.name)) {
+        const redisStoreId = ensureDataStore("redis", normalizedPath);
+        upsertEdge({
+          id: `edge:uses-store:${symbolId}:${redisStoreId}`,
+          type: "uses-store",
+          fromId: symbolId,
+          toId: redisStoreId,
+          label: "class accesses redis store",
+          metadata: makeMetadata({
+            moduleRoles: ["state-store"],
+            confidence: 0.8,
+            evidencePaths: [normalizedPath],
+            sourceType: "structure-index",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            accessType: classRef.name
+          }
+        });
+      }
     }
 
     for (const methodRef of [...entry.methods, ...entry.functions]) {
@@ -574,6 +927,28 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             validatedStatus: "derived"
           }),
           attributes: {}
+        });
+      }
+
+      if ((resourceHints.redisOps ?? []).length > 0 && /(redis|getredis|setredis|session)/i.test(methodRef.name)) {
+        const redisStoreId = ensureDataStore("redis", normalizedPath);
+        upsertEdge({
+          id: `edge:uses-store:${symbolId}:${redisStoreId}`,
+          type: "uses-store",
+          fromId: symbolId,
+          toId: redisStoreId,
+          label: "method accesses redis/session store",
+          metadata: makeMetadata({
+            channels: ["cache-session"],
+            moduleRoles: ["state-store"],
+            confidence: 0.76,
+            evidencePaths: [normalizedPath],
+            sourceType: "structure-index",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            redisOps: resourceHints.redisOps
+          }
         });
       }
     }

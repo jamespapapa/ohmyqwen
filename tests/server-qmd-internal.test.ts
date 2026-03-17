@@ -174,6 +174,89 @@ async function writeWorkspaceFixture(workspaceDir: string): Promise<void> {
   );
 }
 
+async function writeStorageWorkspaceFixture(workspaceDir: string): Promise<void> {
+  await mkdir(path.join(workspaceDir, "src"), { recursive: true });
+  await writeFile(
+    path.join(workspaceDir, "src", "RedisSessionSupport.java"),
+    [
+      "package demo;",
+      "import org.springframework.data.redis.core.StringRedisTemplate;",
+      "public class RedisSessionSupport {",
+      "  private final StringRedisTemplate redisTemplate;",
+      "  public RedisSessionSupport(StringRedisTemplate redisTemplate) {",
+      "    this.redisTemplate = redisTemplate;",
+      "  }",
+      "  public String getRedisInfo(String sessionId) {",
+      "    return redisTemplate.opsForValue().get(\"member.login.status\");",
+      "  }",
+      "  public void setRedisInfo(String sessionId, String payload) {",
+      "    redisTemplate.opsForValue().set(\"member.profile\", payload);",
+      "    redisTemplate.expire(\"member.profile\", java.time.Duration.ofMinutes(30));",
+      "  }",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    path.join(workspaceDir, "src", "MemberSessionEntity.java"),
+    [
+      "package demo;",
+      "import jakarta.persistence.Entity;",
+      "import jakarta.persistence.Table;",
+      "@Entity",
+      "@Table(name = \"TB_MEMBER_SESSION\")",
+      "public class MemberSessionEntity {",
+      "  private String memberId;",
+      "  private String sessionId;",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    path.join(workspaceDir, "src", "MemberSessionRepository.java"),
+    [
+      "package demo;",
+      "import org.springframework.stereotype.Repository;",
+      "@Repository",
+      "public class MemberSessionRepository {",
+      "  public String findActiveSession(String memberId) {",
+      "    String sql = \"select session_id from TB_MEMBER_SESSION where member_id = ?\";",
+      "    return sql;",
+      "  }",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
+  await writeFile(
+    path.join(workspaceDir, "src", "MemberSessionService.java"),
+    [
+      "package demo;",
+      "public class MemberSessionService {",
+      "  private final RedisSessionSupport redisSessionSupport;",
+      "  private final MemberSessionRepository memberSessionRepository;",
+      "  private final MemberSessionEntity sessionEntity;",
+      "  public MemberSessionService(",
+      "      RedisSessionSupport redisSessionSupport,",
+      "      MemberSessionRepository memberSessionRepository,",
+      "      MemberSessionEntity sessionEntity",
+      "  ) {",
+      "    this.redisSessionSupport = redisSessionSupport;",
+      "    this.memberSessionRepository = memberSessionRepository;",
+      "    this.sessionEntity = sessionEntity;",
+      "  }",
+      "  public String loadSession(String memberId) {",
+      "    String cached = redisSessionSupport.getRedisInfo(memberId);",
+      "    if (cached != null) {",
+      "      return cached;",
+      "    }",
+      "    return memberSessionRepository.findActiveSession(memberId);",
+      "  }",
+      "}"
+    ].join("\n"),
+    "utf8"
+  );
+}
+
 describe("server projects with vendored internal qmd runtime", () => {
   it("accepts ontology inputs and feeds ontology matches into analyze/search/ask", async () => {
     const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
@@ -465,6 +548,73 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect((cachedAnalysis.evaluationTrends?.topQuestionTypes ?? []).length).toBeGreaterThan(0);
     expect(cachedAnalysis.evaluationReplay?.totalArtifacts).toBeGreaterThanOrEqual(2);
     expect(cachedAnalysis.evaluationPromotions?.totalActions ?? 0).toBeGreaterThanOrEqual(0);
+  });
+
+  it("extracts redis and database ontology nodes from code structure during analyze", async () => {
+    const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-external-workspace-"));
+    tempDirs.push(appRoot, workspaceDir);
+
+    await writeFakeInternalQmdRuntime(appRoot);
+    await writeStorageWorkspaceFixture(workspaceDir);
+    await mkdir(path.join(appRoot, ".ohmyqwen", "runtime", "qmd", "models"), { recursive: true });
+    await mkdir(path.join(appRoot, "config"), { recursive: true });
+
+    installFakeLlm();
+    process.chdir(appRoot);
+    process.env.OHMYQWEN_PROJECT_HOME = path.join(appRoot, ".project-home");
+    process.env.OHMYQWEN_SERVER_TRACE = "0";
+    process.env.OHMYQWEN_LLM_BASE_URL = "http://fake-llm.local/v1";
+    process.env.OHMYQWEN_LLM_MODEL = "Fake-Model";
+    process.env.OHMYQWEN_LLM_ENDPOINT_KIND = "openai";
+
+    const projectsModule = await import("../src/server/projects.js");
+
+    const project = await projectsModule.upsertServerProject({
+      name: "external-demo-storage-ontology",
+      workspaceDir,
+      retrieval: {
+        qmd: {
+          integrationMode: "internal-runtime",
+          command: "definitely-missing-qmd"
+        }
+      }
+    });
+
+    const analysis = await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-store"] ?? 0)).toBeGreaterThanOrEqual(2);
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-model"] ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["data-table"] ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(analysis.ontologyGraph?.nodeTypeCounts["cache-key"] ?? 0)).toBeGreaterThanOrEqual(1);
+
+    const ontologyGraphPath = path.join(appRoot, ".project-home", "memory", "ontology-graph", "latest.json");
+    const ontologyGraph = JSON.parse(await readFile(ontologyGraphPath, "utf8")) as {
+      nodes?: Array<{ id?: string; type?: string }>;
+      edges?: Array<{ type?: string; fromId?: string; toId?: string }>;
+    };
+    const nodeIds = new Set((ontologyGraph.nodes ?? []).map((node) => node.id).filter(Boolean));
+    expect(nodeIds.has("store:redis")).toBe(true);
+    expect(nodeIds.has("store:database")).toBe(true);
+    expect(nodeIds.has("cache-key:member.login.status")).toBe(true);
+    expect(nodeIds.has("data-model:membersessionentity")).toBe(true);
+    expect(nodeIds.has("data-table:tb_member_session")).toBe(true);
+    expect(
+      (ontologyGraph.edges ?? []).some(
+        (edge) =>
+          edge.type === "maps-to-table" &&
+          edge.fromId === "data-model:membersessionentity" &&
+          edge.toId === "data-table:tb_member_session"
+      )
+    ).toBe(true);
+    expect(
+      (ontologyGraph.edges ?? []).some(
+        (edge) => edge.type === "uses-cache-key" && edge.toId === "cache-key:member.login.status"
+      )
+    ).toBe(true);
   });
 
   it("promotes matched learned knowledge from accumulated search and ask evaluations", async () => {

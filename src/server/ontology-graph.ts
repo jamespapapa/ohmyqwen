@@ -30,6 +30,10 @@ const OntologyNodeTypeSchema = z.enum([
   "controller",
   "service",
   "eai-interface",
+  "data-store",
+  "data-model",
+  "data-table",
+  "cache-key",
   "knowledge-cluster",
   "retrieval-unit",
   "knowledge-input",
@@ -46,6 +50,11 @@ const OntologyEdgeTypeSchema = z.enum([
   "routes-to",
   "maps-to",
   "uses-eai",
+  "uses-store",
+  "stores-model",
+  "maps-to-table",
+  "queries-table",
+  "uses-cache-key",
   "depends-on",
   "belongs-to-domain",
   "belongs-to-channel",
@@ -248,12 +257,19 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "controller":
     case "service":
     case "eai-interface":
+    case "data-store":
     case "knowledge-cluster":
       return 110;
+    case "data-model":
+    case "data-table":
+    case "cache-key":
+      return 95;
     case "file":
       return 70;
     case "symbol":
       return 55;
+    default:
+      return 50;
   }
 }
 
@@ -262,8 +278,13 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "routes-to":
     case "calls":
     case "uses-eai":
+    case "uses-store":
       return 120;
     case "maps-to":
+    case "stores-model":
+    case "maps-to-table":
+    case "queries-table":
+    case "uses-cache-key":
     case "supports-module-role":
       return 105;
     case "contains":
@@ -274,6 +295,8 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "belongs-to-channel":
     case "belongs-to-process":
       return 60;
+    default:
+      return 50;
   }
 }
 

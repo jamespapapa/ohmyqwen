@@ -680,6 +680,16 @@ interface StructureSymbolRef {
   className?: string;
 }
 
+interface StructureResourceHints {
+  storeKinds: string[];
+  redisAccessTypes: string[];
+  redisOps: string[];
+  redisKeys: string[];
+  dbAccessTypes: string[];
+  dbModelNames: string[];
+  dbTableNames: string[];
+}
+
 interface StructureFileEntry {
   path: string;
   size: number;
@@ -690,6 +700,7 @@ interface StructureFileEntry {
   methods: StructureSymbolRef[];
   functions: StructureSymbolRef[];
   calls: string[];
+  resources?: StructureResourceHints;
   summary: string;
 }
 
@@ -1589,6 +1600,154 @@ function summarizeContentLine(content: string): string {
       .replace(/\s+/g, " ")
       .slice(0, 260) || "(empty file)"
   );
+}
+
+function uniqueStructureHints(items: string[]): string[] {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+function normalizeInjectedType(raw: string): string {
+  return raw.replace(/<[^>]+>/g, "").replace(/\[\]/g, "").trim();
+}
+
+function buildStructureResourceHints(options: {
+  relativePath: string;
+  content: string;
+  classes: StructureSymbolRef[];
+}): StructureResourceHints {
+  const lowerPath = options.relativePath.toLowerCase();
+  const lines = options.content.split(/\r?\n/);
+  const storeKinds = new Set<string>();
+  const redisAccessTypes = new Set<string>();
+  const redisOps = new Set<string>();
+  const redisKeys = new Set<string>();
+  const dbAccessTypes = new Set<string>();
+  const dbModelNames = new Set<string>();
+  const dbTableNames = new Set<string>();
+  const classNames = options.classes.map((entry) => entry.name);
+
+  if (lowerPath.includes("/model/") || lowerPath.includes("/entity/")) {
+    for (const className of classNames) {
+      if (/(DaoModel|Entity|Model)$/i.test(className)) {
+        dbModelNames.add(className);
+      }
+    }
+  }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.length > 2000) {
+      continue;
+    }
+
+    const tableMatch =
+      trimmed.match(/@Table\s*\(\s*name\s*=\s*["']([^"'`]+)["']/) ??
+      trimmed.match(/@Table\s*\(\s*["']([^"'`]+)["']/);
+    if (tableMatch?.[1]) {
+      storeKinds.add("database");
+      dbTableNames.add(tableMatch[1].trim());
+    }
+    if (/@Entity\b/.test(trimmed) || /@Embeddable\b/.test(trimmed)) {
+      storeKinds.add("database");
+      for (const className of classNames) {
+        if (/(Entity|Model)$/i.test(className)) {
+          dbModelNames.add(className);
+        }
+      }
+    }
+    const redisHashMatch = trimmed.match(/@RedisHash\s*\(\s*(?:value\s*=\s*)?["']([^"'`]+)["']/);
+    if (redisHashMatch?.[1]) {
+      storeKinds.add("redis");
+      redisKeys.add(redisHashMatch[1].trim());
+    }
+    if (/@Repository\b/.test(trimmed) || /@Mapper\b/.test(trimmed)) {
+      storeKinds.add("database");
+    }
+
+    const dependencyMatch = trimmed.match(
+      /^(?:private|protected|public)\s+(?:static\s+)?(?:final\s+)?([A-Z][A-Za-z0-9_<>,.? ]+)\s+([a-z][A-Za-z0-9_]*)\s*(?:[;=])/
+    );
+    if (dependencyMatch?.[1]) {
+      const typeName = normalizeInjectedType(dependencyMatch[1]);
+      const fieldName = dependencyMatch[2] ?? "";
+      if (/RedisTemplate|StringRedisTemplate|Redis[A-Za-z0-9_]*Support/i.test(typeName) || /redis/i.test(fieldName)) {
+        storeKinds.add("redis");
+        redisAccessTypes.add(typeName);
+      }
+      if (/(Repository|Mapper|Dao)\b/i.test(typeName)) {
+        storeKinds.add("database");
+        dbAccessTypes.add(typeName);
+      }
+      if (/(DaoModel|Entity|Model)\b/i.test(typeName)) {
+        storeKinds.add("database");
+        dbModelNames.add(typeName);
+      }
+    }
+
+    for (const match of trimmed.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const owner = match[1]?.trim() ?? "";
+      const target = match[2]?.trim() ?? "";
+      if (!owner || !target) {
+        continue;
+      }
+      if (/redis/i.test(owner) || /(opsForValue|opsForHash|boundHashOps|expire|delete|getItem|setItem|getRedisInfo|setRedisInfo)/i.test(target)) {
+        storeKinds.add("redis");
+        redisOps.add(`${owner}.${target}`);
+      }
+      if (/(Repository|Mapper|Dao)\b/i.test(owner)) {
+        storeKinds.add("database");
+        dbAccessTypes.add(owner);
+      }
+    }
+
+    const looksRedisLine =
+      /redis/i.test(trimmed) ||
+      /(opsForValue|opsForHash|boundHashOps|getRedisInfo|setRedisInfo|getItem|setItem|deleteItem|add|get)/i.test(trimmed);
+    if (looksRedisLine) {
+      for (const literal of trimmed.matchAll(/["'`]([A-Za-z0-9_.:-]{3,80})["'`]/g)) {
+        const value = literal[1]?.trim() ?? "";
+        if (!value) continue;
+        if (/[.:-]/.test(value) || value.toLowerCase().includes("redis")) {
+          redisKeys.add(value);
+        }
+      }
+    }
+
+    if (/(select|insert|update|delete)\s+/i.test(trimmed) || /\b(from|into|join)\s+[A-Za-z0-9_$.]+\b/i.test(trimmed)) {
+      storeKinds.add("database");
+      for (const sqlMatch of trimmed.matchAll(/\b(?:from|into|join|update)\s+([A-Za-z0-9_$.]+)/gi)) {
+        const tableName = sqlMatch[1]?.replace(/[`"]/g, "").trim();
+        if (tableName) {
+          dbTableNames.add(tableName);
+        }
+      }
+    }
+  }
+
+  for (const className of classNames) {
+    if (/(DaoModel|Entity|Model)$/i.test(className)) {
+      storeKinds.add("database");
+      dbModelNames.add(className);
+    }
+    if (/(Repository|Mapper|Dao)$/i.test(className)) {
+      storeKinds.add("database");
+      dbAccessTypes.add(className);
+    }
+    if (/Redis/i.test(className)) {
+      storeKinds.add("redis");
+      redisAccessTypes.add(className);
+    }
+  }
+
+  return {
+    storeKinds: uniqueStructureHints([...storeKinds]),
+    redisAccessTypes: uniqueStructureHints([...redisAccessTypes]),
+    redisOps: uniqueStructureHints([...redisOps]),
+    redisKeys: uniqueStructureHints([...redisKeys]),
+    dbAccessTypes: uniqueStructureHints([...dbAccessTypes]),
+    dbModelNames: uniqueStructureHints([...dbModelNames]),
+    dbTableNames: uniqueStructureHints([...dbTableNames])
+  };
 }
 
 function normalizeHitConfidence(hit: ProjectSearchHit): number {
@@ -4113,13 +4272,37 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
 
   const ext = path.extname(relativePath).toLowerCase();
   if (JAVA_LIKE_EXTENSIONS.has(ext)) {
-    return parseStructureFromJavaLikeFile(content);
+    const parsed = parseStructureFromJavaLikeFile(content);
+    return {
+      ...parsed,
+      resources: buildStructureResourceHints({
+        relativePath,
+        content,
+        classes: parsed.classes
+      })
+    };
   }
   if (JAVASCRIPT_LIKE_EXTENSIONS.has(ext)) {
-    return parseStructureFromJavascriptLikeFile(content);
+    const parsed = parseStructureFromJavascriptLikeFile(content);
+    return {
+      ...parsed,
+      resources: buildStructureResourceHints({
+        relativePath,
+        content,
+        classes: parsed.classes
+      })
+    };
   }
   if (PYTHON_LIKE_EXTENSIONS.has(ext) || GO_LIKE_EXTENSIONS.has(ext) || RUST_LIKE_EXTENSIONS.has(ext)) {
-    return parseStructureFromGenericCodeFile(content);
+    const parsed = parseStructureFromGenericCodeFile(content);
+    return {
+      ...parsed,
+      resources: buildStructureResourceHints({
+        relativePath,
+        content,
+        classes: parsed.classes
+      })
+    };
   }
 
   return {
@@ -4128,6 +4311,11 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
     methods: [],
     functions: [],
     calls: [],
+    resources: buildStructureResourceHints({
+      relativePath,
+      content,
+      classes: []
+    }),
     summary: summarizeContentLine(content)
   };
 }

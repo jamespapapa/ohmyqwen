@@ -284,7 +284,16 @@ describe("knowledge schema foundation", () => {
             summary: "member login service",
             classes: [{ name: "EmbededMemberLoginService", line: 10 }],
             methods: [{ name: "authenticate", className: "EmbededMemberLoginService", line: 22 }],
-            functions: []
+            functions: [],
+            resources: {
+              storeKinds: ["redis", "database"],
+              redisAccessTypes: ["RedisSessionSupport"],
+              redisOps: ["redisSessionSupport.getItem", "redisSessionSupport.setItem"],
+              redisKeys: ["member.login.status", "member.profile"],
+              dbAccessTypes: ["MonimoUntyPlatfMbrBasDao"],
+              dbModelNames: ["MonimoUntyPlatfMbrBasDaoModel"],
+              dbTableNames: ["TB_MONIMO_MEMBER"]
+            }
           },
           "dcp-async/src/main/java/com/example/MonimoAsyncController.java": {
             path: "dcp-async/src/main/java/com/example/MonimoAsyncController.java",
@@ -293,6 +302,23 @@ describe("knowledge schema foundation", () => {
             classes: [{ name: "MonimoAsyncController", line: 11 }],
             methods: [{ name: "jellyPayRes", className: "MonimoAsyncController", line: 25 }],
             functions: []
+          },
+          "dcp-member/src/main/java/com/example/MonimoUntyPlatfMbrBasDaoModel.java": {
+            path: "dcp-member/src/main/java/com/example/MonimoUntyPlatfMbrBasDaoModel.java",
+            packageName: "com.example.model",
+            summary: "monimo member dao model",
+            classes: [{ name: "MonimoUntyPlatfMbrBasDaoModel", line: 8 }],
+            methods: [],
+            functions: [],
+            resources: {
+              storeKinds: ["database"],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              dbAccessTypes: [],
+              dbModelNames: ["MonimoUntyPlatfMbrBasDaoModel"],
+              dbTableNames: ["TB_MONIMO_MEMBER"]
+            }
           }
         }
       },
@@ -315,6 +341,11 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "controller:RegisteUseDcpChnelController.registe")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "service:EmbededMemberLoginService.authenticate")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "eai:F14090150")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "store:redis")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "store:database")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "cache-key:member.login.status")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:candidate:channel:monimo")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:pack:member-auth")).toBe(true);
 
@@ -355,6 +386,46 @@ describe("knowledge schema foundation", () => {
           edge.type === "supports-module-role" &&
           edge.fromId === "module:dcp-async" &&
           edge.toId === "knowledge:candidate:module:dcp-async"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "uses-store" &&
+          edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
+          edge.toId === "store:redis"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "stores-model" &&
+          edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
+          edge.toId === "data-model:monimountyplatfmbrbasdaomodel"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "maps-to-table" &&
+          edge.fromId === "data-model:monimountyplatfmbrbasdaomodel" &&
+          edge.toId === "data-table:tb_monimo_member"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "queries-table" &&
+          edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
+          edge.toId === "data-table:tb_monimo_member"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "uses-cache-key" &&
+          edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
+          edge.toId === "cache-key:member.login.status"
       )
     ).toBe(true);
   });
