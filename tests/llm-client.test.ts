@@ -120,6 +120,72 @@ describe("OpenAICompatibleLlmClient auth headers", () => {
     expect(headers.Authorization).toBe("Bearer secret-token");
   });
 
+  it("surfaces OpenCode provider errors when message response has no text parts", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("<!doctype html><html></html>", {
+          status: 200,
+          headers: { "content-type": "text/html;charset=utf-8" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "ses_demo" }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            info: {
+              error: {
+                name: "UnknownError",
+                data: {
+                  message: "Error: Token refresh failed: 401"
+                }
+              },
+              modelID: "gpt-5.3-codex",
+              providerID: "openai"
+            },
+            parts: []
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" }
+          }
+        )
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new OpenAICompatibleLlmClient({
+      baseUrl: "http://localhost:4096",
+      model: "openai/gpt-5.2",
+      basicAuth: "opencode/mypassword"
+    });
+
+    const context = packContext({
+      objective: baseInput.objective,
+      constraints: [],
+      symbols: [],
+      errorLogs: [],
+      diffSummary: [],
+      tier: "small",
+      tokenBudget: 1000,
+      stage: "PLAN"
+    });
+
+    await expect(
+      client.proposePlan({
+        input: baseInput,
+        context
+      })
+    ).rejects.toThrow(
+      "OpenCode response has no text parts: Error: Token refresh failed: 401 (openai:gpt-5.3-codex)"
+    );
+  });
+
   it("auto-detects OpenCode server and uses session/message API when /v1 returns html", async () => {
     const fetchMock = vi
       .fn()

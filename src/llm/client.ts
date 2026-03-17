@@ -68,6 +68,16 @@ interface OpenCodeMessageResponse {
     type?: string;
     text?: string;
   }>;
+  info?: {
+    error?: {
+      name?: string;
+      data?: {
+        message?: string;
+      };
+    };
+    modelID?: string;
+    providerID?: string;
+  };
 }
 
 const DEFAULT_MODEL = "fallback-model";
@@ -154,6 +164,21 @@ function extractOpenCodeText(payload: OpenCodeMessageResponse): string {
     .filter(Boolean)
     .join("\n")
     .trim();
+}
+
+function extractOpenCodeError(payload: OpenCodeMessageResponse): string {
+  const errorName = payload.info?.error?.name?.trim() ?? "";
+  const errorMessage = payload.info?.error?.data?.message?.trim() ?? "";
+  const providerId = payload.info?.providerID?.trim() ?? "";
+  const modelId = payload.info?.modelID?.trim() ?? "";
+  const detail = errorMessage || errorName;
+
+  if (!detail) {
+    return "";
+  }
+
+  const source = [providerId, modelId].filter(Boolean).join(":");
+  return source ? `${detail} (${source})` : detail;
 }
 
 function stripCodeFence(text: string): string {
@@ -2156,6 +2181,10 @@ export class OpenAICompatibleLlmClient implements LlmClient {
     const rawResponse = extractOpenCodeText(messagePayload);
 
     if (!rawResponse) {
+      const opencodeError = extractOpenCodeError(messagePayload);
+      if (opencodeError) {
+        throw new Error(`OpenCode response has no text parts: ${opencodeError}`);
+      }
       throw new Error("OpenCode response has no text parts");
     }
 
