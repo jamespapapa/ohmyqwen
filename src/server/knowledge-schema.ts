@@ -977,6 +977,41 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     });
   };
 
+  const addDerivedTransitionEdge = (options: {
+    fromId?: string;
+    toId?: string;
+    label: string;
+    texts: Array<string | undefined>;
+    evidencePaths: Array<string | undefined>;
+    confidence: number;
+    edgeKind: string;
+  }) => {
+    if (!options.fromId || !options.toId || options.fromId === options.toId) {
+      return;
+    }
+    if (hasEdge("transitions-to", options.fromId, options.toId)) {
+      return;
+    }
+    upsertEdge({
+      id: `edge:transitions-to:${options.fromId}:${options.toId}:${slugify(options.edgeKind)}`,
+      type: "transitions-to",
+      fromId: options.fromId,
+      toId: options.toId,
+      label: options.label,
+      metadata: makeMetadata({
+        actions: inferActionsFromTexts(...options.texts),
+        processRoles: ["state-transition"],
+        confidence: Math.max(0.68, options.confidence - 0.05),
+        evidencePaths: unique(options.evidencePaths.filter(Boolean) as string[]),
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        edgeKind: options.edgeKind
+      }
+    });
+  };
+
   for (const [relativePath, entry] of Object.entries(options.structure?.entries ?? {})) {
     const normalizedPath = toForwardSlash(relativePath);
     const moduleName = extractModuleName(normalizedPath, backendWorkspaceBase);
@@ -1293,6 +1328,15 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           }),
           attributes: {}
         });
+        addDerivedTransitionEdge({
+          fromId: asyncEdgeType === "dispatches-to" ? fileId : asyncChannelId,
+          toId: asyncEdgeType === "dispatches-to" ? asyncChannelId : fileId,
+          label: asyncEdgeType === "dispatches-to" ? "async dispatch transition" : "async consume transition",
+          texts: [entry.summary, normalizedPath, asyncChannelId],
+          evidencePaths: [normalizedPath],
+          confidence: 0.72,
+          edgeKind: asyncEdgeType
+        });
       }
     }
 
@@ -1402,6 +1446,15 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             validatedStatus: "derived"
           }),
           attributes: {}
+        });
+        addDerivedTransitionEdge({
+          fromId: asyncEdgeType === "dispatches-to" ? symbolId : asyncChannelId,
+          toId: asyncEdgeType === "dispatches-to" ? asyncChannelId : symbolId,
+          label: asyncEdgeType === "dispatches-to" ? "async dispatch transition" : "async consume transition",
+          texts: [classRef.name, normalizedPath, asyncChannelId],
+          evidencePaths: [normalizedPath],
+          confidence: 0.76,
+          edgeKind: asyncEdgeType
         });
       }
     }
@@ -1562,6 +1615,15 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             validatedStatus: "derived"
           }),
           attributes: {}
+        });
+        addDerivedTransitionEdge({
+          fromId: asyncEdgeType === "dispatches-to" ? symbolId : asyncChannelId,
+          toId: asyncEdgeType === "dispatches-to" ? asyncChannelId : symbolId,
+          label: asyncEdgeType === "dispatches-to" ? "async dispatch transition" : "async consume transition",
+          texts: [methodRef.name, methodRef.className, normalizedPath, asyncChannelId],
+          evidencePaths: [normalizedPath],
+          confidence: 0.8,
+          edgeKind: asyncEdgeType
         });
       }
     }

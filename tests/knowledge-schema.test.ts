@@ -664,6 +664,14 @@ describe("knowledge schema foundation", () => {
           edge.toId === "async-channel:monimo.auth.callback"
       )
     ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "async-channel:monimo.auth.callback" &&
+          edge.toId.includes("MonimoAsyncController")
+      )
+    ).toBe(true);
     const guardIds = snapshot.entities
       .filter((entity) => entity.type === "control-guard" && ["MemberAuthValidator", "validateSessionToken"].includes(entity.label))
       .map((entity) => entity.id);
