@@ -40,6 +40,7 @@ const DraftEdgeTypeSchema = z.enum([
   "uses-store",
   "dispatches-to",
   "consumes-from",
+  "transitions-to",
   "accepts-contract",
   "returns-contract",
   "stores-model",

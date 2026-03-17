@@ -391,6 +391,14 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.toId === "api:/member/monimo/registe"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "routes-to" &&
           edge.fromId === "route:/mo/login/monimo/MDP-MYCER999999M:src/views/login/MDP-MYCER999999M.vue" &&
           edge.toId === "api:/member/monimo/registe"
@@ -432,6 +440,14 @@ describe("knowledge schema foundation", () => {
       snapshot.edges.some(
         (edge) =>
           edge.type === "calls" &&
+          edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
+          edge.toId === "service:EmbededMemberLoginService.authenticate"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
           edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
           edge.toId === "service:EmbededMemberLoginService.authenticate"
       )

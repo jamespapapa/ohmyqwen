@@ -562,6 +562,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:transitions-to:controller:service",
+      type: "transitions-to",
+      fromId: "controller:RegisteUseDcpChnelController.registe",
+      toId: "service:EmbededMemberLoginService.authenticate",
+      label: "register -> auth",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-register", "action-auth"],
+        moduleRoles: [],
+        processRoles: ["state-transition"],
+        confidence: 0.82,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { fromPhase: "action-register", toPhase: "action-auth" }
+    },
+    {
       id: "edge:uses-eai:service:eai",
       type: "uses-eai",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -882,6 +902,7 @@ describe("retrieval unit standardization", () => {
         "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"
       ])
     );
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:controller:service");
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");

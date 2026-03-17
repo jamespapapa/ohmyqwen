@@ -39,6 +39,7 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "uses-store",
   "dispatches-to",
   "consumes-from",
+  "transitions-to",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -279,6 +280,7 @@ function inferActionsFromTexts(...values: Array<string | undefined>): string[] {
   const actions = new Set<string>();
   if (/(login|signin|auth|authenticate|cert|verify)/.test(text)) actions.add("action-auth");
   if (/(register|regist|signup|join|enroll)/.test(text)) actions.add("action-register");
+  if (/(check|precheck|pre-check|verify|valid|confirm|ensure)/.test(text)) actions.add("action-check");
   if (/(status|state|info|lookup)/.test(text)) actions.add("action-status-read");
   if (/(status|state|info|lookup|select|get|load|read|inquiry|inqury|query)/.test(text)) actions.add("action-read");
   if (/(save|insert|create|add|persist|write|set)/.test(text)) actions.add("action-write");
@@ -394,6 +396,7 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "routes-to":
     case "proxies-to":
     case "calls":
+    case "transitions-to":
     case "uses-eai":
     case "uses-store":
     case "dispatches-to":
@@ -908,6 +911,64 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       return "consumes-from";
     }
     return undefined;
+  };
+
+  const orderedActionPhases = (actions: string[]): string[] => {
+    const normalized = new Set(actions.map((item) => item.trim()).filter(Boolean));
+    const order = [
+      "action-auth",
+      "action-register",
+      "action-check",
+      "action-document",
+      "action-write",
+      "action-update",
+      "action-delete",
+      "action-state-store",
+      "action-status-read",
+      "action-read",
+      "action-callback",
+      "action-token"
+    ];
+    return order.filter((action) => normalized.has(action));
+  };
+
+  const addTransitionEdge = (options: {
+    fromId?: string;
+    toId?: string;
+    fromTexts: Array<string | undefined>;
+    toTexts: Array<string | undefined>;
+    evidencePaths: Array<string | undefined>;
+    confidence: number;
+  }) => {
+    if (!options.fromId || !options.toId || options.fromId === options.toId) {
+      return;
+    }
+    const fromPhases = orderedActionPhases(inferActionsFromTexts(...options.fromTexts));
+    const toPhases = orderedActionPhases(inferActionsFromTexts(...options.toTexts));
+    const fromPhase = fromPhases[0];
+    const toPhase = toPhases.find((phase) => phase !== fromPhase) ?? toPhases[0];
+    if (!fromPhase || !toPhase || fromPhase === toPhase) {
+      return;
+    }
+    upsertEdge({
+      id: `edge:transitions-to:${options.fromId}:${options.toId}`,
+      type: "transitions-to",
+      fromId: options.fromId,
+      toId: options.toId,
+      label: `${fromPhase.replace(/^action-/, "")} -> ${toPhase.replace(/^action-/, "")}`,
+      metadata: makeMetadata({
+        actions: [fromPhase, toPhase],
+        processRoles: ["state-transition"],
+        confidence: Math.max(0.7, options.confidence - 0.04),
+        evidencePaths: unique(options.evidencePaths.filter(Boolean) as string[]),
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        fromPhase,
+        toPhase
+      }
+    });
   };
 
   for (const [relativePath, entry] of Object.entries(options.structure?.entries ?? {})) {
@@ -1873,6 +1934,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           method: link.api.method ?? null
         }
       });
+      addTransitionEdge({
+        fromId: uiActionId,
+        toId: apiId,
+        fromTexts: [link.api.functionName, link.frontend.screenPath, link.frontend.routePath],
+        toTexts: [link.api.normalizedUrl, link.api.rawUrl, link.backend.path, link.backend.controllerMethod],
+        evidencePaths: [link.frontend.screenPath, backendPath],
+        confidence: link.confidence
+      });
     }
 
     let gatewayHandlerId: string | undefined;
@@ -2028,6 +2097,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           gatewayPath: link.gateway.path ?? null
         }
       });
+      addTransitionEdge({
+        fromId: apiId,
+        toId: gatewayHandlerId,
+        fromTexts: [link.api.normalizedUrl, link.api.rawUrl, link.api.functionName],
+        toTexts: [gatewayControllerMethod, link.gateway.path, gatewayRoute?.filePath],
+        evidencePaths: [gatewayRoute?.filePath, backendPath],
+        confidence: link.confidence
+      });
     }
 
     const backendModuleName = extractModuleName(backendPath, backendWorkspaceBase);
@@ -2130,6 +2207,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         backendPath: link.backend.path,
         gatewayMethod: link.gateway.controllerMethod ?? null
       }
+    });
+    addTransitionEdge({
+      fromId: gatewayHandlerId ?? apiId,
+      toId: controllerId,
+      fromTexts: [gatewayControllerMethod, link.gateway.path, link.api.normalizedUrl],
+      toTexts: [link.backend.controllerMethod, link.backend.path, backendPath],
+      evidencePaths: [backendPath],
+      confidence: link.confidence
     });
 
     const controllerMethodSymbolId = methodSymbolMap.get(link.backend.controllerMethod);
@@ -2388,6 +2473,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           validatedStatus: "derived"
         }),
         attributes: {}
+      });
+      addTransitionEdge({
+        fromId: controllerId,
+        toId: serviceId,
+        fromTexts: [link.backend.controllerMethod, link.backend.path, backendPath],
+        toTexts: [serviceHint, serviceFilePath, serviceStructureEntry?.summary],
+        evidencePaths: [backendPath, serviceFilePath],
+        confidence: link.confidence
       });
 
       const serviceMethodSymbolId = methodSymbolMap.get(serviceHint);
