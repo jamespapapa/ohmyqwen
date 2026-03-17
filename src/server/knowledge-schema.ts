@@ -584,6 +584,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }
     });
   };
+  const hasEdge = (type: KnowledgeEdgeType, fromId: string, toId: string) => edges.has(`${type}:${fromId}:${toId}`);
 
   const ensureModule = (moduleName: string, sourceType: KnowledgeSourceType, evidencePath?: string) => {
     const id = `module:${moduleName}`;
@@ -2601,6 +2602,100 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }),
         attributes: {
           direct: site.direct
+        }
+      });
+    }
+  }
+
+  const mappedSupportEdgeTypes: KnowledgeEdgeType[] = [
+    "accepts-contract",
+    "returns-contract",
+    "uses-store",
+    "dispatches-to",
+    "consumes-from",
+    "uses-eai",
+    "uses-cache-key",
+    "stores-model",
+    "maps-to-table",
+    "queries-table",
+    "validates",
+    "branches-to"
+  ];
+  const outgoingEdgesById = new Map<string, KnowledgeEdge[]>();
+  for (const edge of edges.values()) {
+    const bucket = outgoingEdgesById.get(edge.fromId) ?? [];
+    bucket.push(edge);
+    outgoingEdgesById.set(edge.fromId, bucket);
+  }
+  for (const mapsToEdge of Array.from(edges.values()).filter((edge) => edge.type === "maps-to")) {
+    const sourceEntity = entities.get(mapsToEdge.fromId);
+    const mappedEntity = entities.get(mapsToEdge.toId);
+    if (!sourceEntity || !mappedEntity) {
+      continue;
+    }
+    const mappedSupportEdges = (outgoingEdgesById.get(mappedEntity.id) ?? []).filter((edge) =>
+      mappedSupportEdgeTypes.includes(edge.type)
+    );
+    for (const supportEdge of mappedSupportEdges) {
+      if (hasEdge(supportEdge.type, sourceEntity.id, supportEdge.toId)) {
+        continue;
+      }
+      upsertEdge({
+        id: `edge:${supportEdge.type}:${sourceEntity.id}:${supportEdge.toId}:mapped`,
+        type: supportEdge.type,
+        fromId: sourceEntity.id,
+        toId: supportEdge.toId,
+        label: `${sourceEntity.type} inherits mapped ${supportEdge.type}`,
+        metadata: makeMetadata({
+          domains: [
+            ...sourceEntity.metadata.domains,
+            ...mapsToEdge.metadata.domains,
+            ...supportEdge.metadata.domains
+          ],
+          subdomains: [
+            ...sourceEntity.metadata.subdomains,
+            ...mapsToEdge.metadata.subdomains,
+            ...supportEdge.metadata.subdomains
+          ],
+          channels: [
+            ...sourceEntity.metadata.channels,
+            ...mapsToEdge.metadata.channels,
+            ...supportEdge.metadata.channels
+          ],
+          actions: [
+            ...sourceEntity.metadata.actions,
+            ...mapsToEdge.metadata.actions,
+            ...supportEdge.metadata.actions
+          ],
+          moduleRoles: [
+            ...sourceEntity.metadata.moduleRoles,
+            ...mapsToEdge.metadata.moduleRoles,
+            ...supportEdge.metadata.moduleRoles
+          ],
+          processRoles: [
+            ...sourceEntity.metadata.processRoles,
+            ...mapsToEdge.metadata.processRoles,
+            ...supportEdge.metadata.processRoles
+          ],
+          confidence: Math.max(
+            0.7,
+            Math.min(
+              0.92,
+              Math.max(sourceEntity.metadata.confidence, mapsToEdge.metadata.confidence, supportEdge.metadata.confidence) - 0.04
+            )
+          ),
+          evidencePaths: [
+            ...sourceEntity.metadata.evidencePaths,
+            ...mapsToEdge.metadata.evidencePaths,
+            ...supportEdge.metadata.evidencePaths
+          ],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          propagatedFrom: mappedEntity.id,
+          viaEdgeId: supportEdge.id,
+          viaType: "maps-to"
         }
       });
     }

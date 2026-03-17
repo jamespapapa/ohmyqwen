@@ -532,6 +532,22 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "accepts-contract" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "returns-contract" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId === "data-contract:monimoauthresponse"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "stores-model" &&
           edge.fromId === "file:backend:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java" &&
           edge.toId === "data-model:monimountyplatfmbrbasdaomodel"
