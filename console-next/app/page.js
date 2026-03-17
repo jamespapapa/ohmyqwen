@@ -544,6 +544,27 @@ export default function HomePage() {
   const [ontologyInputNotes, setOntologyInputNotes] = useState("");
   const [ontologyInputLoading, setOntologyInputLoading] = useState(false);
   const [ontologyInputMessageText, setOntologyInputMessageText] = useState("");
+  const [ontologyDraftData, setOntologyDraftData] = useState(null);
+  const [ontologyDraftLoading, setOntologyDraftLoading] = useState(false);
+  const [ontologyDraftMessage, setOntologyDraftMessage] = useState("");
+  const [ontologyDraftOpKind, setOntologyDraftOpKind] = useState("override-node");
+  const [ontologyDraftNodeType, setOntologyDraftNodeType] = useState("service");
+  const [ontologyDraftEdgeType, setOntologyDraftEdgeType] = useState("calls");
+  const [ontologyDraftTargetId, setOntologyDraftTargetId] = useState("");
+  const [ontologyDraftNodeId, setOntologyDraftNodeId] = useState("");
+  const [ontologyDraftEdgeId, setOntologyDraftEdgeId] = useState("");
+  const [ontologyDraftFromId, setOntologyDraftFromId] = useState("");
+  const [ontologyDraftToId, setOntologyDraftToId] = useState("");
+  const [ontologyDraftLabel, setOntologyDraftLabel] = useState("");
+  const [ontologyDraftSummaryText, setOntologyDraftSummaryText] = useState("");
+  const [ontologyDraftStatus, setOntologyDraftStatus] = useState("candidate");
+  const [ontologyDraftDomainsText, setOntologyDraftDomainsText] = useState("");
+  const [ontologyDraftChannelsText, setOntologyDraftChannelsText] = useState("");
+  const [ontologyDraftActionsText, setOntologyDraftActionsText] = useState("");
+  const [ontologyDraftModuleRolesText, setOntologyDraftModuleRolesText] = useState("");
+  const [ontologyDraftProcessRolesText, setOntologyDraftProcessRolesText] = useState("");
+  const [ontologyDraftNotes, setOntologyDraftNotes] = useState("");
+  const [ontologyDraftOperations, setOntologyDraftOperations] = useState([]);
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayResult, setReplayResult] = useState(null);
   const [debugEvents, setDebugEvents] = useState([]);
@@ -718,7 +739,9 @@ export default function HomePage() {
     setSelectedSearchHit(null);
     setSelectedFileDetail(null);
     setSelectedFileError("");
+    setOntologyDraftMessage("");
     void loadDebugEvents(selectedProject.id);
+    void loadOntologyDraft(selectedProject.id, { silent: true });
   }, [selectedProject, llmSettings?.defaultModelId]);
 
   useEffect(() => {
@@ -1200,6 +1223,29 @@ export default function HomePage() {
     setAnalysisResult(response);
   }
 
+  async function loadOntologyDraft(projectId = selectedProjectId, options = {}) {
+    if (!projectId) {
+      setOntologyDraftData(null);
+      return;
+    }
+    if (!options.silent) {
+      setOntologyDraftLoading(true);
+    }
+    try {
+      const response = await getJson(`/api/projects/${projectId}/ontology-draft`);
+      setOntologyDraftData(response);
+      setOntologyDraftOperations(response.draft?.operations || []);
+    } catch (e) {
+      if (!options.silent) {
+        setProjectError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (!options.silent) {
+        setOntologyDraftLoading(false);
+      }
+    }
+  }
+
   async function onSearchProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -1402,6 +1448,217 @@ export default function HomePage() {
     }
   }
 
+  function splitDraftLines(value) {
+    return String(value || "")
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function resetOntologyDraftForm() {
+    setOntologyDraftTargetId("");
+    setOntologyDraftNodeId("");
+    setOntologyDraftEdgeId("");
+    setOntologyDraftFromId("");
+    setOntologyDraftToId("");
+    setOntologyDraftLabel("");
+    setOntologyDraftSummaryText("");
+    setOntologyDraftDomainsText("");
+    setOntologyDraftChannelsText("");
+    setOntologyDraftActionsText("");
+    setOntologyDraftModuleRolesText("");
+    setOntologyDraftProcessRolesText("");
+    setOntologyDraftNotes("");
+    setOntologyDraftStatus("candidate");
+  }
+
+  function onAddOntologyDraftOperation() {
+    const createdAt = new Date().toISOString();
+    let operation = null;
+    const metadata = {
+      domains: splitDraftLines(ontologyDraftDomainsText),
+      channels: splitDraftLines(ontologyDraftChannelsText),
+      actions: splitDraftLines(ontologyDraftActionsText),
+      moduleRoles: splitDraftLines(ontologyDraftModuleRolesText),
+      processRoles: splitDraftLines(ontologyDraftProcessRolesText),
+      validatedStatus: ontologyDraftStatus
+    };
+    if (ontologyDraftOpKind === "add-node") {
+      if (!ontologyDraftNodeId.trim() || !ontologyDraftLabel.trim()) {
+        setProjectError("add-node에는 nodeId와 label이 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-node-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "add-node",
+        nodeId: ontologyDraftNodeId.trim(),
+        nodeType: ontologyDraftNodeType,
+        label: ontologyDraftLabel.trim(),
+        summary: ontologyDraftSummaryText.trim(),
+        metadata,
+        notes: ontologyDraftNotes.trim()
+      };
+    } else if (ontologyDraftOpKind === "remove-node") {
+      if (!ontologyDraftTargetId.trim()) {
+        setProjectError("remove-node에는 targetId가 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-remove-node-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "remove-node",
+        targetId: ontologyDraftTargetId.trim(),
+        notes: ontologyDraftNotes.trim()
+      };
+    } else if (ontologyDraftOpKind === "add-edge") {
+      if (!ontologyDraftEdgeId.trim() || !ontologyDraftFromId.trim() || !ontologyDraftToId.trim()) {
+        setProjectError("add-edge에는 edgeId/fromId/toId가 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-edge-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "add-edge",
+        edgeId: ontologyDraftEdgeId.trim(),
+        edgeType: ontologyDraftEdgeType,
+        fromId: ontologyDraftFromId.trim(),
+        toId: ontologyDraftToId.trim(),
+        label: ontologyDraftLabel.trim(),
+        metadata,
+        notes: ontologyDraftNotes.trim()
+      };
+    } else if (ontologyDraftOpKind === "remove-edge") {
+      if (!ontologyDraftTargetId.trim()) {
+        setProjectError("remove-edge에는 targetId가 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-remove-edge-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "remove-edge",
+        targetId: ontologyDraftTargetId.trim(),
+        notes: ontologyDraftNotes.trim()
+      };
+    } else if (ontologyDraftOpKind === "override-node") {
+      if (!ontologyDraftTargetId.trim()) {
+        setProjectError("override-node에는 targetId가 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-override-node-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "override-node",
+        targetId: ontologyDraftTargetId.trim(),
+        label: ontologyDraftLabel.trim() || undefined,
+        summary: ontologyDraftSummaryText.trim() || undefined,
+        metadata,
+        notes: ontologyDraftNotes.trim()
+      };
+    } else {
+      if (!ontologyDraftTargetId.trim()) {
+        setProjectError("override-edge에는 targetId가 필요합니다.");
+        return;
+      }
+      operation = {
+        id: `draft-override-edge-${ontologyDraftOperations.length + 1}`,
+        createdAt,
+        kind: "override-edge",
+        targetId: ontologyDraftTargetId.trim(),
+        label: ontologyDraftLabel.trim() || undefined,
+        metadata,
+        notes: ontologyDraftNotes.trim()
+      };
+    }
+
+    setOntologyDraftOperations((current) => [...current, operation]);
+    setProjectError("");
+    setOntologyDraftMessage(`draft operation 추가: ${operation.kind}`);
+    resetOntologyDraftForm();
+  }
+
+  function onRemoveOntologyDraftOperation(index) {
+    setOntologyDraftOperations((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  async function onSaveOntologyDraft() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    setOntologyDraftLoading(true);
+    setOntologyDraftMessage("");
+    setProjectError("");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/ontology-draft`, {
+        method: "POST",
+        body: JSON.stringify({
+          notes: ontologyDraftNotes.trim(),
+          operations: ontologyDraftOperations
+        })
+      });
+      setOntologyDraftData(response);
+      setOntologyDraftOperations(response.draft?.operations || []);
+      setOntologyDraftMessage(`draft 저장 완료: version=${response.draft?.draftVersion || 0}, ops=${response.draft?.summary?.operationCount || 0}`);
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOntologyDraftLoading(false);
+    }
+  }
+
+  async function onEvaluateOntologyDraft() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    setOntologyDraftLoading(true);
+    setOntologyDraftMessage("");
+    setProjectError("");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/ontology-draft/evaluate`, {
+        method: "POST"
+      });
+      setOntologyDraftData((current) => ({ ...(current || {}), draft: response.draft, evaluation: response.evaluation }));
+      setOntologyDraftMessage(
+        `draft 평가 완료: ${response.evaluation?.summary?.recommendation || "-"} / risk=${response.evaluation?.summary?.riskBand || "-"}`
+      );
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOntologyDraftLoading(false);
+    }
+  }
+
+  async function onRevertOntologyDraft() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    setOntologyDraftLoading(true);
+    setOntologyDraftMessage("");
+    setProjectError("");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/ontology-draft/revert`, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setOntologyDraftData(response);
+      setOntologyDraftOperations(response.draft?.operations || []);
+      setOntologyDraftMessage(`draft 되돌리기 완료: version=${response.draft?.draftVersion || 0}`);
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOntologyDraftLoading(false);
+    }
+  }
+
   async function onReplayProject() {
     if (!selectedProjectId) {
       setProjectError("먼저 프로젝트를 선택해주세요.");
@@ -1480,6 +1737,89 @@ export default function HomePage() {
       setIsStarting(false);
     }
   }
+
+  const ontologyDraftPanel = selectedProjectId ? (
+    <>
+      <div className="label" style={{ marginTop: 8 }}>Ontology Draft</div>
+      <div className="report-box" style={{ marginTop: 8 }}>
+        <div className="report-row"><span>Saved Draft</span><span>{ontologyDraftData?.draft ? `v${ontologyDraftData.draft.draftVersion} · ops=${ontologyDraftData.draft.summary?.operationCount || 0}` : "(none)"}</span></div>
+        <div className="report-row"><span>History</span><span>{ontologyDraftData?.history?.length || 0}</span></div>
+        <div className="report-row"><span>Last Eval</span><span>{ontologyDraftData?.evaluation ? `${ontologyDraftData.evaluation.summary?.recommendation || "-"} / ${ontologyDraftData.evaluation.summary?.riskBand || "-"}` : "(none)"}</span></div>
+        <div className="report-row"><span>Op Kind</span><span><select value={ontologyDraftOpKind} onChange={(e) => setOntologyDraftOpKind(e.target.value)}>
+          {['add-node','remove-node','add-edge','remove-edge','override-node','override-edge'].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+        </select></span></div>
+        {ontologyDraftOpKind === 'add-node' ? (
+          <>
+            <div className="label" style={{ marginTop: 8 }}>Node Id / Type</div>
+            <input value={ontologyDraftNodeId} onChange={(e) => setOntologyDraftNodeId(e.target.value)} placeholder="node id" />
+            <select value={ontologyDraftNodeType} onChange={(e) => setOntologyDraftNodeType(e.target.value)} style={{ marginTop: 8 }}>
+              {['module','file','symbol','route','api','controller','service','eai-interface','data-store','data-model','data-query','data-table','cache-key','control-guard','knowledge-cluster','retrieval-unit','knowledge-input','review-target','feedback-record','replay-candidate','path'].map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </>
+        ) : null}
+        {ontologyDraftOpKind === 'add-edge' ? (
+          <>
+            <div className="label" style={{ marginTop: 8 }}>Edge Id / Type</div>
+            <input value={ontologyDraftEdgeId} onChange={(e) => setOntologyDraftEdgeId(e.target.value)} placeholder="edge id" />
+            <select value={ontologyDraftEdgeType} onChange={(e) => setOntologyDraftEdgeType(e.target.value)} style={{ marginTop: 8 }}>
+              {['contains','declares','calls','routes-to','maps-to','uses-eai','uses-store','stores-model','maps-to-table','queries-table','uses-cache-key','validates','depends-on','belongs-to-domain','belongs-to-channel','belongs-to-process','supports-module-role','references-entity','references-edge','targets-node','targets-edge','targets-path'].map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+            <input style={{ marginTop: 8 }} value={ontologyDraftFromId} onChange={(e) => setOntologyDraftFromId(e.target.value)} placeholder="fromId" />
+            <input style={{ marginTop: 8 }} value={ontologyDraftToId} onChange={(e) => setOntologyDraftToId(e.target.value)} placeholder="toId" />
+          </>
+        ) : null}
+        {ontologyDraftOpKind === 'remove-node' || ontologyDraftOpKind === 'remove-edge' || ontologyDraftOpKind === 'override-node' || ontologyDraftOpKind === 'override-edge' ? (
+          <>
+            <div className="label" style={{ marginTop: 8 }}>Target Id</div>
+            <input value={ontologyDraftTargetId} onChange={(e) => setOntologyDraftTargetId(e.target.value)} placeholder="existing node/edge id" />
+          </>
+        ) : null}
+        {ontologyDraftOpKind !== 'remove-node' && ontologyDraftOpKind !== 'remove-edge' ? (
+          <>
+            <div className="label" style={{ marginTop: 8 }}>Label / Summary</div>
+            <input value={ontologyDraftLabel} onChange={(e) => setOntologyDraftLabel(e.target.value)} placeholder="label" />
+            <textarea rows={2} style={{ marginTop: 8 }} value={ontologyDraftSummaryText} onChange={(e) => setOntologyDraftSummaryText(e.target.value)} placeholder="summary" />
+            <div className="label" style={{ marginTop: 8 }}>Status</div>
+            <select value={ontologyDraftStatus} onChange={(e) => setOntologyDraftStatus(e.target.value)}>
+              {['candidate','validated','derived','stale','contested','deprecated'].map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
+            <div className="label" style={{ marginTop: 8 }}>Domains / Channels / Actions / Roles (one per line)</div>
+            <textarea rows={2} value={ontologyDraftDomainsText} onChange={(e) => setOntologyDraftDomainsText(e.target.value)} placeholder="domains" />
+            <textarea rows={2} style={{ marginTop: 8 }} value={ontologyDraftChannelsText} onChange={(e) => setOntologyDraftChannelsText(e.target.value)} placeholder="channels" />
+            <textarea rows={2} style={{ marginTop: 8 }} value={ontologyDraftActionsText} onChange={(e) => setOntologyDraftActionsText(e.target.value)} placeholder="actions" />
+            <textarea rows={2} style={{ marginTop: 8 }} value={ontologyDraftModuleRolesText} onChange={(e) => setOntologyDraftModuleRolesText(e.target.value)} placeholder="module roles" />
+            <textarea rows={2} style={{ marginTop: 8 }} value={ontologyDraftProcessRolesText} onChange={(e) => setOntologyDraftProcessRolesText(e.target.value)} placeholder="process roles" />
+          </>
+        ) : null}
+        <div className="label" style={{ marginTop: 8 }}>Notes</div>
+        <textarea rows={2} value={ontologyDraftNotes} onChange={(e) => setOntologyDraftNotes(e.target.value)} placeholder="draft notes" />
+        <div className="toolbar" style={{ marginTop: 8 }}>
+          <button type="button" className="secondary" onClick={onAddOntologyDraftOperation} disabled={!selectedProjectId || ontologyDraftLoading}>operation 추가</button>
+          <button type="button" className="secondary" onClick={onSaveOntologyDraft} disabled={!selectedProjectId || ontologyDraftLoading || ontologyDraftOperations.length === 0}>{ontologyDraftLoading ? '처리 중' : 'draft 저장'}</button>
+          <button type="button" className="secondary" onClick={onEvaluateOntologyDraft} disabled={!selectedProjectId || ontologyDraftLoading || !ontologyDraftData?.draft}>평가</button>
+          <button type="button" className="secondary" onClick={onRevertOntologyDraft} disabled={!selectedProjectId || ontologyDraftLoading || !ontologyDraftData?.draft}>되돌리기</button>
+        </div>
+        <div className="label" style={{ marginTop: 8 }}>Current Operations</div>
+        {(ontologyDraftOperations || []).length === 0 ? <div className="hint">(none)</div> : (
+          <ul className="bullet-list compact">
+            {ontologyDraftOperations.map((operation, index) => (
+              <li key={operation.id || `${operation.kind}-${index}`}>
+                <strong>{operation.kind}</strong>{' '}
+                <span>{operation.targetId || operation.nodeId || operation.edgeId || '-'}</span>{' '}
+                <button type="button" className="link-button" onClick={() => onRemoveOntologyDraftOperation(index)}>제거</button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {ontologyDraftData?.evaluation ? (
+          <div className="hint" style={{ marginTop: 8 }}>
+            {`recommendation=${ontologyDraftData.evaluation.summary?.recommendation || '-'} · risk=${ontologyDraftData.evaluation.summary?.riskBand || '-'} · affected=${ontologyDraftData.evaluation.metrics?.affectedArtifactCount || 0} · regressed=${ontologyDraftData.evaluation.metrics?.regressedArtifactCount || 0}`}
+          </div>
+        ) : null}
+        {ontologyDraftMessage ? <div className="hint" style={{ marginTop: 8 }}>{ontologyDraftMessage}</div> : null}
+      </div>
+    </>
+  ) : null;
 
   const ontologyInputPanel = selectedProjectId ? (
     <>
@@ -2152,6 +2492,22 @@ export default function HomePage() {
                     </span>
                   </div>
                   <div className="report-row">
+                    <span>온톨로지 드래프트</span>
+                    <span>
+                      {analysisResult.ontologyDraft
+                        ? `v${analysisResult.ontologyDraft.draftVersion}, ops=${analysisResult.ontologyDraft.operationCount}, history=${analysisResult.ontologyDraft.historyCount}${analysisResult.ontologyDraft.isBaseChanged ? " · base-changed" : ""}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>드래프트 평가</span>
+                    <span>
+                      {analysisResult.ontologyDraftEvaluation
+                        ? `${analysisResult.ontologyDraftEvaluation.recommendation}, risk=${analysisResult.ontologyDraftEvaluation.riskBand}, regressed=${analysisResult.ontologyDraftEvaluation.regressedArtifactCount}`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="report-row">
                     <span>평가 추세</span>
                     <span>
                       {analysisResult.evaluationTrends
@@ -2432,6 +2788,7 @@ export default function HomePage() {
                   </>
                 ) : null}
 
+                {ontologyDraftPanel}
                 {ontologyInputPanel}
 
                 {(analysisResult.evaluationTrends?.topQuestionTypes || []).length > 0 ? (
@@ -2478,7 +2835,7 @@ export default function HomePage() {
               </div>
             ) : null}
 
-            {!analysisResult ? ontologyInputPanel : null}
+            {!analysisResult ? (<>{ontologyDraftPanel}{ontologyInputPanel}</>) : null}
 
             <div className="label" style={{ marginTop: 10 }}>프로젝트 Q&A</div>
             {projectBusy && latestDebugEvent ? (

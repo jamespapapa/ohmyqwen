@@ -100,6 +100,22 @@ import {
   type OntologyInputSummarySnapshot
 } from "./ontology-inputs.js";
 import {
+  applyOntologyDraftSnapshot,
+  buildOntologyDraftMarkdown,
+  buildOntologyDraftSnapshot,
+  OntologyDraftHistoryEntrySchema,
+  OntologyDraftOperationSchema,
+  OntologyDraftSnapshotSchema,
+  type OntologyDraftHistoryEntry,
+  type OntologyDraftSnapshot
+} from "./ontology-drafts.js";
+import {
+  buildOntologyDraftEvaluationMarkdown,
+  buildOntologyDraftEvaluationSnapshot,
+  OntologyDraftEvaluationSnapshotSchema,
+  type OntologyDraftEvaluationSnapshot
+} from "./ontology-draft-eval.js";
+import {
   buildOntologyReviewMarkdown,
   buildOntologyReviewSnapshot,
   OntologyReviewSnapshotSchema,
@@ -126,7 +142,11 @@ import {
 import {
   buildEvaluationArtifactMarkdown,
   buildProjectAskEvaluationArtifact,
-  buildProjectSearchEvaluationArtifact
+  buildProjectSearchEvaluationArtifact,
+  ProjectAskEvaluationArtifactSchema,
+  ProjectSearchEvaluationArtifactSchema,
+  type ProjectAskEvaluationArtifact,
+  type ProjectSearchEvaluationArtifact
 } from "./evaluation-artifacts.js";
 import {
   buildEvaluationReplayMarkdown,
@@ -409,6 +429,36 @@ export interface ProjectAnalysisResult {
       confidence: number;
     }>;
   };
+  ontologyDraft?: {
+    updatedAt: string;
+    draftVersion: number;
+    basedOnOntologyGeneratedAt: string;
+    operationCount: number;
+    historyCount: number;
+    isBaseChanged: boolean;
+    summary: {
+      addNodeCount: number;
+      removeNodeCount: number;
+      addEdgeCount: number;
+      removeEdgeCount: number;
+      overrideNodeCount: number;
+      overrideEdgeCount: number;
+    };
+  };
+  ontologyDraftEvaluation?: {
+    generatedAt: string;
+    draftVersion: number;
+    baseChanged: boolean;
+    recommendation: string;
+    riskBand: string;
+    reason: string;
+    affectedArtifactCount: number;
+    improvedArtifactCount: number;
+    regressedArtifactCount: number;
+    replayCandidateDelta: number;
+    replayQualityRiskDelta: number;
+    warningCount: number;
+  };
   evaluationTrends?: {
     generatedAt: string;
     totalArtifacts: number;
@@ -639,6 +689,28 @@ export interface ProjectOntologyInputResult {
   memoryFiles: string[];
 }
 
+export interface ProjectOntologyDraftResult {
+  project: ServerProject;
+  draft: OntologyDraftSnapshot | null;
+  history: OntologyDraftHistoryEntry[];
+  evaluation?: OntologyDraftEvaluationSnapshot;
+  memoryFiles: string[];
+}
+
+export interface ProjectOntologyDraftEvaluationResult {
+  project: ServerProject;
+  draft: OntologyDraftSnapshot;
+  evaluation: OntologyDraftEvaluationSnapshot;
+  memoryFiles: string[];
+}
+
+export interface ProjectOntologyDraftRevertResult {
+  project: ServerProject;
+  draft: OntologyDraftSnapshot | null;
+  history: OntologyDraftHistoryEntry[];
+  memoryFiles: string[];
+}
+
 export interface ServerLlmModelOption {
   id: string;
   label: string;
@@ -832,6 +904,7 @@ const ONTOLOGY_GRAPH_MEMORY_DIR = "ontology-graph";
 const ONTOLOGY_PROJECTION_MEMORY_DIR = "ontology-projections";
 const ONTOLOGY_INPUT_MEMORY_DIR = "ontology-inputs";
 const ONTOLOGY_REVIEW_MEMORY_DIR = "ontology-review";
+const ONTOLOGY_DRAFT_MEMORY_DIR = "ontology-draft";
 const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
@@ -3261,6 +3334,9 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
     const ontologyProjections = await readOntologyProjectionSnapshot(memoryRoot);
     const ontologyInputs = await readOntologyInputSummarySnapshot(memoryRoot);
     const ontologyReview = await readOntologyReviewSnapshot(memoryRoot);
+    const ontologyDraft = await readOntologyDraftSnapshot(memoryRoot);
+    const ontologyDraftHistory = await readOntologyDraftHistory(memoryRoot);
+    const ontologyDraftEvaluation = await readOntologyDraftEvaluationSnapshot(memoryRoot);
     return {
       ...parsed,
       evaluationTrends: evaluationTrends
@@ -3285,6 +3361,9 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
       ontologyProjections: buildOntologyProjectionSummary(ontologyProjections) ?? parsed.ontologyProjections,
       ontologyInputs: buildOntologyInputSummary(ontologyInputs) ?? parsed.ontologyInputs,
       ontologyReview: buildOntologyReviewSummary(ontologyReview) ?? parsed.ontologyReview,
+      ontologyDraft:
+        buildOntologyDraftSummary(ontologyDraft, ontologyDraftHistory, ontologyGraph?.generatedAt) ?? parsed.ontologyDraft,
+      ontologyDraftEvaluation: buildOntologyDraftEvaluationSummary(ontologyDraftEvaluation) ?? parsed.ontologyDraftEvaluation,
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
@@ -3609,6 +3688,170 @@ async function readOntologyReviewSnapshotFull(memoryRoot: string): Promise<Ontol
   } catch {
     return undefined;
   }
+}
+
+function ontologyDraftCurrentPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_DRAFT_MEMORY_DIR, "current.json");
+}
+
+function ontologyDraftEvaluationPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_DRAFT_MEMORY_DIR, "evaluation.json");
+}
+
+async function readOntologyDraftSnapshot(memoryRoot: string): Promise<OntologyDraftSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyDraftCurrentPath(memoryRoot), "utf8");
+    return OntologyDraftSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+async function readOntologyDraftEvaluationSnapshot(memoryRoot: string): Promise<OntologyDraftEvaluationSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyDraftEvaluationPath(memoryRoot), "utf8");
+    return OntologyDraftEvaluationSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+async function readOntologyDraftHistory(memoryRoot: string): Promise<OntologyDraftHistoryEntry[]> {
+  const dir = path.resolve(memoryRoot, ONTOLOGY_DRAFT_MEMORY_DIR);
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json') && entry.name !== 'current.json' && entry.name !== 'evaluation.json')
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a));
+    const results: OntologyDraftHistoryEntry[] = [];
+    for (const fileName of files) {
+      try {
+        const raw = await fs.readFile(path.resolve(dir, fileName), 'utf8');
+        const draft = OntologyDraftSnapshotSchema.parse(JSON.parse(raw));
+        results.push(
+          OntologyDraftHistoryEntrySchema.parse({
+            draftVersion: draft.draftVersion,
+            updatedAt: draft.updatedAt,
+            snapshotPath: toForwardSlash(path.relative(memoryRoot, path.resolve(dir, fileName))),
+            operationCount: draft.summary.operationCount
+          })
+        );
+      } catch {
+        // ignore bad history entry
+      }
+    }
+    return results.sort((a, b) => b.draftVersion - a.draftVersion || b.updatedAt.localeCompare(a.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+async function writeOntologyDraftArtifacts(options: {
+  memoryRoot: string;
+  draft: OntologyDraftSnapshot;
+  evaluation?: OntologyDraftEvaluationSnapshot;
+}): Promise<{ currentPath: string; snapshotPath: string; evaluationPath?: string; relativePaths: string[] }> {
+  const dir = path.resolve(options.memoryRoot, ONTOLOGY_DRAFT_MEMORY_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  const currentPath = ontologyDraftCurrentPath(options.memoryRoot);
+  const snapshotPath = path.resolve(dir, `${formatTs(new Date(options.draft.updatedAt))}-v${String(options.draft.draftVersion).padStart(4, '0')}.json`);
+  await fs.writeFile(currentPath, `${JSON.stringify(options.draft, null, 2)}
+`, 'utf8');
+  await fs.writeFile(snapshotPath, `${JSON.stringify(options.draft, null, 2)}
+`, 'utf8');
+  const relativePaths = [
+    toForwardSlash(path.relative(options.memoryRoot, currentPath)),
+    toForwardSlash(path.relative(options.memoryRoot, snapshotPath))
+  ];
+  let evaluationPath: string | undefined;
+  if (options.evaluation) {
+    evaluationPath = ontologyDraftEvaluationPath(options.memoryRoot);
+    await fs.writeFile(evaluationPath, `${JSON.stringify(options.evaluation, null, 2)}
+`, 'utf8');
+    relativePaths.push(toForwardSlash(path.relative(options.memoryRoot, evaluationPath)));
+  }
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_DRAFT_MEMORY_DIR,
+    latestFileName: 'latest.md',
+    content: buildOntologyDraftMarkdown(options.draft)
+  });
+  relativePaths.push(...docs.relativePaths);
+  if (options.evaluation) {
+    const evaluationDocs = await writeMemoryDocs({
+      memoryRoot: options.memoryRoot,
+      groupDir: ONTOLOGY_DRAFT_MEMORY_DIR,
+      latestFileName: 'evaluation.md',
+      content: buildOntologyDraftEvaluationMarkdown(options.evaluation)
+    });
+    relativePaths.push(...evaluationDocs.relativePaths);
+  }
+  return { currentPath, snapshotPath, evaluationPath, relativePaths: unique(relativePaths) };
+}
+
+function buildOntologyDraftSummary(
+  draft: OntologyDraftSnapshot | undefined,
+  history: OntologyDraftHistoryEntry[] = [],
+  currentOntologyGeneratedAt?: string
+): ProjectAnalysisResult["ontologyDraft"] {
+  if (!draft) {
+    return undefined;
+  }
+  return {
+    updatedAt: draft.updatedAt,
+    draftVersion: draft.draftVersion,
+    basedOnOntologyGeneratedAt: draft.basedOnOntologyGeneratedAt,
+    operationCount: draft.summary.operationCount,
+    historyCount: history.length,
+    isBaseChanged:
+      Boolean(currentOntologyGeneratedAt) && currentOntologyGeneratedAt !== draft.basedOnOntologyGeneratedAt,
+    summary: {
+      addNodeCount: draft.summary.addNodeCount,
+      removeNodeCount: draft.summary.removeNodeCount,
+      addEdgeCount: draft.summary.addEdgeCount,
+      removeEdgeCount: draft.summary.removeEdgeCount,
+      overrideNodeCount: draft.summary.overrideNodeCount,
+      overrideEdgeCount: draft.summary.overrideEdgeCount
+    }
+  };
+}
+
+function buildOntologyDraftEvaluationSummary(
+  snapshot: OntologyDraftEvaluationSnapshot | undefined
+): ProjectAnalysisResult["ontologyDraftEvaluation"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    draftVersion: snapshot.draftVersion,
+    baseChanged: snapshot.baseChanged,
+    recommendation: snapshot.summary.recommendation,
+    riskBand: snapshot.summary.riskBand,
+    reason: snapshot.summary.reason,
+    affectedArtifactCount: snapshot.metrics.affectedArtifactCount,
+    improvedArtifactCount: snapshot.metrics.improvedArtifactCount,
+    regressedArtifactCount: snapshot.metrics.regressedArtifactCount,
+    replayCandidateDelta: snapshot.metrics.replayCandidateDelta,
+    replayQualityRiskDelta: snapshot.metrics.replayQualityRiskDelta,
+    warningCount: snapshot.warnings.length
+  };
+}
+
+async function readRecentEvaluationArtifacts(memoryRoot: string): Promise<Array<ProjectAskEvaluationArtifact | ProjectSearchEvaluationArtifact>> {
+  return readRecentMemoryJsonSnapshots<ProjectAskEvaluationArtifact | ProjectSearchEvaluationArtifact>({
+    memoryRoot,
+    groupDir: EVALUATION_MEMORY_DIR,
+    limit: 96,
+    parse: (value) => {
+      try {
+        return ProjectAskEvaluationArtifactSchema.parse(value);
+      } catch {
+        return ProjectSearchEvaluationArtifactSchema.parse(value);
+      }
+    }
+  });
 }
 
 function frontBackGraphSnapshotPath(memoryRoot: string): string {
@@ -6466,6 +6709,9 @@ export async function analyzeServerProject(options: {
     const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
     const ontologyInputs = await readOntologyInputSummarySnapshot(memoryRoot);
     const ontologyReviewSummary = await readOntologyReviewSnapshot(memoryRoot);
+    const ontologyDraft = await readOntologyDraftSnapshot(memoryRoot);
+    const ontologyDraftHistory = await readOntologyDraftHistory(memoryRoot);
+    const ontologyDraftEvaluation = await readOntologyDraftEvaluationSnapshot(memoryRoot);
 
     const result: ProjectAnalysisResult = {
       project: warmup.project,
@@ -6533,6 +6779,8 @@ export async function analyzeServerProject(options: {
       ontologyProjections: buildOntologyProjectionSummary(ontologyProjections),
       ontologyInputs: buildOntologyInputSummary(ontologyInputs),
       ontologyReview: buildOntologyReviewSummary(ontologyReviewSummary),
+      ontologyDraft: buildOntologyDraftSummary(ontologyDraft, ontologyDraftHistory, ontologyGraph.generatedAt),
+      ontologyDraftEvaluation: buildOntologyDraftEvaluationSummary(ontologyDraftEvaluation),
       evaluationTrends: evaluationTrends
         ? {
             generatedAt: evaluationTrends.generatedAt,
@@ -8478,6 +8726,168 @@ export async function recordServerProjectOntologyInput(options: {
     artifact,
     summary: buildOntologyInputSummary(inputArtifacts.summarySnapshot)!,
     memoryFiles: unique([...inputArtifacts.relativePaths, ...ontologyFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file)))])
+  };
+}
+
+function normalizeOntologyDraftOperationInputs(
+  operations: Array<Record<string, unknown>>,
+  generatedAt: string
+): Array<z.input<typeof OntologyDraftOperationSchema>> {
+  return operations.map((operation, index) => ({
+    id: String(operation.id || `draft-op-${index + 1}`),
+    createdAt: String(operation.createdAt || generatedAt),
+    notes: String(operation.notes || ""),
+    ...operation
+  })) as Array<z.input<typeof OntologyDraftOperationSchema>>;
+}
+
+export async function getServerProjectOntologyDraft(options: {
+  projectId: string;
+}): Promise<ProjectOntologyDraftResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const draft = await readOntologyDraftSnapshot(memoryRoot);
+  const history = await readOntologyDraftHistory(memoryRoot);
+  const evaluation = await readOntologyDraftEvaluationSnapshot(memoryRoot);
+  return {
+    project,
+    draft: draft ?? null,
+    history,
+    evaluation,
+    memoryFiles: unique([
+      toForwardSlash(path.relative(memoryRoot, ontologyDraftCurrentPath(memoryRoot))),
+      toForwardSlash(path.relative(memoryRoot, ontologyDraftEvaluationPath(memoryRoot))),
+      ...history.map((item) => item.snapshotPath)
+    ])
+  };
+}
+
+export async function saveServerProjectOntologyDraft(options: {
+  projectId: string;
+  operations: Array<Record<string, unknown>>;
+  notes?: string;
+}): Promise<ProjectOntologyDraftResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const baseGraph = await readOntologyGraphSnapshot(memoryRoot);
+  if (!baseGraph) {
+    throw new Error("ontology graph is not available; run analyze first");
+  }
+  const existing = await readOntologyDraftSnapshot(memoryRoot);
+  const generatedAt = nowIso();
+  const draft = buildOntologyDraftSnapshot({
+    generatedAt,
+    updatedAt: generatedAt,
+    projectId: project.id,
+    projectName: project.name,
+    draftVersion: (existing?.draftVersion ?? 0) + 1,
+    basedOnOntologyGeneratedAt: baseGraph.generatedAt,
+    operations: normalizeOntologyDraftOperationInputs(options.operations, generatedAt),
+    notes: options.notes ?? ""
+  });
+  const persisted = await writeOntologyDraftArtifacts({
+    memoryRoot,
+    draft
+  });
+  await fs.rm(ontologyDraftEvaluationPath(memoryRoot), { force: true });
+  const history = await readOntologyDraftHistory(memoryRoot);
+  const evaluation = await readOntologyDraftEvaluationSnapshot(memoryRoot);
+  return {
+    project,
+    draft,
+    history,
+    evaluation,
+    memoryFiles: persisted.relativePaths
+  };
+}
+
+export async function evaluateServerProjectOntologyDraft(options: {
+  projectId: string;
+}): Promise<ProjectOntologyDraftEvaluationResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const baseGraph = await readOntologyGraphSnapshot(memoryRoot);
+  if (!baseGraph) {
+    throw new Error("ontology graph is not available; run analyze first");
+  }
+  const draft = await readOntologyDraftSnapshot(memoryRoot);
+  if (!draft) {
+    throw new Error("ontology draft is not available; save draft first");
+  }
+  const evaluationArtifacts = await readRecentEvaluationArtifacts(memoryRoot);
+  const evaluation = buildOntologyDraftEvaluationSnapshot({
+    generatedAt: nowIso(),
+    projectId: project.id,
+    projectName: project.name,
+    baseGraph,
+    draft,
+    evaluationArtifacts
+  });
+  const persisted = await writeOntologyDraftArtifacts({
+    memoryRoot,
+    draft,
+    evaluation
+  });
+  return {
+    project,
+    draft,
+    evaluation,
+    memoryFiles: persisted.relativePaths
+  };
+}
+
+export async function revertServerProjectOntologyDraft(options: {
+  projectId: string;
+  targetVersion?: number;
+}): Promise<ProjectOntologyDraftRevertResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const history = await readOntologyDraftHistory(memoryRoot);
+  const current = await readOntologyDraftSnapshot(memoryRoot);
+  if (!current) {
+    return {
+      project,
+      draft: null,
+      history,
+      memoryFiles: []
+    };
+  }
+  const targetEntry = options.targetVersion
+    ? history.find((entry) => entry.draftVersion === options.targetVersion)
+    : history.find((entry) => entry.draftVersion < current.draftVersion);
+  if (!targetEntry) {
+    await fs.rm(ontologyDraftCurrentPath(memoryRoot), { force: true });
+    await fs.rm(ontologyDraftEvaluationPath(memoryRoot), { force: true });
+    return {
+      project,
+      draft: null,
+      history: await readOntologyDraftHistory(memoryRoot),
+      memoryFiles: []
+    };
+  }
+  const targetPath = path.resolve(memoryRoot, targetEntry.snapshotPath);
+  const raw = await fs.readFile(targetPath, "utf8");
+  const restored = OntologyDraftSnapshotSchema.parse(JSON.parse(raw));
+  await fs.writeFile(ontologyDraftCurrentPath(memoryRoot), `${JSON.stringify(restored, null, 2)}
+`, "utf8");
+  await fs.rm(ontologyDraftEvaluationPath(memoryRoot), { force: true });
+  return {
+    project,
+    draft: restored,
+    history: await readOntologyDraftHistory(memoryRoot),
+    memoryFiles: [toForwardSlash(path.relative(memoryRoot, ontologyDraftCurrentPath(memoryRoot)))]
   };
 }
 

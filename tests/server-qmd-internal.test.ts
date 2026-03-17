@@ -379,6 +379,96 @@ describe("server projects with vendored internal qmd runtime", () => {
     }
   });
 
+  it("supports ontology draft save, evaluate, and revert against recent evaluation artifacts", async () => {
+    const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-external-workspace-"));
+    tempDirs.push(appRoot, workspaceDir);
+
+    await writeFakeInternalQmdRuntime(appRoot);
+    await writeWorkspaceFixture(workspaceDir);
+    await mkdir(path.join(appRoot, ".ohmyqwen", "runtime", "qmd", "models"), { recursive: true });
+    await mkdir(path.join(appRoot, "config"), { recursive: true });
+
+    installFakeLlm();
+    process.chdir(appRoot);
+    process.env.OHMYQWEN_PROJECT_HOME = path.join(appRoot, ".project-home");
+    process.env.OHMYQWEN_SERVER_TRACE = "0";
+    process.env.OHMYQWEN_LLM_BASE_URL = "http://fake-llm.local/v1";
+    process.env.OHMYQWEN_LLM_MODEL = "Fake-Model";
+    process.env.OHMYQWEN_LLM_ENDPOINT_KIND = "openai";
+
+    const projectsModule = await import("../src/server/projects.js");
+
+    const project = await projectsModule.upsertServerProject({
+      name: "external-demo-draft",
+      workspaceDir,
+      retrieval: {
+        qmd: {
+          integrationMode: "internal-runtime",
+          command: "definitely-missing-qmd"
+        }
+      }
+    });
+
+    await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+
+    const ask = await projectsModule.askServerProject({
+      projectId: project.id,
+      question: "loan controller가 어떤 역할을 하는지 설명해줘.",
+      maxAttempts: 2,
+      deterministicOnly: false,
+      domainSelectionMode: "auto"
+    });
+    expect((ask.diagnostics.matchedOntologyNodeIds ?? []).length).toBeGreaterThan(0);
+    const touchedNodeId = ask.diagnostics.matchedOntologyNodeIds?.[0];
+    expect(touchedNodeId).toBeTruthy();
+
+    const savedDraft = await projectsModule.saveServerProjectOntologyDraft({
+      projectId: project.id,
+      operations: [
+        {
+          kind: "override-node",
+          targetId: touchedNodeId,
+          metadata: {
+            validatedStatus: "deprecated"
+          },
+          notes: "temporary regression test"
+        }
+      ],
+      notes: "manual draft"
+    });
+    expect(savedDraft.draft.draftVersion).toBe(1);
+    expect(savedDraft.history.length).toBeGreaterThanOrEqual(1);
+
+    const evaluatedDraft = await projectsModule.evaluateServerProjectOntologyDraft({
+      projectId: project.id
+    });
+    expect(evaluatedDraft.evaluation.metrics.affectedArtifactCount).toBeGreaterThanOrEqual(1);
+    expect(evaluatedDraft.evaluation.metrics.regressedArtifactCount).toBeGreaterThanOrEqual(1);
+
+    const draftPath = path.join(appRoot, ".project-home", "memory", "ontology-draft", "current.json");
+    const draftEvalPath = path.join(appRoot, ".project-home", "memory", "ontology-draft", "evaluation.json");
+    const draftSnapshot = JSON.parse(await readFile(draftPath, "utf8")) as { draftVersion?: number; summary?: { operationCount?: number } };
+    const draftEvaluation = JSON.parse(await readFile(draftEvalPath, "utf8")) as { summary?: { recommendation?: string }, metrics?: { regressedArtifactCount?: number } };
+    expect(draftSnapshot.draftVersion).toBe(1);
+    expect(Number(draftSnapshot.summary?.operationCount ?? 0)).toBe(1);
+    expect(Number(draftEvaluation.metrics?.regressedArtifactCount ?? 0)).toBeGreaterThanOrEqual(1);
+
+    const revertedDraft = await projectsModule.revertServerProjectOntologyDraft({
+      projectId: project.id
+    });
+    expect(revertedDraft.draft).toBeNull();
+
+    const cachedAnalysis = await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+    expect(cachedAnalysis.ontologyDraft?.operationCount ?? 0).toBe(0);
+  });
+
   it("supports search, analyze, and ask for an external workspace without any qmd CLI command", async () => {
     const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
     const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-external-workspace-"));

@@ -5,20 +5,24 @@ import { AnalyzeInputSchema, RunModeSchema } from "../core/types.js";
 import {
   analyzeServerProject,
   askServerProject,
+  evaluateServerProjectOntologyDraft,
   executeServerProjectReplay,
   getServerLlmSettings,
   getServerDomainPack,
   getServerProject,
+  getServerProjectOntologyDraft,
   listServerDomainPacks,
   listServerProjectPresets,
   listServerProjects,
   listProjectDebugEvents,
-  removeServerDomainPack,
-  readServerProjectFile,
   recordServerProjectFeedback,
   recordServerProjectOntologyInput,
+  removeServerDomainPack,
   removeServerProject,
   removeServerProjectPreset,
+  readServerProjectFile,
+  revertServerProjectOntologyDraft,
+  saveServerProjectOntologyDraft,
   searchServerProject,
   upsertServerDomainPack,
   upsertServerProject,
@@ -70,7 +74,21 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback" | "ontology-inputs" | "replay"
+  suffix:
+    | ""
+    | "index"
+    | "search"
+    | "runs"
+    | "file"
+    | "analyze"
+    | "ask"
+    | "debug"
+    | "feedback"
+    | "ontology-inputs"
+    | "ontology-draft"
+    | "ontology-draft/evaluate"
+    | "ontology-draft/revert"
+    | "replay"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -784,6 +802,122 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
       json(res, 400, {
         error: error instanceof Error ? error.message : String(error)
       });
+      return true;
+    }
+  }
+
+  const projectOntologyDraftId = matchProjectPath(pathname, "ontology-draft");
+  if (projectOntologyDraftId && method === "GET") {
+    routeTrace("project/ontology-draft:get:start", { projectId: projectOntologyDraftId });
+    try {
+      const result = await getServerProjectOntologyDraft({ projectId: projectOntologyDraftId });
+      routeTrace("project/ontology-draft:get:success", {
+        projectId: projectOntologyDraftId,
+        hasDraft: Boolean(result.draft),
+        historyCount: result.history.length
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology-draft:get:failure", {
+        projectId: projectOntologyDraftId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      return true;
+    }
+  }
+
+  if (projectOntologyDraftId && method === "POST") {
+    routeTrace("project/ontology-draft:save:start", { projectId: projectOntologyDraftId });
+    try {
+      const payload = (await readJsonBody(req)) as {
+        notes?: string;
+        operations?: Array<{
+          id?: string;
+          createdAt?: string;
+          kind?: "add-node" | "remove-node" | "add-edge" | "remove-edge" | "override-node" | "override-edge";
+          notes?: string;
+          nodeId?: string;
+          nodeType?: string;
+          label?: string;
+          summary?: string;
+          metadata?: Record<string, unknown>;
+          attributes?: Record<string, unknown>;
+          targetId?: string;
+          edgeId?: string;
+          edgeType?: string;
+          fromId?: string;
+          toId?: string;
+        }>;
+      };
+      const operations = (payload.operations ?? []).flatMap((operation) => (operation.kind ? [operation] : []));
+      const result = await saveServerProjectOntologyDraft({
+        projectId: projectOntologyDraftId,
+        operations,
+        notes: payload.notes
+      });
+      routeTrace("project/ontology-draft:save:success", {
+        projectId: projectOntologyDraftId,
+        draftVersion: result.draft?.draftVersion ?? null,
+        operationCount: result.draft?.summary?.operationCount ?? 0
+      });
+      json(res, 201, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology-draft:save:failure", {
+        projectId: projectOntologyDraftId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      return true;
+    }
+  }
+
+  const projectOntologyDraftEvaluateId = matchProjectPath(pathname, "ontology-draft/evaluate");
+  if (projectOntologyDraftEvaluateId && method === "POST") {
+    routeTrace("project/ontology-draft:evaluate:start", { projectId: projectOntologyDraftEvaluateId });
+    try {
+      const result = await evaluateServerProjectOntologyDraft({ projectId: projectOntologyDraftEvaluateId });
+      routeTrace("project/ontology-draft:evaluate:success", {
+        projectId: projectOntologyDraftEvaluateId,
+        recommendation: result.evaluation.summary.recommendation,
+        riskBand: result.evaluation.summary.riskBand
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology-draft:evaluate:failure", {
+        projectId: projectOntologyDraftEvaluateId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+      return true;
+    }
+  }
+
+  const projectOntologyDraftRevertId = matchProjectPath(pathname, "ontology-draft/revert");
+  if (projectOntologyDraftRevertId && method === "POST") {
+    routeTrace("project/ontology-draft:revert:start", { projectId: projectOntologyDraftRevertId });
+    try {
+      const payload = (await readJsonBody(req)) as { targetVersion?: number };
+      const result = await revertServerProjectOntologyDraft({
+        projectId: projectOntologyDraftRevertId,
+        targetVersion: Number.isFinite(payload.targetVersion) ? payload.targetVersion : undefined
+      });
+      routeTrace("project/ontology-draft:revert:success", {
+        projectId: projectOntologyDraftRevertId,
+        draftVersion: result.draft?.draftVersion ?? null,
+        historyCount: result.history.length
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology-draft:revert:failure", {
+        projectId: projectOntologyDraftRevertId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, { error: error instanceof Error ? error.message : String(error) });
       return true;
     }
   }
