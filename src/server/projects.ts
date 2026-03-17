@@ -75,6 +75,7 @@ import {
 } from "./learned-knowledge.js";
 import {
   buildKnowledgeSchemaMarkdown,
+  compactKnowledgeSchemaSnapshot,
   buildKnowledgeSchemaSnapshot,
   KnowledgeSchemaSnapshotSchema,
   type KnowledgeSchemaSnapshot
@@ -6333,7 +6334,7 @@ export async function analyzeServerProject(options: {
         eaiEntryCount: analyzeInputs.eaiEntries.length
       }
     });
-    const knowledgeSchema = buildKnowledgeSchemaSnapshot({
+    let knowledgeSchema = buildKnowledgeSchemaSnapshot({
       generatedAt,
       workspaceDir: project.workspaceDir,
       structure: {
@@ -6355,6 +6356,35 @@ export async function analyzeServerProject(options: {
         edgeCount: knowledgeSchema.summary.edgeCount
       }
     });
+
+    const preRetrievalOntologyLimits = resolveAnalyzeOntologyGraphLimits({
+      knowledgeSchema
+    });
+    if (preRetrievalOntologyLimits) {
+      const previousEntityCount = knowledgeSchema.summary.entityCount;
+      const previousEdgeCount = knowledgeSchema.summary.edgeCount;
+      knowledgeSchema = compactKnowledgeSchemaSnapshot(knowledgeSchema, {
+        maxEntities: preRetrievalOntologyLimits.maxKnowledgeEntities,
+        maxEdges: preRetrievalOntologyLimits.maxKnowledgeEdges
+      });
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "knowledge schema compact mode enabled before retrieval unit build",
+        metadata: {
+          previousEntityCount,
+          previousEdgeCount,
+          entityCount: knowledgeSchema.summary.entityCount,
+          edgeCount: knowledgeSchema.summary.edgeCount,
+          limits: {
+            maxKnowledgeEntities: preRetrievalOntologyLimits.maxKnowledgeEntities,
+            maxKnowledgeEdges: preRetrievalOntologyLimits.maxKnowledgeEdges
+          }
+        }
+      });
+    }
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),

@@ -353,6 +353,79 @@ function classifyCapabilityTags(tags: string[], domainPacks?: DomainPack[]): Pic
   };
 }
 
+function knowledgeEntityPriority(entity: KnowledgeEntity): number {
+  switch (entity.type) {
+    case "module":
+      return 120;
+    case "route":
+    case "ui-action":
+    case "api":
+    case "gateway-handler":
+    case "controller":
+    case "service":
+    case "eai-interface":
+    case "data-store":
+    case "control-guard":
+    case "knowledge-cluster":
+      return 110;
+    case "data-model":
+    case "data-query":
+    case "data-table":
+    case "cache-key":
+      return 95;
+    case "file":
+      return 70;
+    case "symbol":
+      return 55;
+    default:
+      return 50;
+  }
+}
+
+function knowledgeEdgePriority(edge: KnowledgeEdge): number {
+  switch (edge.type) {
+    case "routes-to":
+    case "proxies-to":
+    case "calls":
+    case "uses-eai":
+    case "uses-store":
+      return 120;
+    case "maps-to":
+    case "stores-model":
+    case "maps-to-table":
+    case "queries-table":
+    case "uses-cache-key":
+    case "validates":
+    case "supports-module-role":
+      return 105;
+    case "contains":
+    case "declares":
+    case "depends-on":
+      return 70;
+    case "belongs-to-domain":
+    case "belongs-to-channel":
+    case "belongs-to-process":
+      return 60;
+    default:
+      return 50;
+  }
+}
+
+function knowledgeStatusPriority(status: KnowledgeValidatedStatus): number {
+  switch (status) {
+    case "validated":
+      return 120;
+    case "derived":
+      return 95;
+    case "candidate":
+      return 80;
+    case "stale":
+      return 40;
+    default:
+      return 50;
+  }
+}
+
 function buildEntityTypeCounts(entities: KnowledgeEntity[]): Record<string, number> {
   const counts = new Map<string, number>();
   for (const entity of entities) {
@@ -2104,6 +2177,127 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       topDomains: summarizeCounts(orderedEntities.flatMap((entity) => entity.metadata.domains)),
       topModules: summarizeCounts(
         orderedEntities
+          .filter((entity) => entity.type === "module")
+          .map((entity) => String(entity.attributes.moduleName ?? entity.label))
+      )
+    }
+  });
+}
+
+export function compactKnowledgeSchemaSnapshot(
+  snapshot: KnowledgeSchemaSnapshot,
+  options: {
+    maxEntities?: number;
+    maxEdges?: number;
+  }
+): KnowledgeSchemaSnapshot {
+  const parsed = maybeValidateSnapshot(KnowledgeSchemaSnapshotSchema, snapshot);
+  const maxEntities = options.maxEntities;
+  const maxEdges = options.maxEdges;
+
+  if (
+    (!maxEntities || parsed.entities.length <= maxEntities) &&
+    (!maxEdges || parsed.edges.length <= maxEdges)
+  ) {
+    return parsed;
+  }
+
+  const rankedEntities = [...parsed.entities].sort((a, b) => {
+    const priorityDiff = knowledgeEntityPriority(b) - knowledgeEntityPriority(a);
+    if (priorityDiff !== 0) return priorityDiff;
+    const statusDiff =
+      knowledgeStatusPriority(b.metadata.validatedStatus) -
+      knowledgeStatusPriority(a.metadata.validatedStatus);
+    if (statusDiff !== 0) return statusDiff;
+    const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
+    if (confidenceDiff !== 0) return confidenceDiff;
+    return a.id.localeCompare(b.id);
+  });
+
+  const selectedEntities = (() => {
+    if (!maxEntities || rankedEntities.length <= maxEntities) {
+      return rankedEntities.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    const coverageOrder: KnowledgeEntityType[] = [
+      "route",
+      "ui-action",
+      "api",
+      "gateway-handler",
+      "controller",
+      "service",
+      "knowledge-cluster",
+      "data-store",
+      "eai-interface",
+      "control-guard",
+      "data-query",
+      "data-model",
+      "data-table",
+      "cache-key",
+      "module",
+      "file",
+      "symbol"
+    ];
+
+    const chosen = new Map<string, KnowledgeEntity>();
+    for (const type of coverageOrder) {
+      if (chosen.size >= maxEntities) break;
+      const entity = rankedEntities.find((item) => item.type === type && !chosen.has(item.id));
+      if (entity) {
+        chosen.set(entity.id, entity);
+      }
+    }
+    for (const entity of rankedEntities) {
+      if (chosen.size >= maxEntities) break;
+      if (!chosen.has(entity.id)) {
+        chosen.set(entity.id, entity);
+      }
+    }
+    return Array.from(chosen.values()).sort((a, b) => a.id.localeCompare(b.id));
+  })();
+
+  const selectedEntityIds = new Set(selectedEntities.map((entity) => entity.id));
+  const selectedEdges = (
+    !maxEdges
+      ? parsed.edges.filter(
+          (edge) => selectedEntityIds.has(edge.fromId) && selectedEntityIds.has(edge.toId)
+        )
+      : parsed.edges
+          .filter((edge) => selectedEntityIds.has(edge.fromId) && selectedEntityIds.has(edge.toId))
+          .sort((a, b) => {
+            const priorityDiff = knowledgeEdgePriority(b) - knowledgeEdgePriority(a);
+            if (priorityDiff !== 0) return priorityDiff;
+            const statusDiff =
+              knowledgeStatusPriority(b.metadata.validatedStatus) -
+              knowledgeStatusPriority(a.metadata.validatedStatus);
+            if (statusDiff !== 0) return statusDiff;
+            const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
+            if (confidenceDiff !== 0) return confidenceDiff;
+            return a.id.localeCompare(b.id);
+          })
+          .slice(0, maxEdges)
+  ).sort((a, b) => a.id.localeCompare(b.id));
+
+  const clusterEntities = selectedEntities.filter((entity) => entity.type === "knowledge-cluster");
+
+  return maybeValidateSnapshot(KnowledgeSchemaSnapshotSchema, {
+    version: parsed.version,
+    generatedAt: parsed.generatedAt,
+    workspaceDir: parsed.workspaceDir,
+    entities: selectedEntities,
+    edges: selectedEdges,
+    summary: {
+      entityCount: selectedEntities.length,
+      edgeCount: selectedEdges.length,
+      entityTypeCounts: buildEntityTypeCounts(selectedEntities),
+      edgeTypeCounts: buildEdgeTypeCounts(selectedEdges),
+      validatedClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "validated").length,
+      candidateClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "candidate").length,
+      staleClusterCount: clusterEntities.filter((entity) => entity.metadata.validatedStatus === "stale").length,
+      activeDomainCount: parsed.summary.activeDomainCount,
+      topDomains: summarizeCounts(selectedEntities.flatMap((entity) => entity.metadata.domains)),
+      topModules: summarizeCounts(
+        selectedEntities
           .filter((entity) => entity.type === "module")
           .map((entity) => String(entity.attributes.moduleName ?? entity.label))
       )

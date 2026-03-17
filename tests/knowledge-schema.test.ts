@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKnowledgeSchemaMarkdown, buildKnowledgeSchemaSnapshot } from "../src/server/knowledge-schema.js";
+import { buildKnowledgeSchemaMarkdown, buildKnowledgeSchemaSnapshot, compactKnowledgeSchemaSnapshot } from "../src/server/knowledge-schema.js";
 import type { DomainPack } from "../src/server/domain-packs.js";
 import type { LearnedKnowledgeSnapshot } from "../src/server/learned-knowledge.js";
 import type { FrontBackGraphSnapshot } from "../src/server/front-back-graph.js";
@@ -535,4 +535,60 @@ describe("knowledge schema foundation", () => {
     expect(markdown).toContain("## Entity Types");
     expect(markdown).toContain("## Knowledge Clusters");
   });
+  it("compacts large knowledge schema snapshots before retrieval-heavy stages", () => {
+    const base = buildKnowledgeSchemaSnapshot({
+      generatedAt: "2026-03-16T00:00:00.000Z",
+      workspaceDir: "/workspace/dcp-services",
+      structure: {
+        entries: {
+          "dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java": {
+            path: "dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java",
+            packageName: "demo",
+            summary: "controller",
+            classes: [{ name: "RegisteUseDcpChnelController", line: 1 }],
+            methods: [{ name: "registe", line: 10, className: "RegisteUseDcpChnelController" }],
+            functions: [],
+            calls: []
+          },
+          "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java": {
+            path: "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java",
+            packageName: "demo",
+            summary: "service",
+            classes: [{ name: "EmbededMemberLoginService", line: 1 }],
+            methods: [{ name: "authenticate", line: 15, className: "EmbededMemberLoginService" }],
+            functions: [],
+            calls: []
+          },
+          "dcp-member/src/main/java/com/example/NoiseSymbol.java": {
+            path: "dcp-member/src/main/java/com/example/NoiseSymbol.java",
+            packageName: "demo",
+            summary: "noise",
+            classes: [{ name: "NoiseSymbol", line: 1 }],
+            methods: Array.from({ length: 12 }, (_, index) => ({ name: `noop${index}`, line: index + 2, className: "NoiseSymbol" })),
+            functions: [],
+            calls: []
+          }
+        }
+      },
+      frontBackGraph,
+      eaiEntries,
+      learnedKnowledge,
+      domainPacks
+    });
+
+    const compacted = compactKnowledgeSchemaSnapshot(base, {
+      maxEntities: 8,
+      maxEdges: 12
+    });
+
+    expect(compacted.summary.entityCount).toBeLessThanOrEqual(8);
+    expect(compacted.summary.edgeCount).toBeLessThanOrEqual(12);
+    expect(compacted.entities.some((entity) => entity.type === "route")).toBe(true);
+    expect(compacted.entities.some((entity) => entity.type === "api")).toBe(true);
+    expect(compacted.entities.some((entity) => entity.type === "controller")).toBe(true);
+    expect(compacted.entities.some((entity) => entity.type === "service")).toBe(true);
+    expect(compacted.entities.some((entity) => entity.type === "knowledge-cluster")).toBe(true);
+    expect(compacted.entities.some((entity) => entity.label === "NoiseSymbol.noop11")).toBe(false);
+  });
+
 });
