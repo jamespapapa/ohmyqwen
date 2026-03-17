@@ -438,6 +438,38 @@ describe("knowledge schema foundation", () => {
       snapshot.edges.some(
         (edge) =>
           edge.type === "accepts-contract" &&
+          edge.fromId === "api:/member/monimo/registe" &&
+          edge.toId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "returns-contract" &&
+          edge.fromId === "api:/member/monimo/registe" &&
+          edge.toId === "data-contract:monimoauthresponse"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "accepts-contract" &&
+          edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
+          edge.toId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "returns-contract" &&
+          edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
+          edge.toId === "data-contract:monimoauthresponse"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "accepts-contract" &&
           edge.fromId === "symbol:method:RegisteUseDcpChnelController.registe:dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java" &&
           edge.toId === "data-contract:monimoauthrequest"
       )

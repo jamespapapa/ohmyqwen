@@ -338,13 +338,38 @@ export function buildRetrievalUnitSnapshot(options: {
         }
         const controllerCalls = (outgoing.get(controller.id) ?? []).filter((edge) => edge.type === "calls");
         const services = controllerCalls.map((edge) => entitiesById.get(edge.toId)).filter(Boolean) as KnowledgeEntity[];
+        const supportRoots = [apiEntity, gatewayNode, controller, ...services].filter(Boolean) as KnowledgeEntity[];
+        const supportEdges = supportRoots.flatMap((root) =>
+          (outgoing.get(root.id) ?? []).filter((edge) =>
+            [
+              "accepts-contract",
+              "returns-contract",
+              "uses-store",
+              "uses-eai",
+              "uses-cache-key",
+              "stores-model",
+              "maps-to-table",
+              "queries-table",
+              "validates"
+            ].includes(edge.type)
+          )
+        );
+        const supportEntities = unique(
+          supportEdges
+            .flatMap((edge) => [edge.fromId, edge.toId])
+            .filter((id) => !supportRoots.some((root) => root.id === id))
+        )
+          .map((id) => entitiesById.get(id))
+          .filter(Boolean) as KnowledgeEntity[];
         const merged = mergeMetadata([
           fromEntity.metadata,
           apiEntity.metadata,
           mappingEdge.metadata,
           gatewayNode?.metadata,
           controller.metadata,
-          ...services.map((item) => item.metadata)
+          ...services.map((item) => item.metadata),
+          ...supportEntities.map((item) => item.metadata),
+          ...supportEdges.map((item) => item.metadata)
         ].filter(Boolean) as KnowledgeMetadata[]);
         pushUnit({
           id: `unit:flow:${fromEntity.id}:${apiEntity.id}:${controller.id}`,
@@ -352,8 +377,8 @@ export function buildRetrievalUnitSnapshot(options: {
           title: `${labelForEntity(fromEntity)} -> ${controller.label}`,
           summary:
             services.length > 0
-              ? `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label} -> ${services.map((service) => service.label).join(", ")}`
-              : `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label}`,
+              ? `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label} -> ${services.map((service) => service.label).join(", ")}${supportEntities.length > 0 ? ` | ${supportEntities.slice(0, 6).map((entity) => entity.label).join(", ")}` : ""}`
+              : `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label}${supportEntities.length > 0 ? ` | ${supportEntities.slice(0, 6).map((entity) => entity.label).join(", ")}` : ""}`,
           ...merged,
           confidence: Math.max(merged.confidence, 0.74),
           validatedStatus: mergeValidatedStatus([
@@ -362,10 +387,12 @@ export function buildRetrievalUnitSnapshot(options: {
             mappingEdge.metadata,
             gatewayNode?.metadata,
             controller.metadata,
-            ...services.map((item) => item.metadata)
+            ...services.map((item) => item.metadata),
+            ...supportEntities.map((item) => item.metadata),
+            ...supportEdges.map((item) => item.metadata)
           ].filter(Boolean) as KnowledgeMetadata[]),
-          entityIds: ids([fromEntity, apiEntity, gatewayNode, controller, ...services]),
-          edgeIds: ids([routeEdge, mappingEdge, ...proxyEdges, ...controllerCalls]),
+          entityIds: ids([fromEntity, apiEntity, gatewayNode, controller, ...services, ...supportEntities]),
+          edgeIds: ids([routeEdge, mappingEdge, ...proxyEdges, ...controllerCalls, ...supportEdges]),
           searchText: makeSearchText([
             fromEntity.label,
             fromEntity.summary,
@@ -374,6 +401,7 @@ export function buildRetrievalUnitSnapshot(options: {
             gatewayNode?.label,
             controller.label,
             ...services.map((service) => service.label),
+            ...supportEntities.map((entity) => entity.label),
             String(fromEntity.attributes.routePath ?? fromEntity.attributes.functionName ?? ""),
             String(apiEntity.attributes.normalizedUrl ?? apiEntity.attributes.rawUrl ?? ""),
             String(gatewayNode?.attributes.path ?? ""),

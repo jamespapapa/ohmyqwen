@@ -749,10 +749,12 @@ describe("retrieval unit standardization", () => {
     );
     expect(uiActionFlowUnit?.searchText).toContain("requestMonimoAuth");
     expect(uiActionFlowUnit?.searchText).toContain("RouteController.route");
+    expect(uiActionFlowUnit?.searchText).toContain("MonimoAuthRequest");
     expect(uiActionFlowUnit?.entityIds).toEqual(
       expect.arrayContaining([
         "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
-        "gateway-handler:RouteController.route"
+        "gateway-handler:RouteController.route",
+        "data-contract:monimoauthrequest"
       ])
     );
 

@@ -1574,6 +1574,8 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       ? `ui-action:${link.frontend.screenPath}:${slugify(link.api.functionName)}`
       : undefined;
     const backendPath = toForwardSlash(link.backend.filePath);
+    const backendStructureEntry = options.structure?.entries?.[backendPath];
+    const backendResourceHints = backendStructureEntry?.resources ?? {};
     const apiId = `api:${link.api.normalizedUrl}`;
     upsertEntity({
       id: apiId,
@@ -1894,6 +1896,104 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         gatewayMethod: link.gateway.controllerMethod ?? null
       }
     });
+
+    for (const requestModelName of unique(backendResourceHints.requestModelNames ?? [])) {
+      const requestContractId = ensureDataContract({
+        label: requestModelName,
+        direction: "request",
+        evidencePath: backendPath,
+        moduleName: backendModuleName
+      });
+      upsertEdge({
+        id: `edge:accepts-contract:${apiId}:${requestContractId}`,
+        type: "accepts-contract",
+        fromId: apiId,
+        toId: requestContractId,
+        label: "API accepts request contract",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          actions: inferActionsFromTexts(link.api.normalizedUrl, requestModelName, "request input payload"),
+          moduleRoles: ["data-contract"],
+          confidence: Math.max(0.74, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "request"
+        }
+      });
+      upsertEdge({
+        id: `edge:accepts-contract:${controllerId}:${requestContractId}`,
+        type: "accepts-contract",
+        fromId: controllerId,
+        toId: requestContractId,
+        label: "controller accepts request contract",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          actions: inferActionsFromTexts(link.backend.controllerMethod, requestModelName, "request input payload"),
+          moduleRoles: ["data-contract"],
+          confidence: Math.max(0.76, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "request"
+        }
+      });
+    }
+
+    for (const responseModelName of unique(backendResourceHints.responseModelNames ?? [])) {
+      const responseContractId = ensureDataContract({
+        label: responseModelName,
+        direction: "response",
+        evidencePath: backendPath,
+        moduleName: backendModuleName
+      });
+      upsertEdge({
+        id: `edge:returns-contract:${apiId}:${responseContractId}`,
+        type: "returns-contract",
+        fromId: apiId,
+        toId: responseContractId,
+        label: "API returns response contract",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          actions: inferActionsFromTexts(link.api.normalizedUrl, responseModelName, "response output result payload"),
+          moduleRoles: ["data-contract"],
+          confidence: Math.max(0.74, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "response"
+        }
+      });
+      upsertEdge({
+        id: `edge:returns-contract:${controllerId}:${responseContractId}`,
+        type: "returns-contract",
+        fromId: controllerId,
+        toId: responseContractId,
+        label: "controller returns response contract",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          actions: inferActionsFromTexts(link.backend.controllerMethod, responseModelName, "response output result payload"),
+          moduleRoles: ["data-contract"],
+          confidence: Math.max(0.76, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          direction: "response"
+        }
+      });
+    }
 
     for (const serviceHint of link.backend.serviceHints) {
       const serviceClass = serviceHint.split(".")[0] ?? serviceHint;
