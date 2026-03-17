@@ -35,6 +35,16 @@ describe("question types", () => {
     expect(result.type).toBe("channel_or_partner_integration");
   });
 
+  it("classifies redis/session schema questions as state_store_schema", () => {
+    const result = classifyAskQuestionType({
+      question: "redis 세션 정보는 어떤 값들이 저장되고 TTL은 어떻게 관리되나?",
+      strategy: "config_resource",
+      matchedKnowledgeIds: ["store:redis"]
+    });
+
+    expect(result.type).toBe("state_store_schema");
+  });
+
   it("classifies batch/process questions as process_or_batch_trace", () => {
     const result = classifyAskQuestionType({
       question: "배치 job 이 어떤 step과 tasklet으로 동작하는지 추적해줘.",
@@ -77,6 +87,7 @@ describe("question types", () => {
     expect(getAskQuestionTypeContract("cross_layer_flow").requireBusinessTraceDetail).toBe(true);
     expect(getAskQuestionTypeContract("symbol_deep_trace").requireTargetSymbolDetail).toBe(true);
     expect(getAskQuestionTypeContract("config_or_resource_explanation").requireCodeEvidence).toBe(false);
+    expect(getAskQuestionTypeContract("state_store_schema").requireResourceSchemaDetail).toBe(true);
   });
 
   it("returns retrieval preferences per question type", () => {
@@ -92,5 +103,9 @@ describe("question types", () => {
     ]);
     expect(channel.preferredUnitTypes).toContain("flow");
     expect(channel.queryHints).toContain("callback");
+
+    const storeSchema = getAskQuestionTypeRetrievalContract("state_store_schema");
+    expect(storeSchema.preferredUnitTypes[0]).toBe("resource-schema");
+    expect(storeSchema.queryHints).toContain("redis");
   });
 });

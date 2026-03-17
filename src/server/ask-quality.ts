@@ -46,6 +46,10 @@ export interface AskLinkedFlowQualityEvidence {
   capabilityTags?: string[];
 }
 
+function looksLikeStoreOrDataPath(path: string): boolean {
+  return /(redis|cache|session|entity|repository|mapper|dao|model|table|jdbc|sql)/i.test(path);
+}
+
 function hasCodeFileEvidenceFromPaths(paths: string[]): boolean {
   return paths.some((entry) => /\.(java|kt|kts|ts|tsx|js|jsx|py|go|rs|cs)$/i.test(entry));
 }
@@ -100,6 +104,8 @@ export function qualityGateForAskOutput(options: {
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
+  matchedOntologyNodeTypes?: string[];
+  matchedOntologyNodeLabels?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -109,6 +115,8 @@ export function qualityGateForAskOutput(options: {
   const linkedEaiEvidence = options.linkedEaiEvidence ?? [];
   const linkedFlowEvidence = options.linkedFlowEvidence ?? [];
   const moduleCandidates = options.moduleCandidates ?? [];
+  const matchedOntologyNodeTypes = unique(options.matchedOntologyNodeTypes ?? []);
+  const matchedOntologyNodeLabels = unique(options.matchedOntologyNodeLabels ?? []);
   const questionType =
     options.questionType ??
     classifyAskQuestionType({
@@ -248,8 +256,37 @@ export function qualityGateForAskOutput(options: {
   }
 
   if (questionType === "config_or_resource_explanation") {
-    if (!/(xml|yml|yaml|config|설정|resource|리소스|menu|property|properties|interface)/i.test(options.output.answer)) {
+    if (!/(xml|yml|yaml|config|설정|resource|리소스|menu|property|properties|interface|redis|cache|session|table|entity|model|repository|mapper|dao)/i.test(options.output.answer)) {
       failures.push("missing-config-resource-detail");
+    }
+  }
+
+  if (questionType === "state_store_schema") {
+    const storeNodePresent = matchedOntologyNodeTypes.some((type) =>
+      ["data-store", "data-model", "data-table", "cache-key"].includes(type)
+    );
+    const storageHitPathPresent = options.hitPaths.some((entry) => looksLikeStoreOrDataPath(entry));
+    const directStoreLabels = matchedOntologyNodeLabels.filter((label) =>
+      /(redis|cache|session|table|entity|model|repository|mapper|dao|ttl|serializer|key)/i.test(label)
+    );
+    const answerMentionsDirectStoreLabel =
+      directStoreLabels.length === 0 || answerMentionsAny(options.output.answer, directStoreLabels);
+
+    if (!storeNodePresent) {
+      failures.push("missing-store-ontology-evidence");
+    }
+    if (!storageHitPathPresent) {
+      failures.push("missing-store-code-path-evidence");
+    }
+    if (
+      !/(redis|cache|session|ttl|serializer|field|필드|key|키|table|테이블|entity|엔티티|model|모델|repository|mapper|dao|db|database|저장|조회|만료)/i.test(
+        options.output.answer
+      )
+    ) {
+      failures.push("missing-store-schema-detail");
+    }
+    if (!answerMentionsDirectStoreLabel) {
+      failures.push("missing-direct-store-label-detail");
     }
   }
 

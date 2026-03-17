@@ -269,6 +269,7 @@ export interface ProjectSearchResult {
     ontologyInputLoaded?: boolean;
     ontologyReviewLoaded?: boolean;
     matchedOntologyNodeIds?: string[];
+    matchedOntologyNodeTypes?: string[];
     matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
     matchedOntologyProjectionIds?: string[];
     plannedQuery?: string;
@@ -596,6 +597,7 @@ export interface ProjectAskResponse {
     ontologyInputLoaded?: boolean;
     ontologyReviewLoaded?: boolean;
     matchedOntologyNodeIds?: string[];
+    matchedOntologyNodeTypes?: string[];
     matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
     matchedOntologyProjectionIds?: string[];
     retryStopReason?: string;
@@ -5156,8 +5158,18 @@ export function normalizeAskStrategyForQuestion(
   question: string,
   strategy: AskStrategyType
 ): AskStrategyType {
-  if (isCrossLayerFlowQuestion(question)) {
+  const questionType = classifyAskQuestionType({
+    question,
+    strategy
+  }).type;
+  if (questionType === "cross_layer_flow" || isCrossLayerFlowQuestion(question)) {
     return "cross_layer_flow";
+  }
+  if (questionType === "state_store_schema") {
+    return "config_resource";
+  }
+  if (questionType === "channel_or_partner_integration" && strategy === "method_trace") {
+    return "module_flow_topdown";
   }
   return strategy;
 }
@@ -6659,6 +6671,8 @@ function qualityGateForAsk(options: {
   questionTags?: string[];
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
+  matchedOntologyNodeTypes?: string[];
+  matchedOntologyNodeLabels?: string[];
 }): {
   passed: boolean;
   failures: string[];
@@ -6681,7 +6695,9 @@ function qualityGateForAsk(options: {
     domainPacks: options.domainPacks,
     questionTags: options.questionTags,
     matchedKnowledgeIds: options.matchedKnowledgeIds,
-    matchedRetrievalUnitStatuses: options.matchedRetrievalUnitStatuses
+    matchedRetrievalUnitStatuses: options.matchedRetrievalUnitStatuses,
+    matchedOntologyNodeTypes: options.matchedOntologyNodeTypes,
+    matchedOntologyNodeLabels: options.matchedOntologyNodeLabels
   });
 }
 
@@ -7753,7 +7769,9 @@ export async function askServerProject(options: {
             ...matchedLearnedKnowledge.map((item) => item.id),
             ...matchedRetrievalUnits.map((item) => item.unit.id)
           ],
-          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus)
+          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
+          matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
+          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label)
         })
       : null;
 
@@ -7978,7 +7996,9 @@ export async function askServerProject(options: {
             ...matchedLearnedKnowledge.map((item) => item.id),
             ...matchedRetrievalUnits.map((item) => item.unit.id)
           ],
-          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus)
+          matchedRetrievalUnitStatuses: matchedRetrievalUnits.map((item) => item.unit.validatedStatus),
+          matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
+          matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label)
         });
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
@@ -8257,6 +8277,7 @@ export async function askServerProject(options: {
         ontologyInputLoaded: Boolean(ontologyInputSummary),
         ontologyReviewLoaded: Boolean(ontologyReviewSnapshot),
         matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+        matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
         matchedOntologyNodeStatuses: rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus),
         matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
         retryStopReason,

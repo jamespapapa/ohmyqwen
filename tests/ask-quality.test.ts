@@ -139,6 +139,68 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("missing-code-body-evidence");
   });
 
+  it("fails state store schema answers when direct store/key evidence is omitted", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer: "회원 인증은 일반적인 상태 관리 흐름으로 처리된다.",
+        confidence: 0.63,
+        evidence: ["redis evidence", "session evidence"],
+        caveats: []
+      },
+      question: "redis 세션 정보는 어떤 값들이 저장되는가?",
+      questionType: "state_store_schema",
+      hitPaths: [
+        "dcp-member/src/main/java/com/acme/RedisSessionSupport.java",
+        "dcp-member/src/main/java/com/acme/MemberSessionRepository.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-member/src/main/java/com/acme/RedisSessionSupport.java",
+          reason: "callee:RedisSessionSupport.getRedisInfo",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      matchedOntologyNodeTypes: ["data-store", "cache-key", "data-table"],
+      matchedOntologyNodeLabels: ["Redis Store", "member.login.status", "TB_MEMBER_SESSION"]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-store-schema-detail");
+    expect(gate.failures).toContain("missing-direct-store-label-detail");
+  });
+
+  it("passes state store schema answers when redis/table/key details are explicit", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "Redis Store 에는 member.login.status, member.profile 같은 cache key 가 저장되고, 영속 데이터는 TB_MEMBER_SESSION 테이블과 MemberSessionEntity 모델을 통해 조회된다.",
+        confidence: 0.78,
+        evidence: ["redis key evidence", "table evidence"],
+        caveats: []
+      },
+      question: "redis 세션 정보는 어떤 값들이 저장되는가?",
+      questionType: "state_store_schema",
+      hitPaths: [
+        "dcp-member/src/main/java/com/acme/RedisSessionSupport.java",
+        "dcp-member/src/main/java/com/acme/MemberSessionEntity.java",
+        "dcp-member/src/main/java/com/acme/MemberSessionRepository.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-member/src/main/java/com/acme/RedisSessionSupport.java",
+          reason: "callee:RedisSessionSupport.getRedisInfo",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ],
+      matchedOntologyNodeTypes: ["data-store", "cache-key", "data-model", "data-table"],
+      matchedOntologyNodeLabels: ["Redis Store", "member.login.status", "MemberSessionEntity", "TB_MEMBER_SESSION"]
+    });
+
+    expect(gate.passed).toBe(true);
+  });
+
   it("fails module-scoped answers when hydrated evidence does not stay inside the requested module", () => {
     const gate = qualityGateForAskOutput({
       output: {

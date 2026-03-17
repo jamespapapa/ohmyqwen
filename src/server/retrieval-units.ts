@@ -14,7 +14,8 @@ const RetrievalUnitTypeSchema = z.enum([
   "module-overview",
   "flow",
   "knowledge-cluster",
-  "eai-link"
+  "eai-link",
+  "resource-schema"
 ]);
 
 const RetrievalUnitSchema = z.object({
@@ -361,6 +362,57 @@ export function buildRetrievalUnitSnapshot(options: {
   }
 
   for (const entity of knowledgeSchema.entities) {
+    if (!["data-store", "data-model", "data-table", "cache-key"].includes(entity.type)) {
+      continue;
+    }
+    const relatedOutgoing = (outgoing.get(entity.id) ?? []).filter((edge) =>
+      ["uses-store", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+    );
+    const relatedIncoming = (incoming.get(entity.id) ?? []).filter((edge) =>
+      ["uses-store", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+    );
+    const relatedEdges = unique([...relatedOutgoing, ...relatedIncoming].map((edge) => edge.id))
+      .map((id) => knowledgeSchema.edges.find((edge) => edge.id === id))
+      .filter(Boolean) as KnowledgeEdge[];
+    const relatedEntities = unique(
+      relatedEdges.flatMap((edge) => [edge.fromId, edge.toId]).filter((id) => id !== entity.id)
+    )
+      .map((id) => entitiesById.get(id))
+      .filter(Boolean) as KnowledgeEntity[];
+    const merged = mergeMetadata([entity.metadata, ...relatedEntities.map((item) => item.metadata), ...relatedEdges.map((item) => item.metadata)]);
+    const summaryParts = unique([
+      entity.summary,
+      ...relatedEntities.slice(0, 6).map((item) => item.label)
+    ]).filter(Boolean);
+    pushUnit({
+      id: `unit:resource:${entity.id}`,
+      type: "resource-schema",
+      title: entity.label,
+      summary: summaryParts.join(" | "),
+      ...merged,
+      confidence: Math.max(entity.metadata.confidence, merged.confidence, 0.74),
+      validatedStatus: mergeValidatedStatus([entity.metadata, ...relatedEntities.map((item) => item.metadata), ...relatedEdges.map((item) => item.metadata)]),
+      entityIds: ids([entity, ...relatedEntities]),
+      edgeIds: ids(relatedEdges),
+      searchText: makeSearchText([
+        entity.label,
+        entity.summary,
+        ...relatedEntities.map((item) => item.label),
+        ...merged.domains,
+        ...merged.subdomains,
+        ...merged.channels,
+        ...merged.actions,
+        ...merged.moduleRoles,
+        ...merged.processRoles,
+        String(entity.attributes.tableName ?? ""),
+        String(entity.attributes.modelName ?? ""),
+        String(entity.attributes.key ?? ""),
+        String(entity.attributes.storeKind ?? "")
+      ])
+    });
+  }
+
+  for (const entity of knowledgeSchema.entities) {
     if (entity.type !== "knowledge-cluster") {
       continue;
     }
@@ -466,7 +518,8 @@ export function rankRetrievalUnitsForQuestion(options: {
     module_role_explanation: { "module-overview": 4, "knowledge-cluster": 2, flow: 1 },
     process_or_batch_trace: { flow: 3, "module-overview": 2, "symbol-block": 1.5, "knowledge-cluster": 1.5 },
     channel_or_partner_integration: { flow: 4, "knowledge-cluster": 2.5, "module-overview": 1.5 },
-    config_or_resource_explanation: { "knowledge-cluster": 2, "eai-link": 1.5, "module-overview": 1 },
+    state_store_schema: { "resource-schema": 4.5, "symbol-block": 2.5, "module-overview": 1.5, "knowledge-cluster": 1 },
+    config_or_resource_explanation: { "resource-schema": 4, "knowledge-cluster": 2, "eai-link": 1.5, "module-overview": 1 },
     symbol_deep_trace: { "symbol-block": 4, "eai-link": 2, flow: 1.5 }
   };
 

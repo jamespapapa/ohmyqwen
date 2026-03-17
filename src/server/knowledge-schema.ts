@@ -241,6 +241,21 @@ function inferProcessRoles(moduleName: string): string[] {
   return [];
 }
 
+function inferActionsFromTexts(...values: Array<string | undefined>): string[] {
+  const text = values.filter(Boolean).join(" ").toLowerCase();
+  const actions = new Set<string>();
+  if (/(login|signin|auth|authenticate|cert|verify)/.test(text)) actions.add("action-auth");
+  if (/(register|regist|signup|join|enroll)/.test(text)) actions.add("action-register");
+  if (/(status|state|info|lookup|select|get|load|read|inquiry|inqury|query)/.test(text)) actions.add("action-read");
+  if (/(save|insert|create|add|persist|write|set)/.test(text)) actions.add("action-write");
+  if (/(update|modify|change|patch)/.test(text)) actions.add("action-update");
+  if (/(delete|remove|clear|expire|evict)/.test(text)) actions.add("action-delete");
+  if (/(callback|webhook|notify|event)/.test(text)) actions.add("action-callback");
+  if (/(session|redis|cache)/.test(text)) actions.add("action-state-store");
+  if (/(token|issue|refresh)/.test(text)) actions.add("action-token");
+  return Array.from(actions);
+}
+
 function normalizeStoreKind(value: string): "redis" | "database" | undefined {
   const normalized = normalizeComparable(value);
   if (normalized.includes("redis")) {
@@ -492,6 +507,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       summary: storeKind === "redis" ? "Redis-backed state/session/cache store" : "Database-backed persistence store",
       metadata: makeMetadata({
         channels: storeKind === "redis" ? ["cache-session"] : [],
+        actions: storeKind === "redis" ? ["action-state-store"] : ["action-write", "action-read"],
         moduleRoles: storeKind === "redis" ? ["state-store"] : ["data-persistence"],
         confidence: 0.86,
         evidencePaths: evidencePath ? [evidencePath] : [],
@@ -521,6 +537,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         ? `${options.label} maps to table ${options.tableName}`
         : `${options.label} database model`,
       metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.label, options.tableName),
         moduleRoles: ["data-model"],
         confidence: 0.78,
         evidencePaths: [options.evidencePath],
@@ -550,6 +567,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       label: normalizedTableName || options.tableName,
       summary: `Database table ${normalizedTableName || options.tableName}`,
       metadata: makeMetadata({
+        actions: inferActionsFromTexts(options.tableName),
         moduleRoles: ["data-persistence"],
         confidence: 0.8,
         evidencePaths: [options.evidencePath],
@@ -596,6 +614,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       summary: `Redis/cache key hint ${options.key}`,
       metadata: makeMetadata({
         channels: ["cache-session"],
+        actions: inferActionsFromTexts(options.key, "redis cache session"),
         moduleRoles: ["state-store"],
         confidence: 0.72,
         evidencePaths: [options.evidencePath],
@@ -622,6 +641,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       label: basenameLabel(normalizedPath),
       summary: entry.summary,
       metadata: makeMetadata({
+        actions: inferActionsFromTexts(normalizedPath, entry.summary),
         moduleRoles: inferModuleRoles(moduleName),
         processRoles: inferProcessRoles(moduleName),
         confidence: 0.72,
@@ -663,6 +683,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         toId: storeId,
         label: `file uses ${storeKind} store`,
         metadata: makeMetadata({
+          actions: inferActionsFromTexts(storeKind, normalizedPath),
           moduleRoles: storeKind === "redis" ? ["state-store"] : ["data-persistence"],
           confidence: 0.82,
           evidencePaths: [normalizedPath],
@@ -690,6 +711,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         toId: tableId,
         label: "file queries database table",
         metadata: makeMetadata({
+          actions: inferActionsFromTexts(tableName, normalizedPath),
           moduleRoles: ["data-persistence"],
           confidence: 0.78,
           evidencePaths: [normalizedPath],
@@ -713,6 +735,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         toId: modelId,
         label: "file defines or uses database model",
         metadata: makeMetadata({
+          actions: inferActionsFromTexts(modelName, dbTableName, normalizedPath),
           moduleRoles: ["data-model"],
           confidence: 0.78,
           evidencePaths: [normalizedPath],
@@ -761,6 +784,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         label: "file uses cache/session key",
         metadata: makeMetadata({
           channels: ["cache-session"],
+          actions: inferActionsFromTexts(redisKey, normalizedPath),
           moduleRoles: ["state-store"],
           confidence: 0.76,
           evidencePaths: [normalizedPath],
@@ -800,6 +824,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         label: classRef.name,
         summary: `${classRef.name} class symbol`,
         metadata: makeMetadata({
+          actions: inferActionsFromTexts(classRef.name, normalizedPath),
           moduleRoles: inferModuleRoles(moduleName),
           processRoles: inferProcessRoles(moduleName),
           confidence: 0.7,
@@ -839,6 +864,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           toId: databaseStoreId,
           label: "class accesses database store",
           metadata: makeMetadata({
+            actions: inferActionsFromTexts(classRef.name, "database"),
             moduleRoles: ["data-persistence"],
             confidence: 0.8,
             evidencePaths: [normalizedPath],
@@ -860,6 +886,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           toId: redisStoreId,
           label: "class accesses redis store",
           metadata: makeMetadata({
+            actions: inferActionsFromTexts(classRef.name, "redis"),
             moduleRoles: ["state-store"],
             confidence: 0.8,
             evidencePaths: [normalizedPath],
@@ -883,6 +910,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         label: methodRef.className ? `${methodRef.className}.${methodRef.name}` : methodRef.name,
         summary: `${methodRef.name} ${methodRef.className ? "method" : "function"} symbol`,
         metadata: makeMetadata({
+          actions: inferActionsFromTexts(methodRef.name, methodRef.className, normalizedPath),
           moduleRoles: inferModuleRoles(moduleName),
           processRoles: inferProcessRoles(moduleName),
           confidence: 0.68,
@@ -940,6 +968,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           label: "method accesses redis/session store",
           metadata: makeMetadata({
             channels: ["cache-session"],
+            actions: inferActionsFromTexts(methodRef.name, ...(resourceHints.redisOps ?? [])),
             moduleRoles: ["state-store"],
             confidence: 0.76,
             evidencePaths: [normalizedPath],

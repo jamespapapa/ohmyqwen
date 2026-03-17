@@ -8,6 +8,7 @@ export const AskQuestionTypeSchema = z.enum([
   "module_role_explanation",
   "process_or_batch_trace",
   "channel_or_partner_integration",
+  "state_store_schema",
   "config_or_resource_explanation",
   "symbol_deep_trace"
 ]);
@@ -34,6 +35,7 @@ export interface AskQuestionTypeContract {
   minEvidenceCount: number;
   requireCodeEvidence: boolean;
   requireCodeBodyEvidence: boolean;
+  requireResourceSchemaDetail?: boolean;
   requireRoleDetail?: boolean;
   requireProcessDetail?: boolean;
   requireChannelDetail?: boolean;
@@ -44,7 +46,7 @@ export interface AskQuestionTypeContract {
 
 export interface AskQuestionTypeRetrievalContract {
   preferredMemoryFiles: string[];
-  preferredUnitTypes: Array<"symbol-block" | "module-overview" | "flow" | "knowledge-cluster" | "eai-link">;
+  preferredUnitTypes: Array<"symbol-block" | "module-overview" | "flow" | "knowledge-cluster" | "eai-link" | "resource-schema">;
   queryHints: string[];
 }
 
@@ -98,6 +100,15 @@ function looksLikeConfigQuestion(question: string): boolean {
   return /(xml|yml|yaml|config|설정|resource|리소스|properties|menu|applicationcontext|인터페이스 설정)/i.test(question);
 }
 
+function looksLikeStateStoreQuestion(question: string, signals: string[]): boolean {
+  return (
+    /(redis|세션|session|cache|ttl|만료|serializer|직렬화|payload|field|필드|key|키|db\s|database|데이터베이스|table|테이블|entity|엔티티|model|모델|repository|mapper|dao|어떤 값|무슨 값|저장되|저장되는|저장돼|저장하)/i.test(
+      question
+    ) ||
+    signals.some((signal) => /(?:redis|session|cache|store|table|entity|model|repository|mapper|dao|state-store|data-persistence)/i.test(signal))
+  );
+}
+
 function looksLikeBroadOverview(question: string): boolean {
   return /(관련 로직|전반|전체|어떻게 구현|구현되어 있는지|구성|개요|구조|아키텍처|큰 그림|전반적으로|전체적으로)/i.test(
     question
@@ -123,6 +134,15 @@ export function classifyAskQuestionType(options: {
       confidence: 0.95,
       reason: "explicit frontend/backend or screen/API/controller flow question",
       signals: unique(["cross-layer", ...signals])
+    };
+  }
+
+  if (looksLikeStateStoreQuestion(question, signals)) {
+    return {
+      type: "state_store_schema",
+      confidence: 0.87,
+      reason: "state-store / persistence schema keywords detected",
+      signals: unique(["state-store-schema", ...signals])
     };
   }
 
@@ -235,6 +255,13 @@ export function getAskQuestionTypeContract(type: AskQuestionType): AskQuestionTy
         requireCodeBodyEvidence: true,
         requireChannelDetail: true
       };
+    case "state_store_schema":
+      return {
+        minEvidenceCount: 2,
+        requireCodeEvidence: true,
+        requireCodeBodyEvidence: true,
+        requireResourceSchemaDetail: true
+      };
     case "business_capability_trace":
       return {
         minEvidenceCount: 2,
@@ -333,6 +360,19 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
         preferredUnitTypes: ["flow", "knowledge-cluster", "module-overview"],
         queryHints: ["channel", "partner", "bridge", "callback", "webhook", "integration"]
       };
+    case "state_store_schema":
+      return {
+        preferredMemoryFiles: [
+          "ontology-graph/latest.md",
+          "ontology-projections/latest.md",
+          "ontology-review/latest.md",
+          "retrieval-units/latest.md",
+          "structure-index/latest.md",
+          "project-analysis/latest.md"
+        ],
+        preferredUnitTypes: ["resource-schema", "symbol-block", "module-overview", "knowledge-cluster"],
+        queryHints: ["redis", "session", "cache", "key", "field", "ttl", "serializer", "entity", "table", "repository", "mapper", "dao"]
+      };
     case "business_capability_trace":
       return {
         preferredMemoryFiles: [
@@ -357,8 +397,8 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
           "eai-dictionary/latest.md",
           "structure-index/latest.md"
         ],
-        preferredUnitTypes: ["knowledge-cluster", "eai-link", "module-overview"],
-        queryHints: ["xml", "config", "resource", "properties", "applicationcontext"]
+        preferredUnitTypes: ["resource-schema", "knowledge-cluster", "eai-link", "module-overview"],
+        queryHints: ["xml", "config", "resource", "properties", "applicationcontext", "table", "entity", "model", "cache", "session"]
       };
     case "domain_capability_overview":
       return {

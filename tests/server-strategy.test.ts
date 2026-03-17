@@ -20,4 +20,17 @@ describe("server ask strategy normalization", () => {
     expect(normalizeAskStrategyForQuestion(question, "architecture_overview")).toBe("cross_layer_flow");
     expect(normalizeAskStrategyForQuestion(question, "cross_layer_flow")).toBe("cross_layer_flow");
   });
+
+  it("normalizes storage/schema questions to config_resource", () => {
+    const question = "redis 세션 정보는 어떤 값들이 저장되는지 확인해줘.";
+
+    expect(normalizeAskStrategyForQuestion(question, "method_trace")).toBe("config_resource");
+    expect(normalizeAskStrategyForQuestion(question, "general")).toBe("config_resource");
+  });
+
+  it("normalizes channel integration questions away from raw method_trace", () => {
+    const question = "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.";
+
+    expect(normalizeAskStrategyForQuestion(question, "method_trace")).toBe("module_flow_topdown");
+  });
 });

@@ -106,6 +106,8 @@ function preferredNodeTypes(questionType: AskQuestionType): string[] {
       return ["service", "path", "knowledge-input", "retrieval-unit", "module"];
     case "channel_or_partner_integration":
       return ["route", "api", "controller", "service", "knowledge-cluster", "knowledge-input", "retrieval-unit"];
+    case "state_store_schema":
+      return ["data-store", "data-model", "data-table", "cache-key", "service", "symbol", "knowledge-input", "retrieval-unit", "file"];
     case "config_or_resource_explanation":
       return ["knowledge-input", "knowledge-cluster", "file", "eai-interface", "data-store", "data-model", "data-table", "cache-key", "service", "symbol"];
     case "business_capability_trace":
@@ -121,6 +123,8 @@ function preferredProjectionTypes(questionType: AskQuestionType): string[] {
       return ["front-back-flow", "integration", "knowledge-lifecycle"];
     case "channel_or_partner_integration":
       return ["integration", "front-back-flow", "knowledge-lifecycle"];
+    case "state_store_schema":
+      return ["code-structure", "integration", "knowledge-lifecycle"];
     case "module_role_explanation":
       return ["code-structure", "knowledge-lifecycle"];
     case "process_or_batch_trace":

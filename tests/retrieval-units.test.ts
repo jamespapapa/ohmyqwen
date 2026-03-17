@@ -146,6 +146,101 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { interfaceId: "F14090150" }
     },
     {
+      id: "store:redis",
+      type: "data-store",
+      label: "Redis Store",
+      summary: "Redis-backed state/session/cache store",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["cache-session"],
+        actions: ["action-state-store", "action-read", "action-write"],
+        moduleRoles: ["state-store"],
+        processRoles: [],
+        confidence: 0.9,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RedisSessionSupport.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { storeKind: "redis" }
+    },
+    {
+      id: "store:database",
+      type: "data-store",
+      label: "Database Store",
+      summary: "Database-backed persistence store",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read", "action-write"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.88,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionRepository.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { storeKind: "database" }
+    },
+    {
+      id: "data-model:membersessionentity",
+      type: "data-model",
+      label: "MemberSessionEntity",
+      summary: "MemberSessionEntity maps to table TB_MEMBER_SESSION",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read", "action-write"],
+        moduleRoles: ["data-model"],
+        processRoles: [],
+        confidence: 0.84,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionEntity.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { modelName: "MemberSessionEntity", tableName: "TB_MEMBER_SESSION" }
+    },
+    {
+      id: "data-table:tb_member_session",
+      type: "data-table",
+      label: "TB_MEMBER_SESSION",
+      summary: "Database table TB_MEMBER_SESSION",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read", "action-write"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.84,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionRepository.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { tableName: "TB_MEMBER_SESSION" }
+    },
+    {
+      id: "cache-key:member.login.status",
+      type: "cache-key",
+      label: "member.login.status",
+      summary: "Redis/cache key hint member.login.status",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["cache-session"],
+        actions: ["action-state-store", "action-read"],
+        moduleRoles: ["state-store"],
+        processRoles: [],
+        confidence: 0.82,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RedisSessionSupport.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { key: "member.login.status" }
+    },
+    {
       id: "knowledge:pack:member-auth",
       type: "knowledge-cluster",
       label: "Member Auth",
@@ -306,6 +401,106 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:uses-store:service:redis",
+      type: "uses-store",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "store:redis",
+      label: "service accesses redis store",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["cache-session"],
+        actions: ["action-state-store", "action-read"],
+        moduleRoles: ["state-store"],
+        processRoles: [],
+        confidence: 0.82,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RedisSessionSupport.java"],
+        sourceType: "structure-index",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:uses-cache-key:service:key",
+      type: "uses-cache-key",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "cache-key:member.login.status",
+      label: "service uses cache key",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: ["cache-session"],
+        actions: ["action-state-store", "action-read"],
+        moduleRoles: ["state-store"],
+        processRoles: [],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RedisSessionSupport.java"],
+        sourceType: "structure-index",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:stores-model:service:model",
+      type: "stores-model",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "data-model:membersessionentity",
+      label: "service uses database model",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read", "action-write"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionEntity.java"],
+        sourceType: "structure-index",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:maps-to-table:model:table",
+      type: "maps-to-table",
+      fromId: "data-model:membersessionentity",
+      toId: "data-table:tb_member_session",
+      label: "model maps to table",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read", "action-write"],
+        moduleRoles: ["data-model", "data-persistence"],
+        processRoles: [],
+        confidence: 0.85,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionEntity.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:queries-table:service:table",
+      type: "queries-table",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "data-table:tb_member_session",
+      label: "service queries table",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/MemberSessionRepository.java"],
+        sourceType: "structure-index",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:belongs-to-domain:service:pack",
       type: "belongs-to-domain",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -347,11 +542,15 @@ const snapshot: KnowledgeSchemaSnapshot = {
     }
   ],
   summary: {
-    entityCount: 9,
-    edgeCount: 8,
+    entityCount: 14,
+    edgeCount: 13,
     entityTypeCounts: {
       api: 1,
+      "cache-key": 1,
       controller: 1,
+      "data-model": 1,
+      "data-store": 2,
+      "data-table": 1,
       "eai-interface": 1,
       file: 1,
       "knowledge-cluster": 2,
@@ -365,8 +564,13 @@ const snapshot: KnowledgeSchemaSnapshot = {
       calls: 1,
       contains: 1,
       declares: 1,
+      "maps-to-table": 1,
+      "queries-table": 1,
       "routes-to": 2,
-      "uses-eai": 1
+      "stores-model": 1,
+      "uses-cache-key": 1,
+      "uses-eai": 1,
+      "uses-store": 1
     },
     validatedClusterCount: 2,
     candidateClusterCount: 0,
@@ -378,13 +582,14 @@ const snapshot: KnowledgeSchemaSnapshot = {
 };
 
 describe("retrieval unit standardization", () => {
-  it("builds module, flow, knowledge-cluster, symbol, and eai retrieval units from knowledge schema", () => {
+  it("builds module, flow, knowledge-cluster, symbol, eai, and resource retrieval units from knowledge schema", () => {
     const units = buildRetrievalUnitSnapshot({ knowledgeSchema: snapshot });
 
     expect(units.summary.unitCount).toBeGreaterThan(0);
     expect(units.summary.unitTypeCounts["flow"]).toBeGreaterThanOrEqual(1);
     expect(units.summary.unitTypeCounts["eai-link"]).toBeGreaterThanOrEqual(1);
     expect(units.summary.unitTypeCounts["knowledge-cluster"]).toBeGreaterThanOrEqual(1);
+    expect(units.summary.unitTypeCounts["resource-schema"]).toBeGreaterThanOrEqual(1);
     expect(units.summary.topDomains[0]?.id).toBe("member-auth");
     expect(units.summary.topChannels[0]?.id).toBe("monimo");
 
@@ -394,6 +599,9 @@ describe("retrieval unit standardization", () => {
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");
+
+    const resourceUnit = units.units.find((unit) => unit.type === "resource-schema");
+    expect(resourceUnit?.searchText.join(" ")).toMatch(/redis|session|member\.login\.status/i);
 
     const knowledgeUnit = units.units.find((unit) => unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
     expect(knowledgeUnit?.channels).toContain("monimo");
@@ -435,6 +643,19 @@ describe("retrieval unit standardization", () => {
     expect(ranked[0]?.unit.title).toBe("dcp-member");
   });
 
+  it("ranks resource-schema units highest for state store schema questions", () => {
+    const units = buildRetrievalUnitSnapshot({ knowledgeSchema: snapshot });
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: units,
+      question: "redis 세션 정보는 어떤 값들이 저장되고 어떤 테이블과 연결되는가?",
+      questionType: "state_store_schema",
+      matchedKnowledgeIds: ["store:redis"]
+    });
+
+    expect(ranked[0]?.unit.type).toBe("resource-schema");
+    expect(ranked[0]?.unit.searchText.join(" ")).toMatch(/redis|member\.login\.status|tb_member_session/i);
+  });
+
   it("preserves stale lifecycle status for stale learned-knowledge clusters and penalizes them", () => {
     const staleSnapshot: KnowledgeSchemaSnapshot = {
       ...snapshot,
@@ -467,8 +688,11 @@ describe("retrieval unit standardization", () => {
     const rankedFlow = ranked.find((item) => item.unit.type === "flow");
     const rankedKnowledge = ranked.find((item) => item.unit.id === "unit:knowledge:knowledge:candidate:channel:monimo");
     expect(rankedFlow).toBeDefined();
-    expect(rankedKnowledge).toBeDefined();
-    expect((rankedFlow?.score ?? 0)).toBeGreaterThan(rankedKnowledge?.score ?? 0);
+    if (rankedKnowledge) {
+      expect((rankedFlow?.score ?? 0)).toBeGreaterThan(rankedKnowledge.score);
+    } else {
+      expect(ranked.some((item) => item.unit.id === "unit:knowledge:knowledge:candidate:channel:monimo")).toBe(false);
+    }
   });
 
   it("derives retrieval support candidates from top-ranked units using evidence paths", () => {

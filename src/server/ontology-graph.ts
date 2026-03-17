@@ -304,6 +304,8 @@ function retrievalUnitTypePriority(unitType: string): number {
   switch (unitType) {
     case "flow":
       return 120;
+    case "resource-schema":
+      return 112;
     case "module-overview":
     case "eai-link":
       return 105;
