@@ -1481,6 +1481,66 @@ export default function HomePage() {
     }
   }
 
+  const ontologyInputPanel = selectedProjectId ? (
+    <>
+      <div className="label" style={{ marginTop: 8 }}>Ontology Input</div>
+      <div className="report-box" style={{ marginTop: 8 }}>
+        <div className="report-row">
+          <span>Kind</span>
+          <span>
+            <select value={ontologyInputKind} onChange={(e) => setOntologyInputKind(e.target.value)}>
+              <option value="note">note</option>
+              <option value="structured">structured</option>
+              <option value="csv">csv</option>
+            </select>
+          </span>
+        </div>
+        <div className="report-row">
+          <span>Scope</span>
+          <span>
+            <select value={ontologyInputScope} onChange={(e) => setOntologyInputScope(e.target.value)}>
+              {["general", "domain", "subdomain", "channel", "action", "module-role", "process-role", "boundary", "path"].map((scope) => (
+                <option key={scope} value={scope}>{scope}</option>
+              ))}
+            </select>
+          </span>
+        </div>
+        <div className="label" style={{ marginTop: 8 }}>Title</div>
+        <input value={ontologyInputTitle} onChange={(e) => setOntologyInputTitle(e.target.value)} placeholder="예: 모니모 회원인증" />
+        <div className="label" style={{ marginTop: 8 }}>Message</div>
+        <textarea rows={3} value={ontologyInputMessage} onChange={(e) => setOntologyInputMessage(e.target.value)} placeholder="자유 메모 / 설명" />
+        <div className="label" style={{ marginTop: 8 }}>Tags (one per line)</div>
+        <textarea rows={3} value={ontologyInputTagsText} onChange={(e) => setOntologyInputTagsText(e.target.value)} placeholder={"channel:monimo\ndomain:member-auth\naction:register"} />
+        <div className="label" style={{ marginTop: 8 }}>Positive Examples</div>
+        <textarea rows={2} value={ontologyInputPositiveText} onChange={(e) => setOntologyInputPositiveText(e.target.value)} placeholder={"/monimo/registe\nEmbededMemberLoginController"} />
+        <div className="label" style={{ marginTop: 8 }}>Negative Examples / Boundary Notes</div>
+        <textarea rows={2} value={ontologyInputNegativeText} onChange={(e) => setOntologyInputNegativeText(e.target.value)} placeholder="관련 없는 예시" />
+        <textarea rows={2} value={ontologyInputBoundaryText} onChange={(e) => setOntologyInputBoundaryText(e.target.value)} placeholder="경계/제외 규칙" style={{ marginTop: 8 }} />
+        <div className="label" style={{ marginTop: 8 }}>Related Node IDs</div>
+        <textarea rows={2} value={ontologyInputNodeIdsText} onChange={(e) => setOntologyInputNodeIdsText(e.target.value)} placeholder="controller:RegisteUseDcpChnelController.registe" />
+        <div className="label" style={{ marginTop: 8 }}>Related Edge IDs</div>
+        <textarea rows={2} value={ontologyInputEdgeIdsText} onChange={(e) => setOntologyInputEdgeIdsText(e.target.value)} placeholder="edge:route-api" />
+        <div className="label" style={{ marginTop: 8 }}>Related Path IDs / Knowledge IDs</div>
+        <textarea rows={2} value={ontologyInputPathIdsText} onChange={(e) => setOntologyInputPathIdsText(e.target.value)} placeholder="path ids" />
+        <textarea rows={2} value={ontologyInputKnowledgeIdsText} onChange={(e) => setOntologyInputKnowledgeIdsText(e.target.value)} placeholder="knowledge ids" style={{ marginTop: 8 }} />
+        {ontologyInputKind === "csv" ? (
+          <>
+            <div className="label" style={{ marginTop: 8 }}>CSV Text</div>
+            <textarea rows={6} value={ontologyInputCsvText} onChange={(e) => setOntologyInputCsvText(e.target.value)} placeholder={"screen,api\nMDP-MYCER999999M,/monimo/registe"} />
+          </>
+        ) : null}
+        <div className="label" style={{ marginTop: 8 }}>Notes</div>
+        <textarea rows={2} value={ontologyInputNotes} onChange={(e) => setOntologyInputNotes(e.target.value)} placeholder="추가 메모" />
+        <div className="toolbar" style={{ marginTop: 8 }}>
+          <button type="button" className="secondary" onClick={onSubmitOntologyInput} disabled={!selectedProjectId || ontologyInputLoading}>
+            {ontologyInputLoading ? "저장 중" : "온톨로지 입력 저장"}
+          </button>
+        </div>
+        {ontologyInputMessageText ? <div className="hint" style={{ marginTop: 8 }}>{ontologyInputMessageText}</div> : null}
+      </div>
+    </>
+  ) : null;
+
   return (
     <main className="page">
       <div className="wrap">
@@ -2079,7 +2139,7 @@ export default function HomePage() {
                     <span>온톨로지 그래프</span>
                     <span>
                       {analysisResult.ontologyGraph
-                        ? `nodes=${analysisResult.ontologyGraph.nodeCount}, edges=${analysisResult.ontologyGraph.edgeCount}, feedback=${analysisResult.ontologyGraph.feedbackNodeCount}`
+                        ? `nodes=${analysisResult.ontologyGraph.nodeCount}, edges=${analysisResult.ontologyGraph.edgeCount}, feedback=${analysisResult.ontologyGraph.feedbackNodeCount}${analysisResult.ontologyGraph.truncated ? " · compact" : ""}`
                         : "-"}
                     </span>
                   </div>
@@ -2087,7 +2147,7 @@ export default function HomePage() {
                     <span>온톨로지 프로젝션</span>
                     <span>
                       {analysisResult.ontologyProjections
-                        ? `count=${analysisResult.ontologyProjections.projectionCount}, paths=${analysisResult.ontologyProjections.totalRepresentativePathCount}, largest=${analysisResult.ontologyProjections.largestProjectionType || "-"}`
+                        ? `count=${analysisResult.ontologyProjections.projectionCount}, paths=${analysisResult.ontologyProjections.totalRepresentativePathCount}, largest=${analysisResult.ontologyProjections.largestProjectionType || "-"}${analysisResult.ontologyProjections.truncated ? " · compact" : ""}`
                         : "-"}
                     </span>
                   </div>
@@ -2372,61 +2432,7 @@ export default function HomePage() {
                   </>
                 ) : null}
 
-                <div className="label" style={{ marginTop: 8 }}>Ontology Input</div>
-                <div className="report-box" style={{ marginTop: 8 }}>
-                  <div className="report-row">
-                    <span>Kind</span>
-                    <span>
-                      <select value={ontologyInputKind} onChange={(e) => setOntologyInputKind(e.target.value)}>
-                        <option value="note">note</option>
-                        <option value="structured">structured</option>
-                        <option value="csv">csv</option>
-                      </select>
-                    </span>
-                  </div>
-                  <div className="report-row">
-                    <span>Scope</span>
-                    <span>
-                      <select value={ontologyInputScope} onChange={(e) => setOntologyInputScope(e.target.value)}>
-                        {["general", "domain", "subdomain", "channel", "action", "module-role", "process-role", "boundary", "path"].map((scope) => (
-                          <option key={scope} value={scope}>{scope}</option>
-                        ))}
-                      </select>
-                    </span>
-                  </div>
-                  <div className="label" style={{ marginTop: 8 }}>Title</div>
-                  <input value={ontologyInputTitle} onChange={(e) => setOntologyInputTitle(e.target.value)} placeholder="예: 모니모 회원인증" />
-                  <div className="label" style={{ marginTop: 8 }}>Message</div>
-                  <textarea rows={3} value={ontologyInputMessage} onChange={(e) => setOntologyInputMessage(e.target.value)} placeholder="자유 메모 / 설명" />
-                  <div className="label" style={{ marginTop: 8 }}>Tags (one per line)</div>
-                  <textarea rows={3} value={ontologyInputTagsText} onChange={(e) => setOntologyInputTagsText(e.target.value)} placeholder={"channel:monimo\ndomain:member-auth\naction:register"} />
-                  <div className="label" style={{ marginTop: 8 }}>Positive Examples</div>
-                  <textarea rows={2} value={ontologyInputPositiveText} onChange={(e) => setOntologyInputPositiveText(e.target.value)} placeholder={"/monimo/registe\nEmbededMemberLoginController"} />
-                  <div className="label" style={{ marginTop: 8 }}>Negative Examples / Boundary Notes</div>
-                  <textarea rows={2} value={ontologyInputNegativeText} onChange={(e) => setOntologyInputNegativeText(e.target.value)} placeholder="관련 없는 예시" />
-                  <textarea rows={2} value={ontologyInputBoundaryText} onChange={(e) => setOntologyInputBoundaryText(e.target.value)} placeholder="경계/제외 규칙" style={{ marginTop: 8 }} />
-                  <div className="label" style={{ marginTop: 8 }}>Related Node IDs</div>
-                  <textarea rows={2} value={ontologyInputNodeIdsText} onChange={(e) => setOntologyInputNodeIdsText(e.target.value)} placeholder="controller:RegisteUseDcpChnelController.registe" />
-                  <div className="label" style={{ marginTop: 8 }}>Related Edge IDs</div>
-                  <textarea rows={2} value={ontologyInputEdgeIdsText} onChange={(e) => setOntologyInputEdgeIdsText(e.target.value)} placeholder="edge:route-api" />
-                  <div className="label" style={{ marginTop: 8 }}>Related Path IDs / Knowledge IDs</div>
-                  <textarea rows={2} value={ontologyInputPathIdsText} onChange={(e) => setOntologyInputPathIdsText(e.target.value)} placeholder="path ids" />
-                  <textarea rows={2} value={ontologyInputKnowledgeIdsText} onChange={(e) => setOntologyInputKnowledgeIdsText(e.target.value)} placeholder="knowledge ids" style={{ marginTop: 8 }} />
-                  {ontologyInputKind === "csv" ? (
-                    <>
-                      <div className="label" style={{ marginTop: 8 }}>CSV Text</div>
-                      <textarea rows={6} value={ontologyInputCsvText} onChange={(e) => setOntologyInputCsvText(e.target.value)} placeholder={"screen,api\nMDP-MYCER999999M,/monimo/registe"} />
-                    </>
-                  ) : null}
-                  <div className="label" style={{ marginTop: 8 }}>Notes</div>
-                  <textarea rows={2} value={ontologyInputNotes} onChange={(e) => setOntologyInputNotes(e.target.value)} placeholder="추가 메모" />
-                  <div className="toolbar" style={{ marginTop: 8 }}>
-                    <button type="button" className="secondary" onClick={onSubmitOntologyInput} disabled={!selectedProjectId || ontologyInputLoading}>
-                      {ontologyInputLoading ? "저장 중" : "온톨로지 입력 저장"}
-                    </button>
-                  </div>
-                  {ontologyInputMessageText ? <div className="hint" style={{ marginTop: 8 }}>{ontologyInputMessageText}</div> : null}
-                </div>
+                {ontologyInputPanel}
 
                 {(analysisResult.evaluationTrends?.topQuestionTypes || []).length > 0 ? (
                   <>
@@ -2471,6 +2477,8 @@ export default function HomePage() {
                 ) : null}
               </div>
             ) : null}
+
+            {!analysisResult ? ontologyInputPanel : null}
 
             <div className="label" style={{ marginTop: 10 }}>프로젝트 Q&A</div>
             {projectBusy && latestDebugEvent ? (

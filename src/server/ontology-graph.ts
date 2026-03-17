@@ -113,6 +113,8 @@ const OntologyEdgeSchema = z.object({
 const OntologyGraphSummarySchema = z.object({
   nodeCount: z.number().int().min(0),
   edgeCount: z.number().int().min(0),
+  truncated: z.boolean().default(false),
+  appliedLimits: z.array(z.string().min(1)).default([]),
   nodeTypeCounts: z.record(z.string(), z.number().int().min(0)),
   edgeTypeCounts: z.record(z.string(), z.number().int().min(0)),
   feedbackNodeCount: z.number().int().min(0),
@@ -139,6 +141,19 @@ export const OntologyGraphSnapshotSchema = z.object({
 export type OntologyNode = z.infer<typeof OntologyNodeSchema>;
 export type OntologyEdge = z.infer<typeof OntologyEdgeSchema>;
 export type OntologyGraphSnapshot = z.infer<typeof OntologyGraphSnapshotSchema>;
+
+export interface OntologyGraphBuildLimits {
+  maxKnowledgeEntities?: number;
+  maxKnowledgeEdges?: number;
+  maxRetrievalUnits?: number;
+  maxUnitEntityRefs?: number;
+  maxUnitEdgeRefs?: number;
+  maxOntologyInputs?: number;
+  maxOntologyInputRowsPerArtifact?: number;
+  maxFeedbackArtifacts?: number;
+  maxReplayCandidates?: number;
+  maxReviewRecords?: number;
+}
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
@@ -224,6 +239,135 @@ function feedbackStatus(verdict: ProjectFeedbackArtifact["verdict"]): z.infer<ty
   return "candidate";
 }
 
+function knowledgeEntityPriority(entity: KnowledgeEntity): number {
+  switch (entity.type) {
+    case "module":
+      return 120;
+    case "route":
+    case "api":
+    case "controller":
+    case "service":
+    case "eai-interface":
+    case "knowledge-cluster":
+      return 110;
+    case "file":
+      return 70;
+    case "symbol":
+      return 55;
+  }
+}
+
+function knowledgeEdgePriority(edge: KnowledgeEdge): number {
+  switch (edge.type) {
+    case "routes-to":
+    case "calls":
+    case "uses-eai":
+      return 120;
+    case "maps-to":
+    case "supports-module-role":
+      return 105;
+    case "contains":
+    case "declares":
+    case "depends-on":
+      return 70;
+    case "belongs-to-domain":
+    case "belongs-to-channel":
+    case "belongs-to-process":
+      return 60;
+  }
+}
+
+function retrievalUnitTypePriority(unitType: string): number {
+  switch (unitType) {
+    case "flow":
+      return 120;
+    case "module-overview":
+    case "eai-link":
+      return 105;
+    case "knowledge-cluster":
+      return 95;
+    case "symbol-block":
+      return 80;
+    default:
+      return 50;
+  }
+}
+
+function statusPriority(status: z.infer<typeof OntologyValidatedStatusSchema> | string): number {
+  switch (status) {
+    case "validated":
+      return 120;
+    case "derived":
+      return 95;
+    case "candidate":
+      return 80;
+    case "stale":
+      return 40;
+    case "contested":
+      return 30;
+    case "deprecated":
+      return 10;
+    default:
+      return 50;
+  }
+}
+
+function selectKnowledgeEntities(entities: KnowledgeSchemaSnapshot["entities"], maxEntities?: number): KnowledgeSchemaSnapshot["entities"] {
+  if (!maxEntities || entities.length <= maxEntities) {
+    return entities;
+  }
+  return [...entities]
+    .sort((a, b) => {
+      const priorityDiff = knowledgeEntityPriority(b) - knowledgeEntityPriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const statusDiff = statusPriority(b.metadata.validatedStatus) - statusPriority(a.metadata.validatedStatus);
+      if (statusDiff !== 0) return statusDiff;
+      const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    })
+    .slice(0, maxEntities);
+}
+
+function selectKnowledgeEdges(
+  edges: KnowledgeSchemaSnapshot["edges"],
+  selectedNodeIds: Set<string>,
+  maxEdges?: number
+): KnowledgeSchemaSnapshot["edges"] {
+  const filtered = edges.filter((edge) => selectedNodeIds.has(edge.fromId) && selectedNodeIds.has(edge.toId));
+  if (!maxEdges || filtered.length <= maxEdges) {
+    return filtered;
+  }
+  return [...filtered]
+    .sort((a, b) => {
+      const priorityDiff = knowledgeEdgePriority(b) - knowledgeEdgePriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const statusDiff = statusPriority(b.metadata.validatedStatus) - statusPriority(a.metadata.validatedStatus);
+      if (statusDiff !== 0) return statusDiff;
+      const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    })
+    .slice(0, maxEdges);
+}
+
+function selectRetrievalUnits(units: RetrievalUnitSnapshot["units"], maxUnits?: number): RetrievalUnitSnapshot["units"] {
+  if (!maxUnits || units.length <= maxUnits) {
+    return units;
+  }
+  return [...units]
+    .sort((a, b) => {
+      const typeDiff = retrievalUnitTypePriority(b.type) - retrievalUnitTypePriority(a.type);
+      if (typeDiff !== 0) return typeDiff;
+      const statusDiff = statusPriority(b.validatedStatus) - statusPriority(a.validatedStatus);
+      if (statusDiff !== 0) return statusDiff;
+      const confidenceDiff = b.confidence - a.confidence;
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    })
+    .slice(0, maxUnits);
+}
+
 function resolveFeedbackTargetNodeId(target: ProjectFeedbackArtifact["targets"][number], nodeIds: Set<string>, clusterNodes: OntologyNode[]): string | undefined {
   if (["node", "retrieval-unit", "knowledge"].includes(target.kind) && target.id && nodeIds.has(target.id)) {
     return target.id;
@@ -249,6 +393,7 @@ export function buildOntologyGraphSnapshot(options: {
   feedbackArtifacts?: ProjectFeedbackArtifact[];
   evaluationReplay?: EvaluationReplaySnapshot;
   evaluationPromotions?: EvaluationPromotionSnapshot;
+  limits?: OntologyGraphBuildLimits;
 }): OntologyGraphSnapshot {
   const knowledgeSchema = KnowledgeSchemaSnapshotSchema.parse(options.knowledgeSchema);
   const retrievalUnits = options.retrievalUnits ? RetrievalUnitSnapshotSchema.parse(options.retrievalUnits) : undefined;
@@ -265,6 +410,50 @@ export function buildOntologyGraphSnapshot(options: {
   const evaluationPromotions = options.evaluationPromotions
     ? EvaluationPromotionSnapshotSchema.parse(options.evaluationPromotions)
     : undefined;
+  const limits = options.limits ?? {};
+  const appliedLimits: string[] = [];
+
+  const selectedKnowledgeEntities = selectKnowledgeEntities(
+    knowledgeSchema.entities,
+    limits.maxKnowledgeEntities
+  );
+  if ((limits.maxKnowledgeEntities ?? 0) > 0 && selectedKnowledgeEntities.length < knowledgeSchema.entities.length) {
+    appliedLimits.push(`knowledge-entities:${selectedKnowledgeEntities.length}/${knowledgeSchema.entities.length}`);
+  }
+  const selectedEntityIds = new Set(selectedKnowledgeEntities.map((entity) => entity.id));
+  const selectedKnowledgeEdges = selectKnowledgeEdges(
+    knowledgeSchema.edges,
+    selectedEntityIds,
+    limits.maxKnowledgeEdges
+  );
+  if ((limits.maxKnowledgeEdges ?? 0) > 0 && selectedKnowledgeEdges.length < knowledgeSchema.edges.length) {
+    appliedLimits.push(`knowledge-edges:${selectedKnowledgeEdges.length}/${knowledgeSchema.edges.length}`);
+  }
+  const selectedRetrievalUnits = retrievalUnits
+    ? selectRetrievalUnits(retrievalUnits.units, limits.maxRetrievalUnits)
+    : [];
+  if (retrievalUnits && (limits.maxRetrievalUnits ?? 0) > 0 && selectedRetrievalUnits.length < retrievalUnits.units.length) {
+    appliedLimits.push(`retrieval-units:${selectedRetrievalUnits.length}/${retrievalUnits.units.length}`);
+  }
+  const selectedOntologyInputs = ontologyInputs?.recentInputs.slice(0, limits.maxOntologyInputs ?? ontologyInputs.recentInputs.length) ?? [];
+  if (ontologyInputs && (limits.maxOntologyInputs ?? 0) > 0 && selectedOntologyInputs.length < ontologyInputs.recentInputs.length) {
+    appliedLimits.push(`ontology-inputs:${selectedOntologyInputs.length}/${ontologyInputs.recentInputs.length}`);
+  }
+  const selectedFeedbackArtifacts = feedbackArtifacts.slice(0, limits.maxFeedbackArtifacts ?? feedbackArtifacts.length);
+  if ((limits.maxFeedbackArtifacts ?? 0) > 0 && selectedFeedbackArtifacts.length < feedbackArtifacts.length) {
+    appliedLimits.push(`feedback-artifacts:${selectedFeedbackArtifacts.length}/${feedbackArtifacts.length}`);
+  }
+  const selectedReplayCandidates = evaluationReplay?.replayCandidates.slice(
+    0,
+    limits.maxReplayCandidates ?? evaluationReplay.replayCandidates.length
+  ) ?? [];
+  if (evaluationReplay && (limits.maxReplayCandidates ?? 0) > 0 && selectedReplayCandidates.length < evaluationReplay.replayCandidates.length) {
+    appliedLimits.push(`replay-candidates:${selectedReplayCandidates.length}/${evaluationReplay.replayCandidates.length}`);
+  }
+  const selectedReviewRecords = ontologyReview?.records.slice(0, limits.maxReviewRecords ?? ontologyReview.records.length) ?? [];
+  if (ontologyReview && (limits.maxReviewRecords ?? 0) > 0 && selectedReviewRecords.length < ontologyReview.records.length) {
+    appliedLimits.push(`review-records:${selectedReviewRecords.length}/${ontologyReview.records.length}`);
+  }
 
   const nodes = new Map<string, OntologyNode>();
   const edges = new Map<string, OntologyEdge>();
@@ -277,7 +466,7 @@ export function buildOntologyGraphSnapshot(options: {
     edges.set(`${parsed.type}:${parsed.fromId}:${parsed.toId}`, parsed);
   };
 
-  for (const entity of knowledgeSchema.entities) {
+  for (const entity of selectedKnowledgeEntities) {
     upsertNode({
       id: entity.id,
       type: entity.type,
@@ -293,7 +482,7 @@ export function buildOntologyGraphSnapshot(options: {
       }
     });
   }
-  for (const edge of knowledgeSchema.edges) {
+  for (const edge of selectedKnowledgeEdges) {
     upsertEdge({
       id: edge.id,
       type: edge.type,
@@ -308,8 +497,10 @@ export function buildOntologyGraphSnapshot(options: {
     });
   }
 
+  const selectedKnowledgeEdgeMap = new Map(selectedKnowledgeEdges.map((edge) => [edge.id, edge]));
+
   if (retrievalUnits) {
-    for (const unit of retrievalUnits.units) {
+    for (const unit of selectedRetrievalUnits) {
       const unitNodeId = `retrieval-unit:${unit.id}`;
       upsertNode({
         id: unitNodeId,
@@ -336,7 +527,7 @@ export function buildOntologyGraphSnapshot(options: {
           edgeIds: unit.edgeIds
         }
       });
-      for (const entityId of unit.entityIds) {
+      for (const entityId of unit.entityIds.slice(0, limits.maxUnitEntityRefs ?? unit.entityIds.length)) {
         if (!nodes.has(entityId)) continue;
         upsertEdge({
           id: `edge:references-entity:${unitNodeId}:${entityId}`,
@@ -359,8 +550,8 @@ export function buildOntologyGraphSnapshot(options: {
           attributes: { unitType: unit.type }
         });
       }
-      for (const edgeId of unit.edgeIds) {
-        const knowledgeEdge = knowledgeSchema.edges.find((candidate) => candidate.id === edgeId);
+      for (const edgeId of unit.edgeIds.slice(0, limits.maxUnitEdgeRefs ?? unit.edgeIds.length)) {
+        const knowledgeEdge = selectedKnowledgeEdgeMap.get(edgeId);
         if (!knowledgeEdge) continue;
         const targetNodeId = `${knowledgeEdge.fromId}->${knowledgeEdge.toId}:${knowledgeEdge.type}`;
         upsertNode({
@@ -404,7 +595,7 @@ export function buildOntologyGraphSnapshot(options: {
   }
 
   if (ontologyInputs) {
-    for (const artifact of ontologyInputs.recentInputs) {
+    for (const artifact of selectedOntologyInputs) {
       const semantic = deriveOntologyInputMetadata(artifact);
       const inputNodeId = artifact.id;
       upsertNode({
@@ -493,7 +684,7 @@ export function buildOntologyGraphSnapshot(options: {
         });
       }
 
-      artifact.csvRows.slice(0, 48).forEach((row, index) => {
+      artifact.csvRows.slice(0, limits.maxOntologyInputRowsPerArtifact ?? 48).forEach((row, index) => {
         const rowNodeId = `${artifact.id}:row:${index + 1}`;
         const label =
           Object.values(row).find((value) => String(value).trim().length > 0) ||
@@ -543,7 +734,7 @@ export function buildOntologyGraphSnapshot(options: {
   const nodeIds = new Set(nodes.keys());
   const clusterNodes = Array.from(nodes.values()).filter((node) => node.type === "knowledge-cluster");
 
-  for (const artifact of feedbackArtifacts) {
+  for (const artifact of selectedFeedbackArtifacts) {
     const feedbackId = feedbackNodeId(artifact);
     upsertNode({
       id: feedbackId,
@@ -706,7 +897,7 @@ export function buildOntologyGraphSnapshot(options: {
     });
   }
 
-  for (const candidate of evaluationReplay?.replayCandidates ?? []) {
+  for (const candidate of selectedReplayCandidates) {
     const replayId = replayNodeId(candidate);
     upsertNode({
       id: replayId,
@@ -749,7 +940,7 @@ export function buildOntologyGraphSnapshot(options: {
   }
 
   if (ontologyReview) {
-    for (const record of ontologyReview.records) {
+    for (const record of selectedReviewRecords) {
       if (record.targetKind === "node") {
         const direct = nodes.get(record.targetId);
         const knowledgeAlias = record.targetId.startsWith("knowledge:")
@@ -813,6 +1004,8 @@ export function buildOntologyGraphSnapshot(options: {
     summary: {
       nodeCount: orderedNodes.length,
       edgeCount: orderedEdges.length,
+      truncated: appliedLimits.length > 0,
+      appliedLimits,
       nodeTypeCounts: countBy(orderedNodes.map((node) => node.type)),
       edgeTypeCounts: countBy(orderedEdges.map((edge) => edge.type)),
       feedbackNodeCount: orderedNodes.filter((node) => node.type === "feedback-record").length,
@@ -837,6 +1030,10 @@ export function buildOntologyGraphMarkdown(snapshot: OntologyGraphSnapshot): str
   lines.push(`- workspaceDir: ${toForwardSlash(snapshot.workspaceDir)}`);
   lines.push(`- nodeCount: ${snapshot.summary.nodeCount}`);
   lines.push(`- edgeCount: ${snapshot.summary.edgeCount}`);
+  lines.push(`- truncated: ${snapshot.summary.truncated ? "yes" : "no"}`);
+  if (snapshot.summary.appliedLimits.length > 0) {
+    lines.push(`- appliedLimits: ${snapshot.summary.appliedLimits.join(", ")}`);
+  }
   lines.push(`- feedbackNodeCount: ${snapshot.summary.feedbackNodeCount}`);
   lines.push(`- replayNodeCount: ${snapshot.summary.replayNodeCount}`);
   lines.push(`- pathNodeCount: ${snapshot.summary.pathNodeCount}`);

@@ -259,4 +259,23 @@ describe("ontology projections", () => {
     expect(markdown).toContain("projectionCount: 4");
     expect(markdown).toContain("status=");
   });
+
+  it("propagates compact mode from ontology graph summary", () => {
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      knowledgeSchema,
+      retrievalUnits,
+      limits: {
+        maxKnowledgeEntities: 3,
+        maxKnowledgeEdges: 2,
+        maxRetrievalUnits: 1
+      }
+    });
+    const snapshot = buildOntologyProjectionSnapshot({ ontologyGraph });
+
+    expect(snapshot.summary.truncated).toBe(true);
+    expect(snapshot.summary.appliedLimits.length).toBeGreaterThan(0);
+
+    const markdown = buildOntologyProjectionMarkdown(snapshot);
+    expect(markdown).toContain("truncated: yes");
+  });
 });

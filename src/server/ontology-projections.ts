@@ -30,6 +30,8 @@ const OntologyProjectionSchema = z.object({
 
 const OntologyProjectionSummarySchema = z.object({
   projectionCount: z.number().int().min(0),
+  truncated: z.boolean().default(false),
+  appliedLimits: z.array(z.string().min(1)).default([]),
   projectionTypeCounts: z.record(z.string(), z.number().int().min(0)),
   topProjectionTypes: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })).default([]),
   totalRepresentativePathCount: z.number().int().min(0),
@@ -213,6 +215,8 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     projections,
     summary: {
       projectionCount: projections.length,
+      truncated: ontologyGraph.summary.truncated,
+      appliedLimits: ontologyGraph.summary.appliedLimits,
       projectionTypeCounts: countBy(projections.map((projection) => projection.type)),
       topProjectionTypes: countTop(projections.map((projection) => projection.type)),
       totalRepresentativePathCount: projections.reduce((sum, projection) => sum + projection.representativePaths.length, 0),
@@ -229,6 +233,10 @@ export function buildOntologyProjectionMarkdown(snapshot: OntologyProjectionSnap
   lines.push(`- generatedAt: ${snapshot.generatedAt}`);
   lines.push(`- workspaceDir: ${snapshot.workspaceDir.replace(/\\/g, "/")}`);
   lines.push(`- projectionCount: ${snapshot.summary.projectionCount}`);
+  lines.push(`- truncated: ${snapshot.summary.truncated ? "yes" : "no"}`);
+  if (snapshot.summary.appliedLimits.length > 0) {
+    lines.push(`- appliedLimits: ${snapshot.summary.appliedLimits.join(", ")}`);
+  }
   lines.push(`- totalRepresentativePathCount: ${snapshot.summary.totalRepresentativePathCount}`);
   lines.push(`- largestProjectionType: ${snapshot.summary.largestProjectionType || "-"}`);
   lines.push("");

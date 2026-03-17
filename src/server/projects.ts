@@ -71,12 +71,14 @@ import {
 import {
   buildKnowledgeSchemaMarkdown,
   buildKnowledgeSchemaSnapshot,
-  KnowledgeSchemaSnapshotSchema
+  KnowledgeSchemaSnapshotSchema,
+  type KnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
 import {
   buildOntologyGraphMarkdown,
   buildOntologyGraphSnapshot,
   OntologyGraphSnapshotSchema,
+  type OntologyGraphBuildLimits,
   type OntologyGraphSnapshot
 } from "./ontology-graph.js";
 import {
@@ -339,6 +341,8 @@ export interface ProjectAnalysisResult {
     generatedAt: string;
     nodeCount: number;
     edgeCount: number;
+    truncated?: boolean;
+    appliedLimits?: string[];
     feedbackNodeCount: number;
     replayNodeCount: number;
     pathNodeCount: number;
@@ -356,6 +360,8 @@ export interface ProjectAnalysisResult {
   ontologyProjections?: {
     generatedAt: string;
     projectionCount: number;
+    truncated?: boolean;
+    appliedLimits?: string[];
     projectionTypeCounts: Record<string, number>;
     totalRepresentativePathCount: number;
     largestProjectionType: string;
@@ -818,6 +824,60 @@ const EVALUATION_TREND_MEMORY_DIR = "evaluation-trends";
 const EVALUATION_PROMOTION_MEMORY_DIR = "evaluation-promotions";
 const USER_FEEDBACK_MEMORY_DIR = "user-feedback";
 const STRUCTURE_MEMORY_DIR = "structure-index";
+const ONTOLOGY_ANALYZE_COMPACT_ENTITY_THRESHOLD = Math.max(
+  1000,
+  Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_COMPACT_ENTITY_THRESHOLD ?? "6000", 10) || 6000
+);
+const ONTOLOGY_ANALYZE_COMPACT_EDGE_THRESHOLD = Math.max(
+  2000,
+  Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_COMPACT_EDGE_THRESHOLD ?? "10000", 10) || 10000
+);
+const ONTOLOGY_ANALYZE_COMPACT_UNIT_THRESHOLD = Math.max(
+  200,
+  Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_COMPACT_UNIT_THRESHOLD ?? "2500", 10) || 2500
+);
+const ONTOLOGY_ANALYZE_COMPACT_LIMITS: OntologyGraphBuildLimits = {
+  maxKnowledgeEntities: Math.max(
+    200,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_ENTITIES ?? "1400", 10) || 1400
+  ),
+  maxKnowledgeEdges: Math.max(
+    400,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_EDGES ?? "2600", 10) || 2600
+  ),
+  maxRetrievalUnits: Math.max(
+    50,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_RETRIEVAL_UNITS ?? "320", 10) || 320
+  ),
+  maxUnitEntityRefs: Math.max(
+    2,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_UNIT_ENTITY_REFS ?? "6", 10) || 6
+  ),
+  maxUnitEdgeRefs: Math.max(
+    1,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_UNIT_EDGE_REFS ?? "4", 10) || 4
+  ),
+  maxOntologyInputs: Math.max(
+    8,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_INPUTS ?? "24", 10) || 24
+  ),
+  maxOntologyInputRowsPerArtifact: Math.max(
+    4,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_INPUT_ROWS ?? "12", 10) || 12
+  ),
+  maxFeedbackArtifacts: Math.max(
+    8,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_FEEDBACK_ARTIFACTS ?? "48", 10) || 48
+  ),
+  maxReplayCandidates: Math.max(
+    4,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_REPLAY_CANDIDATES ?? "24", 10) || 24
+  ),
+  maxReviewRecords: Math.max(
+    8,
+    Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_REVIEW_RECORDS ?? "80", 10) || 80
+  )
+};
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const STRUCTURE_INDEX_PROGRESS_INTERVAL = Math.max(
   100,
@@ -3440,7 +3500,7 @@ async function rebuildOntologyArtifactsFromMemory(options: {
   const feedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
     memoryRoot: options.memoryRoot,
     groupDir: USER_FEEDBACK_MEMORY_DIR,
-    limit: 160,
+    limit: ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxFeedbackArtifacts,
     parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
   });
   const ontologyReview = buildOntologyReviewSnapshot({
@@ -3449,6 +3509,10 @@ async function rebuildOntologyArtifactsFromMemory(options: {
   });
   const replaySnapshot = await readEvaluationReplaySnapshotFull(options.memoryRoot);
   const promotionSnapshot = await readEvaluationPromotionSnapshotFull(options.memoryRoot);
+  const ontologyLimits = resolveAnalyzeOntologyGraphLimits({
+    knowledgeSchema,
+    retrievalUnits
+  });
   const ontologyGraph = buildOntologyGraphSnapshot({
     generatedAt: options.generatedAt,
     workspaceDir: options.workspaceDir,
@@ -3458,7 +3522,8 @@ async function rebuildOntologyArtifactsFromMemory(options: {
     ontologyReview,
     feedbackArtifacts,
     evaluationReplay: replaySnapshot,
-    evaluationPromotions: promotionSnapshot
+    evaluationPromotions: promotionSnapshot,
+    limits: ontologyLimits
   });
   const ontologyProjections = buildOntologyProjectionSnapshot({
     ontologyGraph
@@ -3641,6 +3706,8 @@ function buildOntologyGraphSummary(
     generatedAt: snapshot.generatedAt,
     nodeCount: snapshot.summary.nodeCount,
     edgeCount: snapshot.summary.edgeCount,
+    truncated: snapshot.summary.truncated,
+    appliedLimits: snapshot.summary.appliedLimits,
     feedbackNodeCount: snapshot.summary.feedbackNodeCount,
     replayNodeCount: snapshot.summary.replayNodeCount,
     pathNodeCount: snapshot.summary.pathNodeCount,
@@ -3660,6 +3727,8 @@ function buildOntologyProjectionSummary(
   return {
     generatedAt: snapshot.generatedAt,
     projectionCount: snapshot.summary.projectionCount,
+    truncated: snapshot.summary.truncated,
+    appliedLimits: snapshot.summary.appliedLimits,
     projectionTypeCounts: snapshot.summary.projectionTypeCounts,
     totalRepresentativePathCount: snapshot.summary.totalRepresentativePathCount,
     largestProjectionType: snapshot.summary.largestProjectionType,
@@ -3675,6 +3744,23 @@ function buildOntologyProjectionSummary(
       samplePaths: projection.representativePaths.slice(0, 3).map((item) => item.label)
     }))
   };
+}
+
+function resolveAnalyzeOntologyGraphLimits(options: {
+  knowledgeSchema: KnowledgeSchemaSnapshot;
+  retrievalUnits?: RetrievalUnitSnapshot;
+}): OntologyGraphBuildLimits | undefined {
+  const entityCount = options.knowledgeSchema.summary.entityCount;
+  const edgeCount = options.knowledgeSchema.summary.edgeCount;
+  const retrievalUnitCount = options.retrievalUnits?.summary.unitCount ?? 0;
+  if (
+    entityCount < ONTOLOGY_ANALYZE_COMPACT_ENTITY_THRESHOLD &&
+    edgeCount < ONTOLOGY_ANALYZE_COMPACT_EDGE_THRESHOLD &&
+    retrievalUnitCount < ONTOLOGY_ANALYZE_COMPACT_UNIT_THRESHOLD
+  ) {
+    return undefined;
+  }
+  return ONTOLOGY_ANALYZE_COMPACT_LIMITS;
 }
 
 function buildOntologyInputSummary(
@@ -5634,7 +5720,7 @@ export async function analyzeServerProject(options: {
     const historicalFeedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
       memoryRoot,
       groupDir: USER_FEEDBACK_MEMORY_DIR,
-      limit: 160,
+      limit: ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxFeedbackArtifacts,
       parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
     });
     const ontologyInputSummary = await readOntologyInputSummarySnapshotFull(memoryRoot);
@@ -5644,6 +5730,25 @@ export async function analyzeServerProject(options: {
     });
     const existingEvaluationReplay = await readEvaluationReplaySnapshotFull(memoryRoot);
     const existingEvaluationPromotions = await readEvaluationPromotionSnapshotFull(memoryRoot);
+    const ontologyLimits = resolveAnalyzeOntologyGraphLimits({
+      knowledgeSchema,
+      retrievalUnits
+    });
+    if (ontologyLimits) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "ontology graph compact mode enabled",
+        metadata: {
+          entityCount: knowledgeSchema.summary.entityCount,
+          edgeCount: knowledgeSchema.summary.edgeCount,
+          retrievalUnitCount: retrievalUnits.summary.unitCount,
+          limits: ontologyLimits
+        }
+      });
+    }
     const ontologyGraph = buildOntologyGraphSnapshot({
       generatedAt,
       workspaceDir: project.workspaceDir,
@@ -5653,7 +5758,8 @@ export async function analyzeServerProject(options: {
       ontologyReview,
       feedbackArtifacts: historicalFeedbackArtifacts,
       evaluationReplay: existingEvaluationReplay,
-      evaluationPromotions: existingEvaluationPromotions
+      evaluationPromotions: existingEvaluationPromotions,
+      limits: ontologyLimits
     });
     const ontologyProjections = buildOntologyProjectionSnapshot({
       ontologyGraph

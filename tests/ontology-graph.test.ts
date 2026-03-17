@@ -356,4 +356,121 @@ describe("ontology graph", () => {
     expect(markdown).toContain("# Ontology Graph");
     expect(markdown).toContain("feedbackNodeCount: 1");
   });
+
+  it("supports compact graph snapshots with explicit limits", () => {
+    const bigKnowledgeSchema: KnowledgeSchemaSnapshot = {
+      ...knowledgeSchema,
+      entities: [
+        ...knowledgeSchema.entities,
+        ...Array.from({ length: 60 }, (_, index) => ({
+          id: `symbol:extra:${index}`,
+          type: "symbol" as const,
+          label: `ExtraSymbol${index}`,
+          summary: "extra symbol",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: [],
+            actions: [],
+            moduleRoles: [],
+            processRoles: [],
+            confidence: 0.4,
+            evidencePaths: [`src/extra/${index}.java`],
+            sourceType: "derived" as const,
+            validatedStatus: "derived" as const
+          },
+          attributes: { path: `src/extra/${index}.java` }
+        }))
+      ],
+      edges: [
+        ...knowledgeSchema.edges,
+        ...Array.from({ length: 60 }, (_, index) => ({
+          id: `edge:extra:${index}`,
+          type: "calls" as const,
+          fromId: "controller:RegisteUseDcpChnelController.registe",
+          toId: index % 2 === 0 ? "service:EmbededMemberLoginService.authenticate" : `symbol:extra:${index}`,
+          label: "extra edge",
+          metadata: {
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: [],
+            actions: [],
+            moduleRoles: [],
+            processRoles: [],
+            confidence: 0.4,
+            evidencePaths: [`src/extra/${index}.java`],
+            sourceType: "derived" as const,
+            validatedStatus: "derived" as const
+          },
+          attributes: {}
+        }))
+      ],
+      summary: {
+        ...knowledgeSchema.summary,
+        entityCount: knowledgeSchema.entities.length + 60,
+        edgeCount: knowledgeSchema.edges.length + 60,
+        entityTypeCounts: {
+          ...knowledgeSchema.summary.entityTypeCounts,
+          symbol: 60
+        },
+        edgeTypeCounts: {
+          ...knowledgeSchema.summary.edgeTypeCounts,
+          calls: 61
+        }
+      }
+    };
+
+    const bigRetrievalUnits: RetrievalUnitSnapshot = {
+      ...retrievalUnits,
+      units: [
+        ...retrievalUnits.units,
+        ...Array.from({ length: 40 }, (_, index) => ({
+          id: `unit:extra:${index}`,
+          type: (index % 2 === 0 ? "symbol-block" : "flow") as "symbol-block" | "flow",
+          title: `Extra Unit ${index}`,
+          summary: "extra retrieval unit",
+          confidence: 0.3,
+          validatedStatus: "derived" as const,
+          entityIds: ["controller:RegisteUseDcpChnelController.registe", "service:EmbededMemberLoginService.authenticate"],
+          edgeIds: ["edge:controller-service"],
+          searchText: ["extra", "monimo"],
+          domains: ["member-auth"],
+          subdomains: [],
+          channels: [],
+          actions: [],
+          moduleRoles: [],
+          processRoles: [],
+          evidencePaths: [`src/extra/${index}.java`]
+        }))
+      ],
+      summary: {
+        ...retrievalUnits.summary,
+        unitCount: retrievalUnits.units.length + 40,
+        unitTypeCounts: {
+          flow: 21,
+          "symbol-block": 20
+        }
+      }
+    };
+
+    const snapshot = buildOntologyGraphSnapshot({
+      knowledgeSchema: bigKnowledgeSchema,
+      retrievalUnits: bigRetrievalUnits,
+      limits: {
+        maxKnowledgeEntities: 8,
+        maxKnowledgeEdges: 10,
+        maxRetrievalUnits: 6,
+        maxUnitEntityRefs: 2,
+        maxUnitEdgeRefs: 1
+      }
+    });
+
+    expect(snapshot.summary.truncated).toBe(true);
+    expect(snapshot.summary.appliedLimits).toContain("knowledge-entities:8/66");
+    expect(snapshot.summary.appliedLimits).toContain("knowledge-edges:10/64");
+    expect(snapshot.summary.appliedLimits).toContain("retrieval-units:6/41");
+    expect(snapshot.summary.nodeCount).toBeLessThan(40);
+    expect(snapshot.nodes.some((node) => node.type === "module")).toBe(true);
+    expect(snapshot.nodes.some((node) => node.type === "retrieval-unit")).toBe(true);
+  });
 });
