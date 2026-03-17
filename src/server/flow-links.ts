@@ -216,7 +216,7 @@ function buildCanonicalFlowCluster(
   flows: LinkedFlowEvidence[],
   questionTags: string[]
 ): LinkedFlowEvidence[] {
-  const anchor = flows[0];
+  const anchor = selectCanonicalFlowAnchor(flows, questionTags);
   if (!anchor) {
     return [];
   }
@@ -225,16 +225,28 @@ function buildCanonicalFlowCluster(
     [topNamespaceFromPath(anchor.apiUrl), topNamespaceFromPath(anchor.backendPath)].filter(Boolean)
   );
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
+  const questionNamespaceTokens = unique(
+    specificQuestionTags
+      .flatMap((tag) => tokenizeOntologyText(tag))
+      .filter((token) => token.length >= 3 && !GENERIC_FLOW_NAMESPACE_TOKENS.has(token))
+  );
 
   const coherent = flows.filter((flow, index) => {
-    if (index === 0) {
+    if (flow === anchor) {
       return true;
     }
+    if (index === 0) {
+      return false;
+    }
     const sharedSpecificSignals = specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag));
+    const flowNamespace = extractFlowNamespaceTokens(flow);
+    const questionNamespaceOverlap = questionNamespaceTokens.filter((token) => flowNamespace.includes(token)).length;
     if (sharedSpecificSignals.length > 0) {
       return true;
     }
-    const flowNamespace = extractFlowNamespaceTokens(flow);
+    if (questionNamespaceTokens.length > 0 && questionNamespaceOverlap === 0) {
+      return false;
+    }
     const namespaceOverlap = flowNamespace.filter((token) => anchorNamespace.has(token)).length;
     if (namespaceOverlap > 0) {
       return true;
@@ -249,6 +261,67 @@ function buildCanonicalFlowCluster(
   });
 
   return coherent.length > 0 ? coherent : [anchor];
+}
+
+function selectCanonicalFlowAnchor(
+  flows: LinkedFlowEvidence[],
+  questionTags: string[]
+): LinkedFlowEvidence | undefined {
+  const specificQuestionTags = extractSpecificOntologySignals(questionTags);
+
+  return [...flows]
+    .map((candidate) => {
+      const candidateNamespace = new Set(extractFlowNamespaceTokens(candidate));
+      const candidateTopNamespaces = new Set(
+        [topNamespaceFromPath(candidate.apiUrl), topNamespaceFromPath(candidate.backendPath)].filter(Boolean)
+      );
+      const candidateActions = new Set(inferFlowActionTags(candidate));
+      const specificMatches = specificQuestionTags.filter((tag) => (candidate.capabilityTags ?? []).includes(tag));
+      let score = candidate.confidence * 100;
+
+      if (specificMatches.length > 0) {
+        score += specificMatches.length * 38;
+      } else if (specificQuestionTags.length > 0) {
+        score -= 42;
+      }
+
+      for (const peer of flows) {
+        if (peer === candidate) {
+          continue;
+        }
+        const peerNamespace = extractFlowNamespaceTokens(peer);
+        const namespaceOverlap = peerNamespace.filter((token) => candidateNamespace.has(token)).length;
+        const peerTopNamespaces = [topNamespaceFromPath(peer.apiUrl), topNamespaceFromPath(peer.backendPath)].filter(
+          Boolean
+        );
+        const topNamespaceOverlap = peerTopNamespaces.some((token) => candidateTopNamespaces.has(token)) ? 1 : 0;
+        const peerSpecificMatches = specificQuestionTags.filter((tag) => (peer.capabilityTags ?? []).includes(tag));
+        const peerActions = inferFlowActionTags(peer);
+        const actionOverlap = peerActions.filter((action) => candidateActions.has(action)).length;
+
+        if (peerSpecificMatches.length > 0) {
+          score += 14;
+        }
+        if (namespaceOverlap > 0) {
+          score += Math.min(18, namespaceOverlap * 6);
+        }
+        if (topNamespaceOverlap > 0) {
+          score += 10;
+        }
+        if (actionOverlap === 0 && peerActions.length > 0) {
+          score += 4;
+        } else if (actionOverlap > 0) {
+          score += 2;
+        }
+        if (namespaceOverlap === 0 && topNamespaceOverlap === 0 && peerSpecificMatches.length === 0) {
+          score -= 8;
+        }
+      }
+
+      return { candidate, score };
+    })
+    .sort((a, b) => (b.score !== a.score ? b.score - a.score : b.candidate.confidence - a.candidate.confidence))
+    .map((entry) => entry.candidate)[0];
 }
 
 function countIncoherentFlows(flows: LinkedFlowEvidence[], questionTags: string[]): number {
@@ -735,7 +808,7 @@ export function buildDeterministicFlowAnswer(options: {
   };
 
   const answerLines = orderedFlows.map((flow, index) => {
-    const stepPrefix = `${index + 1}) `;
+    const stepPrefix = index === 0 ? "대표 경로) " : `보조 단계 ${index}) `;
     const phaseTrace =
       traceByPhase.get(classifyFlowPhase(flow)) ??
       flow.serviceHints.map((hint) => traceByService.get(hint)).find(Boolean);
@@ -751,6 +824,15 @@ export function buildDeterministicFlowAnswer(options: {
     return `${stepPrefix}${flow.screenCode ?? flow.routePath ?? "프론트 화면"} -> ${flow.apiUrl} -> ${flow.gatewayControllerMethod ?? "gateway"} -> ${flow.backendControllerMethod}(${flow.backendPath}) -> ${servicePhrase}.${detailPhrase}`;
   });
 
+  const primaryOverview =
+    orderedFlows.length > 1
+      ? `정적으로 복원된 대표 E2E 경로군은 ${
+          orderedFlows
+            .map((flow) => `${flow.screenCode ?? flow.routePath ?? "front"} -> ${flow.apiUrl} -> ${flow.backendControllerMethod}`)
+            .join(" | ")
+        } 순으로 이어진다.`
+      : `정적으로 복원된 대표 E2E 경로는 ${primary.screenCode ?? primary.routePath ?? "front"} -> ${primary.apiUrl} -> ${primary.backendControllerMethod} 이다.`;
+
   const mentionedEaiIds = unique((options.downstreamTraces ?? []).flatMap((trace) => trace.eaiInterfaces)).slice(0, 4);
   const primarySpecificMatches = specificQuestionTags.filter((tag) => (primary.capabilityTags ?? []).includes(tag));
   const primaryFlowActions = inferFlowActionTags(primary);
@@ -758,11 +840,13 @@ export function buildDeterministicFlowAnswer(options: {
   const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
   const droppedIncoherentFlowCount = countIncoherentFlows(options.linkedFlowEvidence, questionTags);
   const canonicalNamespaceCount = countDistinctTopNamespaces(canonicalFlows);
+  const actionPhaseCount = unique(orderedFlows.map((flow) => classifyFlowPhase(flow))).length;
+  const downstreamTraceCount = (options.downstreamTraces ?? []).length;
   let confidence = 0.34;
   confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
   confidence += orderedFlows.length >= 2 ? 0.08 : 0.03;
   confidence += primary.serviceHints.length > 0 ? 0.08 : 0;
-  confidence += (options.downstreamTraces ?? []).length > 0 ? 0.12 : 0;
+  confidence += downstreamTraceCount > 0 ? 0.12 : 0;
   confidence += mentionedEaiIds.length > 0 ? 0.06 : 0;
   confidence += Math.min(0.08, distinctFlowActions.length * 0.02);
   if (primarySpecificMatches.length > 0) {
@@ -785,17 +869,27 @@ export function buildDeterministicFlowAnswer(options: {
   if (canonicalNamespaceCount > 1) {
     confidence -= Math.min(0.16, (canonicalNamespaceCount - 1) * 0.08);
   }
+  if (orderedFlows.length >= 3 && downstreamTraceCount === 0) {
+    confidence -= 0.08;
+  }
+  if (orderedFlows.length >= 3 && actionPhaseCount >= 3 && downstreamTraceCount <= 1) {
+    confidence -= 0.06;
+  }
   if (orderedFlows.length <= 1 || distinctFlowActions.length <= 1) {
     confidence = Math.min(confidence, 0.72);
   }
-  if ((options.downstreamTraces ?? []).length === 0) {
+  if (downstreamTraceCount === 0) {
     confidence = Math.min(confidence, 0.74);
+  }
+  if (downstreamTraceCount <= 1 && orderedFlows.length >= 3) {
+    confidence = Math.min(confidence, 0.68);
   }
   if (specificQuestionTags.length > 0 && primarySpecificMatches.length === 0) {
     confidence = Math.min(confidence, 0.62);
   }
   confidence = Math.max(0.18, Math.min(0.82, Number(confidence.toFixed(2))));
   const answer = [
+    primaryOverview,
     ...answerLines,
     mentionedEaiIds.length > 0
       ? `정적 근거로 확인된 주요 EAI는 ${mentionedEaiIds.join(", ")}이다.`

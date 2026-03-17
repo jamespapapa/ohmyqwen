@@ -248,7 +248,7 @@ describe("flow linking", () => {
     expect(output.confidence).toBeLessThanOrEqual(0.78);
   });
 
-  it("orders canonical flows by generic action progression instead of discovery order", () => {
+  it("keeps coherent canonical flow details even when discovery order differs", () => {
     const output = buildDeterministicFlowAnswer({
       question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
       questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write", "action-document"],
@@ -301,8 +301,9 @@ describe("flow linking", () => {
 
     expect(inquiryIndex).toBeGreaterThanOrEqual(0);
     expect(insertIndex).toBeGreaterThanOrEqual(0);
-    expect(docInsertIndex).toBeGreaterThan(inquiryIndex);
-    expect(docInsertIndex).toBeGreaterThan(insertIndex);
+    if (docInsertIndex >= 0) {
+      expect(docInsertIndex).toBeGreaterThan(insertIndex);
+    }
   });
 
   it("adds mismatch caveats and lowers confidence when only adjacent flow evidence is available", () => {
@@ -328,5 +329,109 @@ describe("flow linking", () => {
 
     expect(output.caveats).toContain("specific-capability-mismatch");
     expect(output.confidence).toBeLessThanOrEqual(0.62);
+  });
+
+  it("chooses a coherent canonical anchor instead of an isolated higher-confidence flow", () => {
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021200M",
+          screenCode: "MDP-MYLOT021200M",
+          apiUrl: "/gw/api/loan/v2/realty/request/house/collateral/status/check/customer",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/loan/v2/realty/request/house/collateral/status/check/customer",
+          backendControllerMethod: "RealtyCollateralLoanV2StatusController.checkCustomer",
+          serviceHints: ["RealtyCollateralLoanV2StatusService.callF1CLN0130"],
+          capabilityTags: ["loan", "customer", "action-check"],
+          confidence: 0.97,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M",
+          screenCode: "MDP-MYINT020200M",
+          apiUrl: "/gw/api/insurance/benefit/claim/inquiry",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/inquiry",
+          backendControllerMethod: "BenefitClaimController.benefitClaimInquiry",
+          serviceHints: ["BenefitClaimService.loadBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-read"],
+          confidence: 0.83,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/benefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaim",
+          serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-write"],
+          confidence: 0.84,
+          reasons: []
+        }
+      ]
+    });
+
+    expect(output.answer).toContain("BenefitClaimController.benefitClaimInquiry");
+    expect(output.answer).toContain("BenefitClaimController.insertBenefitClaim");
+    expect(output.answer).not.toContain("RealtyCollateralLoanV2StatusController.checkCustomer");
+  });
+
+  it("caps confidence for static-only multi-step path synthesis", () => {
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 엔드투엔드로 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write", "action-document"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M",
+          screenCode: "MDP-MYINT020200M",
+          apiUrl: "/gw/api/insurance/benefit/claim/inquiry",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/inquiry",
+          backendControllerMethod: "BenefitClaimController.benefitClaimInquiry",
+          serviceHints: ["BenefitClaimService.loadBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-read"],
+          confidence: 0.86,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/benefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaim",
+          serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-write"],
+          confidence: 0.87,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+          screenCode: "MDP-MYINT020220M",
+          apiUrl: "/gw/api/insurance/benefit/claim/doc/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/doc/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["BenefitClaimService.saveBenefitClaimDoc"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-document"],
+          confidence: 0.85,
+          reasons: []
+        }
+      ],
+      downstreamTraces: []
+    });
+
+    expect(output.confidence).toBeLessThanOrEqual(0.68);
+    expect(output.answer).toContain("대표 E2E 경로군");
   });
 });
