@@ -3041,6 +3041,43 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
+  const supportTransitionLabels: Partial<Record<KnowledgeEdgeType, string>> = {
+    "uses-store": "state store transition",
+    "uses-cache-key": "cache key transition",
+    "stores-model": "data model transition",
+    "maps-to-table": "table mapping transition",
+    "queries-table": "table query transition",
+    "uses-eai": "integration transition",
+    "validates": "validation transition",
+    "branches-to": "decision transition"
+  };
+  const supportTransitionEdgeTypes = new Set<KnowledgeEdgeType>([
+    "uses-store",
+    "uses-cache-key",
+    "stores-model",
+    "maps-to-table",
+    "queries-table",
+    "uses-eai",
+    "validates",
+    "branches-to"
+  ]);
+  for (const supportEdge of Array.from(edges.values()).filter((edge) => supportTransitionEdgeTypes.has(edge.type))) {
+    addDerivedTransitionEdge({
+      fromId: supportEdge.fromId,
+      toId: supportEdge.toId,
+      label: supportTransitionLabels[supportEdge.type] ?? "support transition",
+      texts: [
+        entities.get(supportEdge.fromId)?.label,
+        entities.get(supportEdge.toId)?.label,
+        supportEdge.label,
+        supportEdge.type
+      ],
+      evidencePaths: supportEdge.metadata.evidencePaths,
+      confidence: supportEdge.metadata.confidence,
+      edgeKind: supportEdge.type
+    });
+  }
+
   const matchableEntities = (): MatchableEntity[] =>
     Array.from(entities.values())
       .filter((entity) => entity.type !== "knowledge-cluster" && entity.type !== "eai-interface")

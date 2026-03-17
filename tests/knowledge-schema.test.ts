@@ -463,6 +463,15 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          ["store:redis", "eai:F14090150"].includes(edge.toId) &&
+          ["uses-store", "uses-eai"].includes(String(edge.attributes.edgeKind))
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "belongs-to-channel" &&
           edge.toId === "knowledge:candidate:channel:monimo"
       )
