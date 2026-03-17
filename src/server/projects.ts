@@ -1618,7 +1618,10 @@ function buildOntologyRetrievalRerankContext(options: {
   };
 }
 
-function scoreHitAgainstOntologyRerankContext(hit: ProjectSearchHit, rerankContext?: QmdRerankContext): number {
+export function scoreHitAgainstOntologyRerankContext(
+  hit: Pick<ProjectSearchHit, "path"> & Partial<Pick<ProjectSearchHit, "title" | "snippet">>,
+  rerankContext?: QmdRerankContext
+): number {
   if (!rerankContext) {
     return 0;
   }
@@ -5113,10 +5116,11 @@ function scoreOwnedCallCandidate(options: { owner: string; method: string; focus
   return score;
 }
 
-function findStructureEntryByClassName(options: {
+export function findStructureEntryByClassName(options: {
   structure?: StructureIndexSnapshot;
   className: string;
   moduleCandidates: string[];
+  rerankContext?: QmdRerankContext;
 }): StructureFileEntry | undefined {
   if (!options.structure) {
     return undefined;
@@ -5128,8 +5132,17 @@ function findStructureEntryByClassName(options: {
   if (candidates.length === 0) {
     return undefined;
   }
-  const moduleMatched = candidates.find((entry) => pathMatchesAnyModule(entry.path, options.moduleCandidates));
-  return moduleMatched ?? candidates[0];
+  return [...candidates]
+    .sort((a, b) => {
+      const aScore =
+        (pathMatchesAnyModule(a.path, options.moduleCandidates) ? 2.4 : 0) +
+        scoreHitAgainstOntologyRerankContext({ path: a.path }, options.rerankContext);
+      const bScore =
+        (pathMatchesAnyModule(b.path, options.moduleCandidates) ? 2.4 : 0) +
+        scoreHitAgainstOntologyRerankContext({ path: b.path }, options.rerankContext);
+      return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
+    })
+    .at(0);
 }
 
 function summarizeMethodSignature(snippet: string): string {
@@ -5166,12 +5179,13 @@ function pathMatchesAnyModule(filePath: string, moduleCandidates: string[]): boo
   return moduleCandidates.some((moduleName) => normalized.startsWith(`${moduleName}/`));
 }
 
-function scoreAskHitRelevance(options: {
+export function scoreAskHitRelevance(options: {
   hit: ProjectSearchHit;
   question: string;
   strategy: AskStrategyType;
   moduleCandidates: string[];
   focusTokens: string[];
+  rerankContext?: QmdRerankContext;
 }): number {
   const normalizedPath = toForwardSlash(options.hit.path).toLowerCase();
   const ext = path.extname(normalizedPath);
@@ -5205,6 +5219,8 @@ function scoreAskHitRelevance(options: {
     }
   }
 
+  score += scoreHitAgainstOntologyRerankContext(options.hit, options.rerankContext);
+
   return score;
 }
 
@@ -5225,6 +5241,7 @@ function scoreStructureSymbolForAsk(options: {
   strategy: AskStrategyType;
   focusTokens: string[];
   targetSymbols: string[];
+  rerankContext?: QmdRerankContext;
 }): number {
   const symbolName = options.symbol.name.toLowerCase();
   const className = options.symbol.className?.toLowerCase() ?? "";
@@ -5256,6 +5273,8 @@ function scoreStructureSymbolForAsk(options: {
     }
   }
 
+  score += scoreHitAgainstOntologyRerankContext({ path: options.entry.path }, options.rerankContext) * 18;
+
   return score;
 }
 
@@ -5267,6 +5286,7 @@ async function hydrateAskEvidence(options: {
   moduleCandidates: string[];
   hits: ProjectSearchHit[];
   structure?: StructureIndexSnapshot;
+  rerankContext?: QmdRerankContext;
 }): Promise<AskHydratedEvidenceItem[]> {
   const focusTokens = buildAskFocusTokens(options.question);
   const rankedHits = [...options.hits]
@@ -5277,14 +5297,16 @@ async function hydrateAskEvidence(options: {
           question: options.question,
           strategy: options.strategy,
           moduleCandidates: options.moduleCandidates,
-          focusTokens
+          focusTokens,
+          rerankContext: options.rerankContext
         }) -
         scoreAskHitRelevance({
           hit: a,
           question: options.question,
           strategy: options.strategy,
           moduleCandidates: options.moduleCandidates,
-          focusTokens
+          focusTokens,
+          rerankContext: options.rerankContext
         })
     )
     .slice(0, 12);
@@ -5324,7 +5346,8 @@ async function hydrateAskEvidence(options: {
             symbol,
             strategy: options.strategy,
             focusTokens,
-            targetSymbols: options.targetSymbols
+            targetSymbols: options.targetSymbols,
+            rerankContext: options.rerankContext
           })
         }))
         .filter((item) => item.score > 0)
@@ -5354,18 +5377,30 @@ async function hydrateAskEvidence(options: {
         if (options.strategy === "module_flow_topdown" || options.strategy === "method_trace") {
           const externalCalls = extractOwnedCallCandidates(block.snippet)
             .filter((item) => /(service|dao|mapper|support|helper|client)/i.test(item.owner))
-            .sort(
-              (a, b) =>
-                scoreOwnedCallCandidate({ ...b, focusTokens }) - scoreOwnedCallCandidate({ ...a, focusTokens })
-            )
+            .map((item) => {
+              const probableClassName = toProbableClassName(item.owner);
+              const targetEntry = findStructureEntryByClassName({
+                structure: options.structure,
+                className: probableClassName,
+                moduleCandidates: options.moduleCandidates,
+                rerankContext: options.rerankContext
+              });
+              const ontologyDelta = targetEntry
+                ? scoreHitAgainstOntologyRerankContext({ path: targetEntry.path }, options.rerankContext)
+                : 0;
+              return {
+                ...item,
+                probableClassName,
+                targetEntry,
+                score: scoreOwnedCallCandidate({ ...item, focusTokens }) + ontologyDelta * 18
+              };
+            })
+            .filter((item) => item.targetEntry)
+            .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.probableClassName.localeCompare(b.probableClassName)))
             .slice(0, 4);
           for (const externalCall of externalCalls) {
-            const probableClassName = toProbableClassName(externalCall.owner);
-            const targetEntry = findStructureEntryByClassName({
-              structure: options.structure,
-              className: probableClassName,
-              moduleCandidates: options.moduleCandidates
-            });
+            const probableClassName = externalCall.probableClassName;
+            const targetEntry = externalCall.targetEntry;
             if (!targetEntry) {
               continue;
             }
@@ -7996,7 +8031,8 @@ export async function askServerProject(options: {
         targetSymbols: strategyDecision.targetSymbols,
         moduleCandidates: strategyDecision.moduleCandidates,
         hits: intent.methodFocused && mergedCode.length > 0 ? mergedCode : merged,
-        structure: structureSnapshot
+        structure: structureSnapshot,
+        rerankContext: ontologyRerankContext
       });
       await appendProjectDebugEvent({
         timestamp: nowIso(),
