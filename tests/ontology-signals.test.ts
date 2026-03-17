@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildOntologyGroundingSignals,
   buildQuestionOntologySignals,
   extractOntologyTextSignalsFromTexts,
   extractSpecificOntologySignals,
@@ -41,11 +42,26 @@ describe("ontology signals", () => {
       expect.arrayContaining([
         "보험금",
         "청구",
+        "benefit",
+        "claim",
         "프론트부터",
         "백엔드까지",
         "보험금-청구"
       ])
     );
+  });
+
+  it("keeps pure question signals separate from retrieval grounding signals", () => {
+    const questionSignals = buildQuestionOntologySignals({
+      question: "보험금 청구 로직을 분석해줘."
+    });
+    const groundingSignals = buildOntologyGroundingSignals({
+      questionSignals,
+      matchedKnowledgeIds: ["channel:monimo", "graph:member-user-user-info"]
+    });
+
+    expect(questionSignals).toEqual(expect.not.arrayContaining(["channel:monimo", "graph:member-user-user-info"]));
+    expect(groundingSignals).toEqual(expect.arrayContaining(["channel:monimo", "graph:member-user-user-info"]));
   });
 
   it("keeps business-specific tokens in specific ontology signals while dropping structural noise", () => {

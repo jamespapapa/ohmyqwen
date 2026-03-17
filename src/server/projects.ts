@@ -178,6 +178,7 @@ import {
   type AskQuestionType
 } from "./question-types.js";
 import {
+  buildOntologyGroundingSignals,
   buildQuestionOntologySignals,
   isCrossLayerFlowQuestion
 } from "./ontology-signals.js";
@@ -1410,7 +1411,6 @@ function buildAskQueryCandidates(options: {
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
-  const hasInsuranceClaim = /(보험금|청구|claim|benefit)/i.test(question);
   const hasLogicIntent =
     /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|dao|mybatis)/i.test(question);
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
@@ -1467,13 +1467,10 @@ function buildAskQueryCandidates(options: {
     candidates.push(`${ontologyTerms.join(" ")} ${compact}`.trim());
   }
 
-  if (hasInsuranceClaim) {
-    candidates.push(`${compact} 보험금 청구 dcp-insurance`);
-  }
   for (const moduleName of moduleCandidates) {
     candidates.push(`${moduleName} ${compact} controller service`);
     if (hasLogicIntent) {
-      candidates.push(`${moduleName} benefit claim controller service submit save`);
+      candidates.push(`${moduleName} ${compact} controller service downstream`);
     }
   }
 
@@ -1966,7 +1963,6 @@ async function lexicalSearch(options: {
   const logicIntent = /(로직|흐름|어떻게|구현|처리|service|controller|domain|transaction|mapper|mybatis)/i.test(
     options.query
   );
-  const insuranceClaimIntent = /(보험금|청구|claim|benefit)/i.test(options.query);
 
   const hits: ProjectSearchHit[] = [];
 
@@ -1998,10 +1994,6 @@ async function lexicalSearch(options: {
         score -= 0.75;
       }
     }
-    if (insuranceClaimIntent && normalizedPath.includes("dcp-insurance/")) {
-      score += 3.5;
-    }
-
     if (content) {
       const lowered = content.toLowerCase();
       for (const token of tokens) {
@@ -4970,20 +4962,11 @@ function buildAskFocusTokens(question: string): string[] {
   for (const word of rawWords) {
     tokens.add(word.toLowerCase());
   }
-
-  if (/(보험금|benefit)/i.test(question)) {
-    ["benefit", "give", "insurance"].forEach((item) => tokens.add(item));
-  }
-  if (/(청구|claim)/i.test(question)) {
-    ["claim", "submit", "save", "recept", "receipt", "doc", "document", "upload", "file"].forEach((item) =>
-      tokens.add(item)
-    );
-  }
-  if (/(사고|accident|acc)/i.test(question)) {
-    ["acc", "accident"].forEach((item) => tokens.add(item));
-  }
-  if (/(서류|문서|doc|document|파일|upload)/i.test(question)) {
-    ["doc", "document", "file", "upload", "image", "pdf"].forEach((item) => tokens.add(item));
+  for (const signal of buildQuestionOntologySignals({ question })) {
+    if (signal.startsWith("action-") || signal.includes(":")) {
+      continue;
+    }
+    tokens.add(signal.toLowerCase());
   }
 
   return Array.from(tokens).filter((item) => item.length >= 2).slice(0, 24);
@@ -7635,8 +7618,7 @@ export async function askServerProject(options: {
       const matchedKnowledge = matchLearnedKnowledge(question, learnedKnowledgeSnapshot, 6);
       const seedQuestionSignals = buildQuestionOntologySignals({
         question,
-        moduleCandidates: strategyDecision.moduleCandidates,
-        matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
+        moduleCandidates: strategyDecision.moduleCandidates
       });
       const seedQuestionType = classifyAskQuestionType({
         question,
@@ -7680,9 +7662,9 @@ export async function askServerProject(options: {
             limit: 4
           })
         : [];
-      const questionTags = buildQuestionOntologySignals({
-        question,
-        moduleCandidates: strategyDecision.moduleCandidates,
+      const questionTags = seedQuestionSignals;
+      const groundingSignals = buildOntologyGroundingSignals({
+        questionSignals: questionTags,
         matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
         matchedOntologyNodes: rankedOntologyNodes.map((item) => item.node),
         matchedOntologyLabels: rankedOntologyNodes.map((item) => item.node.label),
@@ -7712,6 +7694,7 @@ export async function askServerProject(options: {
           matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
           matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
           questionOntologySignals: questionTags,
+          groundingOntologySignals: groundingSignals,
           questionType: questionType.type
         }
       });
@@ -7931,6 +7914,7 @@ export async function askServerProject(options: {
         matchedRetrievalUnits: rankedRetrievalUnits,
         questionTypeDecision: questionType,
         questionCapabilityTags: questionTags,
+        groundingCapabilityTags: groundingSignals,
         expandedQueries: queries,
         searchResults: results,
         mergedHits: merged,
@@ -9087,8 +9071,7 @@ export async function searchServerProject(options: {
     const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6);
     const questionTags = buildQuestionOntologySignals({
       question: query,
-      moduleCandidates,
-      matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id)
+      moduleCandidates
     });
     const questionTypeDecision = classifyAskQuestionType({
       question: query,

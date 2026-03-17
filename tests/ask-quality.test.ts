@@ -461,6 +461,52 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("missing-aligned-flow-detail");
   });
 
+  it("fails cross-layer answers that mention unaligned flows alongside the canonical path", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "MDP-MYINT020210M 화면에서 /gw/api/insurance/benefit/claim/insert 를 호출하고 RouteController.route 를 거쳐 BenefitClaimController.insertBenefitClaim 와 BenefitClaimService.saveBenefitClaim 으로 이어진다. 추가로 /gw/api/loan/v2/realty/request/house/collateral/status/check/customer 를 호출해 RealtyCollateralLoanV2StatusController.checkCustomer 로 간다.",
+        confidence: 0.82,
+        evidence: ["frontend evidence", "backend evidence"],
+        caveats: []
+      },
+      question: "보험금 청구 로직이 frontend부터 backend까지 어떤 흐름으로 진행되는지 면밀히 분석해줘.",
+      hitPaths: [
+        "dcp-front-develop/src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+        "dcp-services-mevelop/dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/controller/BenefitClaimController.java"
+      ],
+      strategy: "cross_layer_flow",
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/benefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaim",
+          serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "insert", "action-write"]
+        },
+        {
+          routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021200M",
+          screenCode: "MDP-MYLOT021200M",
+          apiUrl: "/gw/api/loan/v2/realty/request/house/collateral/status/check/customer",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/loan/v2/realty/request/house/collateral/status/check/customer",
+          backendControllerMethod: "RealtyCollateralLoanV2StatusController.checkCustomer",
+          serviceHints: ["RealtyCollateralLoanV2StatusService.callF1CLN0130"],
+          capabilityTags: ["loan", "collateral", "customer", "check", "action-check"]
+        }
+      ],
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-write"]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("contains-unaligned-flow-detail");
+  });
+
   it("fails cross-layer answers when a specific business question is answered with adjacent content flow only", () => {
     const gate = qualityGateForAskOutput({
       output: {

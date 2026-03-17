@@ -209,6 +209,45 @@ describe("flow linking", () => {
     expect(linked[0]?.backendControllerMethod).toBe("BenefitClaimController.insertBenefitClaim");
   });
 
+  it("filters incoherent cross-layer flows from deterministic answers", () => {
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-write"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/benefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaim",
+          serviceHints: ["BenefitClaimService.saveBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "insert", "action-write"],
+          confidence: 0.88,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/loan/request/MDP-MYLOT021200M",
+          screenCode: "MDP-MYLOT021200M",
+          apiUrl: "/gw/api/loan/v2/realty/request/house/collateral/status/check/customer",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/loan/v2/realty/request/house/collateral/status/check/customer",
+          backendControllerMethod: "RealtyCollateralLoanV2StatusController.checkCustomer",
+          serviceHints: ["RealtyCollateralLoanV2StatusService.callF1CLN0130"],
+          capabilityTags: ["loan", "collateral", "customer", "check", "action-check"],
+          confidence: 0.97,
+          reasons: []
+        }
+      ]
+    });
+
+    expect(output.answer).toContain("/gw/api/insurance/benefit/claim/insert");
+    expect(output.answer).not.toContain("/gw/api/loan/v2/realty/request/house/collateral/status/check/customer");
+    expect(output.confidence).toBeLessThanOrEqual(0.78);
+  });
+
   it("adds mismatch caveats and lowers confidence when only adjacent flow evidence is available", () => {
     const output = buildDeterministicFlowAnswer({
       question: "보험금 청구 insert 흐름을 프론트부터 백엔드까지 추적해줘.",

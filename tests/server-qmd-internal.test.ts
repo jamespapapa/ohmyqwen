@@ -359,6 +359,14 @@ describe("server projects with vendored internal qmd runtime", () => {
     expect("activeDomains" in ask.diagnostics).toBe(false);
     expect("lockedDomains" in ask.diagnostics).toBe(false);
 
+    const neutralAsk = await projectsModule.askServerProject({
+      projectId: project.id,
+      question: "LoanController가 어떤 역할을 하는지 설명해줘.",
+      maxAttempts: 1,
+      deterministicOnly: false
+    });
+    expect(neutralAsk.diagnostics.matchedOntologyConcepts ?? []).not.toContain("channel:monimo");
+
     const ontologyInputPath = path.join(appRoot, ".project-home", "memory", "ontology-inputs", "summary.json");
     const ontologyReviewPath = path.join(appRoot, ".project-home", "memory", "ontology-review", "latest.json");
     const ontologyInputSnapshot = JSON.parse(await readFile(ontologyInputPath, "utf8")) as { summary?: { totalInputs?: number } };

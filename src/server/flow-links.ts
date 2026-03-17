@@ -9,7 +9,8 @@ import {
   extractSpecificOntologySignals,
   hasStrongOntologySignalAlignment,
   isCrossLayerFlowQuestion,
-  scoreOntologySignalAlignment
+  scoreOntologySignalAlignment,
+  tokenizeOntologyText
 } from "./ontology-signals.js";
 
 interface SearchLikeHit {
@@ -111,6 +112,138 @@ function inferFlowActionTags(item: {
   return unique([...direct, ...inferred]);
 }
 
+const GENERIC_FLOW_NAMESPACE_TOKENS = new Set([
+  "gw",
+  "api",
+  "mo",
+  "pc",
+  "mysamsunglife",
+  "src",
+  "views",
+  "view",
+  "java",
+  "com",
+  "samsunglife",
+  "dcp",
+  "frontend",
+  "backend",
+  "screen",
+  "route",
+  "controller",
+  "service",
+  "request",
+  "response",
+  "status",
+  "check",
+  "select",
+  "insert",
+  "update",
+  "delete",
+  "remove",
+  "save",
+  "load",
+  "get",
+  "set",
+  "inqury",
+  "inquiry",
+  "info",
+  "main",
+  "proc",
+  "process",
+  "v1",
+  "v2"
+]);
+
+function extractFlowNamespaceTokens(item: {
+  screenCode?: string;
+  routePath?: string;
+  screenPath?: string;
+  apiUrl: string;
+  backendPath: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+}): string[] {
+  return unique(
+    tokenizeOntologyText(
+      [
+        item.routePath,
+        item.screenPath,
+        item.apiUrl,
+        item.backendPath,
+        item.backendControllerMethod,
+        ...(item.serviceHints ?? [])
+      ]
+        .filter(Boolean)
+        .join(" ")
+    ).filter(
+      (token) =>
+        token.length >= 3 &&
+        !GENERIC_FLOW_NAMESPACE_TOKENS.has(token) &&
+        !/\d/.test(token)
+    )
+  );
+}
+
+function topNamespaceFromPath(value?: string): string | undefined {
+  if (!value) return undefined;
+  const segments = value
+    .toLowerCase()
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment) => !["gw", "api", "mo", "pc", "mysamsunglife", "v1", "v2"].includes(segment));
+  return segments[0];
+}
+
+function buildCanonicalFlowCluster(
+  flows: LinkedFlowEvidence[],
+  questionTags: string[]
+): LinkedFlowEvidence[] {
+  const anchor = flows[0];
+  if (!anchor) {
+    return [];
+  }
+  const anchorNamespace = new Set(extractFlowNamespaceTokens(anchor));
+  const anchorTopNamespaces = new Set(
+    [topNamespaceFromPath(anchor.apiUrl), topNamespaceFromPath(anchor.backendPath)].filter(Boolean)
+  );
+  const specificQuestionTags = extractSpecificOntologySignals(questionTags);
+
+  const coherent = flows.filter((flow, index) => {
+    if (index === 0) {
+      return true;
+    }
+    const sharedSpecificSignals = specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag));
+    if (sharedSpecificSignals.length > 0) {
+      return true;
+    }
+    const flowNamespace = extractFlowNamespaceTokens(flow);
+    const namespaceOverlap = flowNamespace.filter((token) => anchorNamespace.has(token)).length;
+    if (namespaceOverlap > 0) {
+      return true;
+    }
+    const flowTopNamespaces = [topNamespaceFromPath(flow.apiUrl), topNamespaceFromPath(flow.backendPath)].filter(
+      Boolean
+    );
+    if (flowTopNamespaces.some((token) => anchorTopNamespaces.has(token))) {
+      return true;
+    }
+    return false;
+  });
+
+  return coherent.length > 0 ? coherent : [anchor];
+}
+
+function countIncoherentFlows(flows: LinkedFlowEvidence[], questionTags: string[]): number {
+  const anchor = flows[0];
+  if (!anchor) {
+    return 0;
+  }
+  const canonical = buildCanonicalFlowCluster(flows, questionTags);
+  const canonicalKeys = new Set(canonical.map((flow) => `${flow.apiUrl}|${flow.backendControllerMethod}`));
+  return flows.filter((flow) => !canonicalKeys.has(`${flow.apiUrl}|${flow.backendControllerMethod}`)).length;
+}
+
 function expandDesiredActionTags(actionHints: string[]): string[] {
   const expanded = new Set<string>();
   for (const action of actionHints) {
@@ -206,6 +339,11 @@ export function buildLinkedFlowEvidence(options: {
   const tokens = tokenize(options.question);
   const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
+  const questionNamespaceTokens = unique(
+    specificQuestionTags
+      .flatMap((tag) => tokenizeOntologyText(tag))
+      .filter((token) => token.length >= 3 && !GENERIC_FLOW_NAMESPACE_TOKENS.has(token))
+  );
   const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
   const nonActionQuestionTags = questionTags.filter(
     (tag) => !isActionCapabilityTag(tag) && !tag.startsWith("token:")
@@ -291,6 +429,23 @@ export function buildLinkedFlowEvidence(options: {
         score += Math.min(28, sharedSpecificSignals.length * 16);
         reasons.push(...sharedSpecificSignals.slice(0, 3).map((tag) => `specific-signal:${tag}`));
       }
+      const flowNamespaceTokens = extractFlowNamespaceTokens({
+        screenCode: link.frontend.screenCode,
+        routePath: link.frontend.routePath,
+        screenPath: link.frontend.screenPath,
+        apiUrl: link.api.normalizedUrl,
+        backendPath: link.backend.path,
+        backendControllerMethod: link.backend.controllerMethod,
+        serviceHints: link.backend.serviceHints
+      });
+      const sharedNamespaceTokens = questionNamespaceTokens.filter((tag) => flowNamespaceTokens.includes(tag));
+      if (sharedNamespaceTokens.length > 0) {
+        score += Math.min(42, sharedNamespaceTokens.length * 14);
+        reasons.push(`namespace-match:${sharedNamespaceTokens.slice(0, 3).join(",")}`);
+      } else if (questionNamespaceTokens.length > 0) {
+        score -= 28;
+        reasons.push("namespace-mismatch");
+      }
       if (specificQuestionTags.length > 0 && sharedSpecificSignals.length === 0) {
         score -= 18;
         reasons.push("missing-specific-signal-match");
@@ -352,7 +507,10 @@ export function buildDeterministicFlowAnswer(options: {
   linkedFlowEvidence: LinkedFlowEvidence[];
   downstreamTraces?: DownstreamFlowTrace[];
 }): DeterministicFlowAnswer {
-  const primary = options.linkedFlowEvidence[0];
+  const effectiveQuestionTags =
+    options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const canonicalFlows = buildCanonicalFlowCluster(options.linkedFlowEvidence, effectiveQuestionTags);
+  const primary = canonicalFlows[0];
   if (!primary) {
     return {
       answer: "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
@@ -362,7 +520,7 @@ export function buildDeterministicFlowAnswer(options: {
     };
   }
 
-  const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const questionTags = effectiveQuestionTags;
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
   const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
   const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
@@ -434,7 +592,7 @@ export function buildDeterministicFlowAnswer(options: {
   };
 
   const pickBestFlow = (criteria: Parameters<typeof scorePhaseCandidate>[1]): LinkedFlowEvidence | undefined =>
-    [...options.linkedFlowEvidence]
+    [...canonicalFlows]
       .map((item) => ({ item, score: scorePhaseCandidate(item, criteria) }))
       .sort((a, b) => b.score - a.score)
       .find((entry) => entry.score >= 120)?.item;
@@ -541,6 +699,7 @@ export function buildDeterministicFlowAnswer(options: {
   const primaryFlowActions = inferFlowActionTags(primary);
   const flowSpecificMatches = unique(orderedFlows.flatMap((flow) => specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag))));
   const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
+  const droppedIncoherentFlowCount = countIncoherentFlows(options.linkedFlowEvidence, questionTags);
   let confidence = 0.34;
   confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
   confidence += orderedFlows.length >= 2 ? 0.08 : 0.03;
@@ -561,6 +720,9 @@ export function buildDeterministicFlowAnswer(options: {
   }
   if (specificQuestionTags.length > 0 && primarySpecificMatches.length === 0) {
     confidence -= 0.26;
+  }
+  if (droppedIncoherentFlowCount > 0) {
+    confidence -= Math.min(0.18, droppedIncoherentFlowCount * 0.04);
   }
   if ((options.downstreamTraces ?? []).length === 0) {
     confidence = Math.min(confidence, 0.78);
@@ -594,6 +756,7 @@ export function buildDeterministicFlowAnswer(options: {
       ...(specificQuestionTags.length > 0 && primarySpecificMatches.length === 0
         ? ["specific-capability-mismatch"]
         : []),
+      ...(droppedIncoherentFlowCount > 0 ? ["incoherent-flow-filtered"] : []),
       ...((options.downstreamTraces ?? []).some((trace) => trace.steps.length > 0)
         ? ["downstream-static-trace"]
         : [])

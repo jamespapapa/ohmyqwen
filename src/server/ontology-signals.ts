@@ -1,6 +1,40 @@
 import type { OntologyNode } from "./ontology-graph.js";
 import type { RankedOntologyNode } from "./ontology-planner.js";
 
+const ONTOLOGY_SYNONYM_MAP: Record<string, string[]> = {
+  보험: ["insurance"],
+  보험금: ["benefit", "insurance-benefit"],
+  청구: ["claim", "submit"],
+  대출: ["loan"],
+  담보: ["collateral"],
+  주택: ["house", "home"],
+  신청: ["request", "apply"],
+  회원: ["member"],
+  인증: ["auth", "verify"],
+  로그인: ["login", "signin"],
+  등록: ["register", "regist"],
+  상태: ["status", "state"],
+  조회: ["inquiry", "query", "read", "select"],
+  저장: ["save", "write", "insert"],
+  수정: ["update", "modify"],
+  삭제: ["delete", "remove"],
+  문서: ["document", "doc"],
+  첨부: ["attachment", "file", "upload"],
+  업로드: ["upload", "file"],
+  진행: ["progress"],
+  계약: ["contract"],
+  연금: ["pension"],
+  펀드: ["fund"],
+  채널: ["channel"],
+  제휴: ["partner", "integration"],
+  콜백: ["callback", "webhook"],
+  브릿지: ["bridge"],
+  토큰: ["token"],
+  세션: ["session"],
+  캐시: ["cache"],
+  리디스: ["redis"]
+};
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -63,6 +97,9 @@ export function extractOntologyTextSignalsFromTexts(
   const tokens = tokenizeOntologyText(text);
   for (const token of tokens) {
     add(token);
+    for (const synonym of ONTOLOGY_SYNONYM_MAP[token] ?? []) {
+      add(synonym);
+    }
   }
   for (let index = 0; index < tokens.length - 1; index += 1) {
     const left = tokens[index];
@@ -77,11 +114,6 @@ export function extractOntologyTextSignalsFromTexts(
 export function buildQuestionOntologySignals(options: {
   question: string;
   moduleCandidates?: string[];
-  matchedKnowledgeIds?: string[];
-  matchedOntologyNodes?: OntologyNode[];
-  matchedOntologyNodeIds?: string[];
-  matchedOntologyLabels?: string[];
-  matchedRetrievalUnitTerms?: string[];
 }): string[] {
   const signals = new Set<string>();
   for (const signal of extractOntologyTextSignalsFromTexts([options.question])) {
@@ -90,6 +122,18 @@ export function buildQuestionOntologySignals(options: {
   for (const moduleCandidate of options.moduleCandidates ?? []) {
     signals.add(`module:${moduleCandidate}`);
   }
+  return Array.from(signals);
+}
+
+export function buildOntologyGroundingSignals(options: {
+  questionSignals: string[];
+  matchedKnowledgeIds?: string[];
+  matchedOntologyNodes?: OntologyNode[];
+  matchedOntologyNodeIds?: string[];
+  matchedOntologyLabels?: string[];
+  matchedRetrievalUnitTerms?: string[];
+}): string[] {
+  const signals = new Set<string>(options.questionSignals);
   for (const knowledgeId of options.matchedKnowledgeIds ?? []) {
     signals.add(knowledgeId);
     const normalized = knowledgeId.replace(/^graph:/, "").replace(/^unit:/, "").replace(/^knowledge:/, "");

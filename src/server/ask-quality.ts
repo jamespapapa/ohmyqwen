@@ -86,6 +86,17 @@ function answerMentionsAny(answer: string, values: string[]): boolean {
   return values.some((value) => value && answer.includes(value));
 }
 
+function answerMentionsFlowDetail(answer: string, flow: AskLinkedFlowQualityEvidence): boolean {
+  return (
+    Boolean(flow.screenCode && answer.includes(flow.screenCode)) ||
+    Boolean(flow.routePath && answer.includes(flow.routePath)) ||
+    answer.includes(flow.apiUrl) ||
+    answer.includes(flow.backendPath) ||
+    answer.includes(flow.backendControllerMethod) ||
+    (flow.serviceHints ?? []).some((hint) => answer.includes(hint))
+  );
+}
+
 function topLevelModulesFromPaths(paths: string[]): string[] {
   return unique(paths.map((entry) => entry.replace(/\\/g, "/").split("/")[0] ?? ""));
 }
@@ -426,15 +437,11 @@ export function qualityGateForAskOutput(options: {
       : flowSignals.some(
           ({ item, signals }) =>
             specificQuestionCapabilities.some((tag) => signals.includes(tag)) &&
-            (
-              (item.screenCode && options.output.answer.includes(item.screenCode)) ||
-              (item.routePath && options.output.answer.includes(item.routePath)) ||
-              options.output.answer.includes(item.apiUrl) ||
-              options.output.answer.includes(item.backendPath) ||
-              options.output.answer.includes(item.backendControllerMethod) ||
-              (item.serviceHints ?? []).some((hint) => options.output.answer.includes(hint))
-            )
+            answerMentionsFlowDetail(options.output.answer, item)
         );
+    const answerMentionsUnalignedFlow = flowSignals.some(
+      ({ item }) => !alignedFlowEvidence.includes(item) && answerMentionsFlowDetail(options.output.answer, item)
+    );
 
     if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
       failures.push("missing-frontend-route-evidence");
@@ -460,6 +467,9 @@ export function qualityGateForAskOutput(options: {
     }
     if (specificQuestionCapabilities.length > 0 && !answerSpecificFlow) {
       failures.push("missing-specific-ontology-signal-detail");
+    }
+    if (answerMentionsUnalignedFlow) {
+      failures.push("contains-unaligned-flow-detail");
     }
     if (!/(->|거쳐|호출|이어|gateway|controller|service|route)/i.test(options.output.answer)) {
       failures.push("missing-cross-layer-chain-detail");
