@@ -582,6 +582,31 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { fromPhase: "action-register", toPhase: "action-auth" }
     },
     {
+      id: "edge:propagates-contract:controller:service:request",
+      type: "propagates-contract",
+      fromId: "controller:RegisteUseDcpChnelController.registe",
+      toId: "service:EmbededMemberLoginService.authenticate",
+      label: "request contract propagation",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-register", "action-auth"],
+        moduleRoles: ["data-contract"],
+        processRoles: ["contract-propagation"],
+        confidence: 0.81,
+        evidencePaths: ["dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {
+        contractId: "data-contract:monimoauthrequest",
+        direction: "request",
+        viaEdgeId: "edge:calls:controller:service",
+        viaType: "calls"
+      }
+    },
+    {
       id: "edge:uses-eai:service:eai",
       type: "uses-eai",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -903,6 +928,7 @@ describe("retrieval unit standardization", () => {
       ])
     );
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:controller:service");
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:controller:service:request");
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");

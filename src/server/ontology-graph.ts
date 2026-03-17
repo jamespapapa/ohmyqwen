@@ -63,6 +63,7 @@ const OntologyEdgeTypeSchema = z.enum([
   "dispatches-to",
   "consumes-from",
   "transitions-to",
+  "propagates-contract",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -306,6 +307,7 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "dispatches-to":
     case "consumes-from":
     case "transitions-to":
+    case "propagates-contract":
     case "accepts-contract":
     case "returns-contract":
       return 120;

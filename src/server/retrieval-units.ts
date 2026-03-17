@@ -355,6 +355,7 @@ export function buildRetrievalUnitSnapshot(options: {
               "dispatches-to",
               "consumes-from",
               "transitions-to",
+              "propagates-contract",
               "uses-eai",
               "uses-cache-key",
               "stores-model",
@@ -374,6 +375,7 @@ export function buildRetrievalUnitSnapshot(options: {
               "dispatches-to",
               "consumes-from",
               "transitions-to",
+              "propagates-contract",
               "uses-eai",
               "uses-cache-key",
               "stores-model",
@@ -488,10 +490,10 @@ export function buildRetrievalUnitSnapshot(options: {
       continue;
     }
     const relatedOutgoing = (outgoing.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "dispatches-to", "consumes-from", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedIncoming = (incoming.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "dispatches-to", "consumes-from", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedEdges = unique([...relatedOutgoing, ...relatedIncoming].map((edge) => edge.id))
       .map((id) => knowledgeSchema.edges.find((edge) => edge.id === id))

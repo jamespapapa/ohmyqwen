@@ -40,6 +40,7 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "dispatches-to",
   "consumes-from",
   "transitions-to",
+  "propagates-contract",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -403,6 +404,7 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "consumes-from":
     case "accepts-contract":
     case "returns-contract":
+    case "propagates-contract":
       return 120;
     case "maps-to":
     case "stores-model":
@@ -2791,6 +2793,131 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           viaType: "maps-to"
         }
       });
+    }
+  }
+
+  const requestContractsByNode = new Map<string, Set<string>>();
+  const responseContractsByNode = new Map<string, Set<string>>();
+  const addContractForNode = (bucket: Map<string, Set<string>>, nodeId: string, contractId: string) => {
+    const contracts = bucket.get(nodeId) ?? new Set<string>();
+    contracts.add(contractId);
+    bucket.set(nodeId, contracts);
+  };
+  for (const edge of edges.values()) {
+    if (edge.type === "accepts-contract") {
+      addContractForNode(requestContractsByNode, edge.fromId, edge.toId);
+    } else if (edge.type === "returns-contract") {
+      addContractForNode(responseContractsByNode, edge.fromId, edge.toId);
+    }
+  }
+
+  const addContractPropagationEdge = (options: {
+    fromId: string;
+    toId: string;
+    contractId: string;
+    direction: "request" | "response";
+    flowEdge: KnowledgeEdge;
+  }) => {
+    if (options.fromId === options.toId) {
+      return;
+    }
+    const fromEntity = entities.get(options.fromId);
+    const toEntity = entities.get(options.toId);
+    const contractEntity = entities.get(options.contractId);
+    if (!fromEntity || !toEntity || !contractEntity) {
+      return;
+    }
+    upsertEdge({
+      id: `edge:propagates-contract:${options.fromId}:${options.toId}:${options.contractId}:${options.direction}`,
+      type: "propagates-contract",
+      fromId: options.fromId,
+      toId: options.toId,
+      label: `${options.direction} contract propagation`,
+      metadata: makeMetadata({
+        domains: [
+          ...fromEntity.metadata.domains,
+          ...toEntity.metadata.domains,
+          ...options.flowEdge.metadata.domains,
+          ...contractEntity.metadata.domains
+        ],
+        subdomains: [
+          ...fromEntity.metadata.subdomains,
+          ...toEntity.metadata.subdomains,
+          ...options.flowEdge.metadata.subdomains,
+          ...contractEntity.metadata.subdomains
+        ],
+        channels: [
+          ...fromEntity.metadata.channels,
+          ...toEntity.metadata.channels,
+          ...options.flowEdge.metadata.channels,
+          ...contractEntity.metadata.channels
+        ],
+        actions: inferActionsFromTexts(
+          fromEntity.label,
+          toEntity.label,
+          contractEntity.label,
+          options.direction === "request" ? "request input payload propagation" : "response output payload propagation"
+        ),
+        moduleRoles: ["data-contract"],
+        processRoles: ["contract-propagation"],
+        confidence: Math.max(
+          0.72,
+          Math.min(
+            0.9,
+            Math.max(
+              fromEntity.metadata.confidence,
+              toEntity.metadata.confidence,
+              options.flowEdge.metadata.confidence,
+              contractEntity.metadata.confidence
+            ) - 0.04
+          )
+        ),
+        evidencePaths: unique([
+          ...fromEntity.metadata.evidencePaths,
+          ...toEntity.metadata.evidencePaths,
+          ...options.flowEdge.metadata.evidencePaths,
+          ...contractEntity.metadata.evidencePaths
+        ]),
+        sourceType: "derived",
+        validatedStatus: "derived"
+      }),
+      attributes: {
+        contractId: options.contractId,
+        direction: options.direction,
+        viaEdgeId: options.flowEdge.id,
+        viaType: options.flowEdge.type
+      }
+    });
+  };
+
+  const forwardFlowTypes = new Set<KnowledgeEdgeType>(["calls", "routes-to", "proxies-to"]);
+  for (const flowEdge of Array.from(edges.values()).filter((edge) => forwardFlowTypes.has(edge.type))) {
+    const fromRequestContracts = requestContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
+    const toRequestContracts = requestContractsByNode.get(flowEdge.toId) ?? new Set<string>();
+    for (const contractId of fromRequestContracts) {
+      if (toRequestContracts.has(contractId)) {
+        addContractPropagationEdge({
+          fromId: flowEdge.fromId,
+          toId: flowEdge.toId,
+          contractId,
+          direction: "request",
+          flowEdge
+        });
+      }
+    }
+
+    const fromResponseContracts = responseContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
+    const toResponseContracts = responseContractsByNode.get(flowEdge.toId) ?? new Set<string>();
+    for (const contractId of fromResponseContracts) {
+      if (toResponseContracts.has(contractId)) {
+        addContractPropagationEdge({
+          fromId: flowEdge.toId,
+          toId: flowEdge.fromId,
+          contractId,
+          direction: "response",
+          flowEdge
+        });
+      }
     }
   }
 
