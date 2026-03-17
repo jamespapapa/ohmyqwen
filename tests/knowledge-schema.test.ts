@@ -402,6 +402,22 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "maps-to" &&
+          edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
+          edge.toId === "symbol:method:RegisteUseDcpChnelController.registe:dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "maps-to" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId === "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "calls" &&
           edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
           edge.toId === "service:EmbededMemberLoginService.authenticate"

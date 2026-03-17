@@ -1818,9 +1818,9 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             moduleName: gatewayModuleName
           }
         });
-        upsertEdge({
-          id: `edge:declares:${gatewayFileId}:${gatewayHandlerId}`,
-          type: "declares",
+      upsertEdge({
+        id: `edge:declares:${gatewayFileId}:${gatewayHandlerId}`,
+        type: "declares",
           fromId: gatewayFileId,
           toId: gatewayHandlerId,
           label: "gateway file declares gateway handler",
@@ -1856,6 +1856,26 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
             controllerClass: gatewayControllerMethod.split(".")[0] ?? gatewayControllerMethod,
             moduleName: "dcp-gateway"
           }
+        });
+      }
+
+      const gatewayMethodSymbolId = methodSymbolMap.get(gatewayControllerMethod);
+      if (gatewayMethodSymbolId) {
+        upsertEdge({
+          id: `edge:maps-to:${gatewayHandlerId}:${gatewayMethodSymbolId}`,
+          type: "maps-to",
+          fromId: gatewayHandlerId,
+          toId: gatewayMethodSymbolId,
+          label: "gateway handler maps to method symbol",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            confidence: Math.max(0.78, link.confidence),
+            evidencePaths: unique([gatewayRoute?.filePath ?? "", backendPath]),
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
         });
       }
 
@@ -1981,6 +2001,26 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         gatewayMethod: link.gateway.controllerMethod ?? null
       }
     });
+
+    const controllerMethodSymbolId = methodSymbolMap.get(link.backend.controllerMethod);
+    if (controllerMethodSymbolId) {
+      upsertEdge({
+        id: `edge:maps-to:${controllerId}:${controllerMethodSymbolId}`,
+        type: "maps-to",
+        fromId: controllerId,
+        toId: controllerMethodSymbolId,
+        label: "controller maps to method symbol",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          confidence: Math.max(0.78, link.confidence),
+          evidencePaths: [backendPath],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {}
+      });
+    }
 
     for (const requestModelName of unique(backendResourceHints.requestModelNames ?? [])) {
       const requestContractId = ensureDataContract({
@@ -2219,6 +2259,26 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }),
         attributes: {}
       });
+
+      const serviceMethodSymbolId = methodSymbolMap.get(serviceHint);
+      if (serviceMethodSymbolId) {
+        upsertEdge({
+          id: `edge:maps-to:${serviceId}:${serviceMethodSymbolId}`,
+          type: "maps-to",
+          fromId: serviceId,
+          toId: serviceMethodSymbolId,
+          label: "service maps to method symbol",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            confidence: Math.max(0.76, link.confidence),
+            evidencePaths: unique([serviceFilePath ?? "", backendPath]),
+            sourceType: serviceFilePath ? "derived" : "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      }
 
       for (const decisionPathName of unique(serviceResourceHints.decisionPathNames ?? [])) {
         const [ownerCandidate, ...labelParts] = decisionPathName.split("::");

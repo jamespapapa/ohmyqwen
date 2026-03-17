@@ -339,7 +339,30 @@ export function buildRetrievalUnitSnapshot(options: {
         const controllerCalls = (outgoing.get(controller.id) ?? []).filter((edge) => edge.type === "calls");
         const services = controllerCalls.map((edge) => entitiesById.get(edge.toId)).filter(Boolean) as KnowledgeEntity[];
         const supportRoots = [apiEntity, gatewayNode, controller, ...services].filter(Boolean) as KnowledgeEntity[];
+        const mappedSymbolEdges = supportRoots.flatMap((root) =>
+          (outgoing.get(root.id) ?? []).filter((edge) => edge.type === "maps-to")
+        );
+        const mappedSymbols = mappedSymbolEdges
+          .map((edge) => entitiesById.get(edge.toId))
+          .filter(Boolean) as KnowledgeEntity[];
         const supportEdges = supportRoots.flatMap((root) =>
+          (outgoing.get(root.id) ?? []).filter((edge) =>
+            [
+              "maps-to",
+              "accepts-contract",
+              "returns-contract",
+              "uses-store",
+              "uses-eai",
+              "uses-cache-key",
+              "stores-model",
+              "maps-to-table",
+              "queries-table",
+              "validates",
+              "branches-to"
+            ].includes(edge.type)
+          )
+        );
+        const mappedSupportEdges = mappedSymbols.flatMap((root) =>
           (outgoing.get(root.id) ?? []).filter((edge) =>
             [
               "accepts-contract",
@@ -356,9 +379,9 @@ export function buildRetrievalUnitSnapshot(options: {
           )
         );
         const supportEntities = unique(
-          supportEdges
+          [...supportEdges, ...mappedSupportEdges]
             .flatMap((edge) => [edge.fromId, edge.toId])
-            .filter((id) => !supportRoots.some((root) => root.id === id))
+            .filter((id) => !supportRoots.some((root) => root.id === id) && !mappedSymbols.some((root) => root.id === id))
         )
           .map((id) => entitiesById.get(id))
           .filter(Boolean) as KnowledgeEntity[];
@@ -369,8 +392,10 @@ export function buildRetrievalUnitSnapshot(options: {
           gatewayNode?.metadata,
           controller.metadata,
           ...services.map((item) => item.metadata),
+          ...mappedSymbols.map((item) => item.metadata),
           ...supportEntities.map((item) => item.metadata),
-          ...supportEdges.map((item) => item.metadata)
+          ...supportEdges.map((item) => item.metadata),
+          ...mappedSupportEdges.map((item) => item.metadata)
         ].filter(Boolean) as KnowledgeMetadata[]);
         pushUnit({
           id: `unit:flow:${fromEntity.id}:${apiEntity.id}:${controller.id}`,
@@ -389,11 +414,13 @@ export function buildRetrievalUnitSnapshot(options: {
             gatewayNode?.metadata,
             controller.metadata,
             ...services.map((item) => item.metadata),
+            ...mappedSymbols.map((item) => item.metadata),
             ...supportEntities.map((item) => item.metadata),
-            ...supportEdges.map((item) => item.metadata)
+            ...supportEdges.map((item) => item.metadata),
+            ...mappedSupportEdges.map((item) => item.metadata)
           ].filter(Boolean) as KnowledgeMetadata[]),
-          entityIds: ids([fromEntity, apiEntity, gatewayNode, controller, ...services, ...supportEntities]),
-          edgeIds: ids([routeEdge, mappingEdge, ...proxyEdges, ...controllerCalls, ...supportEdges]),
+          entityIds: ids([fromEntity, apiEntity, gatewayNode, controller, ...services, ...mappedSymbols, ...supportEntities]),
+          edgeIds: ids([routeEdge, mappingEdge, ...proxyEdges, ...controllerCalls, ...mappedSymbolEdges, ...supportEdges, ...mappedSupportEdges]),
           searchText: makeSearchText([
             fromEntity.label,
             fromEntity.summary,
@@ -402,6 +429,7 @@ export function buildRetrievalUnitSnapshot(options: {
             gatewayNode?.label,
             controller.label,
             ...services.map((service) => service.label),
+            ...mappedSymbols.map((entity) => entity.label),
             ...supportEntities.map((entity) => entity.label),
             String(fromEntity.attributes.routePath ?? fromEntity.attributes.functionName ?? ""),
             String(apiEntity.attributes.normalizedUrl ?? apiEntity.attributes.rawUrl ?? ""),

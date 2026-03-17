@@ -169,6 +169,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { path: "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java", serviceClass: "EmbededMemberLoginService", serviceMethod: "authenticate" }
     },
     {
+      id: "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java",
+      type: "symbol",
+      label: "EmbededMemberLoginService.authenticate",
+      summary: "authenticate method symbol",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-status-read"],
+        moduleRoles: [],
+        processRoles: [],
+        confidence: 0.78,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "structure-index",
+        validatedStatus: "derived"
+      },
+      attributes: { path: "dcp-member/src/main/java/com/example/EmbededMemberLoginService.java", className: "EmbededMemberLoginService", methodName: "authenticate" }
+    },
+    {
       id: "eai:F14090150",
       type: "eai-interface",
       label: "F14090150 가입자일괄조회",
@@ -644,6 +663,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:maps-to:service:symbol",
+      type: "maps-to",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java",
+      label: "service maps to method symbol",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth"],
+        moduleRoles: [],
+        processRoles: [],
+        confidence: 0.77,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:maps-to-table:model:table",
       type: "maps-to-table",
       fromId: "data-model:membersessionentity",
@@ -725,14 +764,15 @@ const snapshot: KnowledgeSchemaSnapshot = {
     }
   ],
   summary: {
-    entityCount: 15,
-    edgeCount: 14,
+    entityCount: 16,
+    edgeCount: 15,
     entityTypeCounts: {
       api: 1,
       "cache-key": 1,
       controller: 1,
       "data-contract": 1,
       "decision-path": 1,
+      "symbol": 2,
       "data-model": 1,
       "data-store": 2,
       "data-table": 1,
@@ -751,6 +791,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
       declares: 1,
       "accepts-contract": 1,
       "branches-to": 1,
+      "maps-to": 1,
       "maps-to-table": 1,
       "queries-table": 1,
       "routes-to": 2,
@@ -792,12 +833,14 @@ describe("retrieval unit standardization", () => {
     expect(uiActionFlowUnit?.searchText).toContain("RouteController.route");
     expect(uiActionFlowUnit?.searchText).toContain("MonimoAuthRequest");
     expect(uiActionFlowUnit?.searchText).toContain("authenticate :: switch auth status");
+    expect(uiActionFlowUnit?.searchText).toContain("EmbededMemberLoginService.authenticate");
     expect(uiActionFlowUnit?.entityIds).toEqual(
       expect.arrayContaining([
         "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
         "gateway-handler:RouteController.route",
         "data-contract:monimoauthrequest",
-        "decision-path:authenticate:switch-auth-status:service"
+        "decision-path:authenticate:switch-auth-status:service",
+        "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"
       ])
     );
 
