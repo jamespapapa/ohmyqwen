@@ -188,6 +188,7 @@ import {
   decideAskRetry,
   summarizeAskRetryEvidence
 } from "./ask-retry.js";
+import { capAskConfidence } from "./ask-confidence.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -8188,7 +8189,20 @@ export async function askServerProject(options: {
           })
         : null;
 
-    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = deterministicCrossLayerOutput ?? {
+    const normalizedDeterministicCrossLayerOutput = deterministicCrossLayerOutput
+      ? {
+          ...deterministicCrossLayerOutput,
+          confidence: capAskConfidence({
+            confidence: deterministicCrossLayerOutput.confidence,
+            questionType: questionTypeDecision.type,
+            linkedFlowEvidenceCount: linkedFlowEvidence.length,
+            downstreamTraceCount: downstreamFlowTraces.length,
+            caveats: deterministicCrossLayerOutput.caveats
+          })
+        }
+      : null;
+
+    let bestOutput: z.infer<typeof ProjectAskOutputSchema> = normalizedDeterministicCrossLayerOutput ?? {
       answer:
         "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
       confidence: 0.2,
@@ -8199,9 +8213,9 @@ export async function askServerProject(options: {
     let usedFallback = false;
     let passed = false;
 
-    const deterministicCrossLayerGate = deterministicCrossLayerOutput
+    const deterministicCrossLayerGate = normalizedDeterministicCrossLayerOutput
       ? qualityGateForAskOutput({
-          output: deterministicCrossLayerOutput,
+          output: normalizedDeterministicCrossLayerOutput,
           question,
           hitPaths: mergedHits.map((hit) => hit.path),
           strategy: strategyDecision.strategy,
@@ -8234,9 +8248,9 @@ export async function askServerProject(options: {
       qualityFailures.push(...deterministicCrossLayerGate.failures);
     }
 
-    const deterministicCrossLayerConfidence = deterministicCrossLayerOutput?.confidence ?? 0;
+    const deterministicCrossLayerConfidence = normalizedDeterministicCrossLayerOutput?.confidence ?? 0;
     const acceptDeterministicCrossLayer =
-      Boolean(deterministicCrossLayerOutput) &&
+      Boolean(normalizedDeterministicCrossLayerOutput) &&
       Boolean(deterministicCrossLayerGate?.passed) &&
       deterministicCrossLayerConfidence >= askRetryTargetConfidence &&
       (ontologySpecificCrossLayerQuestion || downstreamFlowTraces.length > 0 || linkedFlowEvidence.length >= 4);
@@ -8378,6 +8392,14 @@ export async function askServerProject(options: {
               reasons: item.reasons.slice(0, 5),
               representativePaths: item.projection.representativePaths.slice(0, 4).map((path) => path.label)
             })),
+            canonicalCrossLayerDraft: normalizedDeterministicCrossLayerOutput
+              ? {
+                  confidence: normalizedDeterministicCrossLayerOutput.confidence,
+                  answer: normalizedDeterministicCrossLayerOutput.answer,
+                  evidence: normalizedDeterministicCrossLayerOutput.evidence,
+                  caveats: normalizedDeterministicCrossLayerOutput.caveats
+                }
+              : null,
             learnedKnowledgeMatches: matchedLearnedKnowledge,
             memory: memoryPreview,
             instruction:
@@ -8404,11 +8426,20 @@ export async function askServerProject(options: {
         ),
         fallback: bestOutput,
         parse: (value) => ProjectAskOutputSchema.parse(value)
-      });
+        });
 
         usedFallback ||= generation.usedFallback;
         llmCallCount += generation.liveCallCount;
-        bestOutput = generation.output;
+        bestOutput = {
+          ...generation.output,
+          confidence: capAskConfidence({
+            confidence: generation.output.confidence,
+            questionType: questionTypeDecision.type,
+            linkedFlowEvidenceCount: linkedFlowEvidence.length,
+            downstreamTraceCount: downstreamFlowTraces.length,
+            caveats: generation.output.caveats
+          })
+        };
         await appendProjectDebugEvent({
           timestamp: nowIso(),
           projectId: options.projectId,
