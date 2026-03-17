@@ -1,7 +1,12 @@
 import { buildQmdCorpusQueryCandidates, planQmdCorpusSearch, type QmdCorpusId } from "./qmd-corpora.js";
 import { ensureQmdIndexed, queryQmd, resolveQmdRuntime, type QmdSearchHit } from "./qmd-cli.js";
 import { ensureInternalQmdIndexed, queryInternalQmd, resolveInternalQmdRuntime } from "./qmd-internal.js";
-import { postprocessQmdHits, scoreQmdHit, selectEffectiveQmdQueryMode } from "./qmd-strategy.js";
+import {
+  postprocessQmdHits,
+  scoreQmdHit,
+  selectEffectiveQmdQueryMode,
+  type QmdRerankContext
+} from "./qmd-strategy.js";
 import type { ResolvedRetrievalConfig } from "./types.js";
 
 interface QmdSignalInput {
@@ -18,6 +23,7 @@ interface RunQmdMultiCorpusOptions {
   config: ResolvedRetrievalConfig["qmd"];
   timeoutMs: number;
   limit: number;
+  rerankContext?: QmdRerankContext;
 }
 
 export interface QmdCorpusAttempt {
@@ -191,14 +197,16 @@ export async function runQmdMultiCorpusSearch(options: RunQmdMultiCorpusOptions)
       const rankedHits = postprocessQmdHits({
         hits: qmdResult.hits,
         query: options.signals.task,
-        limit: options.limit
+        limit: options.limit,
+        rerankContext: options.rerankContext
       });
       for (const hit of rankedHits) {
         const score = scoreQmdHit({
           hit,
           query: options.signals.task,
           corpusId: corpus.id,
-          corpusWeight: corpus.weight
+          corpusWeight: corpus.weight,
+          rerankContext: options.rerankContext
         });
         const existing = merged.get(hit.path);
         if (!existing || score > existing.score) {

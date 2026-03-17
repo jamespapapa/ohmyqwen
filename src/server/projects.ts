@@ -31,6 +31,7 @@ import {
   runQmdMultiCorpusSearch,
   type QmdCorpusAttempt
 } from "../retrieval/qmd-search.js";
+import type { QmdRerankContext } from "../retrieval/qmd-strategy.js";
 import { buildProjectQmdContextPayload } from "../retrieval/qmd-context.js";
 import { getQmdCorpusDefinitions } from "../retrieval/qmd-corpora.js";
 import { resolveInternalQmdRuntimePaths } from "../retrieval/qmd-runtime.js";
@@ -1489,12 +1490,188 @@ function buildSearchPlannedQuery(options: {
   return unique([options.query, ...contract.queryHints.slice(0, 6), ...retrievalUnitTerms, ...ontologyTerms]).join(" ");
 }
 
+const ONTOLOGY_PATH_SIGNAL_STOP_WORDS = new Set([
+  "src",
+  "main",
+  "test",
+  "tests",
+  "java",
+  "kotlin",
+  "resources",
+  "views",
+  "view",
+  "pages",
+  "page",
+  "components",
+  "component",
+  "controller",
+  "service",
+  "services",
+  "mapper",
+  "mappers",
+  "repository",
+  "repositories",
+  "dao",
+  "model",
+  "models",
+  "entity",
+  "entities",
+  "com",
+  "org",
+  "net",
+  "api",
+  "gw"
+]);
+
+function tokenizeOntologyPathSignals(values: string[]): string[] {
+  return unique(
+    values.flatMap((value) =>
+      toForwardSlash(value)
+        .toLowerCase()
+        .split(/[^a-z0-9가-힣]+/i)
+        .map((item) => item.trim())
+        .filter((item) => item.length >= 3 && !ONTOLOGY_PATH_SIGNAL_STOP_WORDS.has(item))
+    )
+  );
+}
+
+function deriveOntologyPathPrefix(filePath: string): string | undefined {
+  const segments = toForwardSlash(filePath).toLowerCase().split("/").filter(Boolean);
+  if (segments.length === 0) {
+    return undefined;
+  }
+  if (segments[0]?.startsWith("dcp-")) {
+    return `${segments[0]}/`;
+  }
+  if (segments[0] === "src" && segments[1] === "views") {
+    return `${segments.slice(0, Math.min(5, segments.length)).join("/")}/`;
+  }
+  if (segments[0] === "src" && segments[1] === "router") {
+    return `${segments.slice(0, Math.min(4, segments.length)).join("/")}/`;
+  }
+  if (segments[0] === "resources") {
+    return `${segments.slice(0, Math.min(3, segments.length)).join("/")}/`;
+  }
+  if (segments.length >= 2) {
+    return `${segments.slice(0, 2).join("/")}/`;
+  }
+  return `${segments[0]}/`;
+}
+
+function buildOntologyRetrievalRerankContext(options: {
+  question: string;
+  rankedUnits: RankedRetrievalUnit[];
+  rankedNodes: RankedOntologyNode[];
+  rankedProjections: RankedOntologyProjection[];
+}): QmdRerankContext {
+  const evidencePaths = unique([
+    ...options.rankedUnits.flatMap((item) => item.unit.evidencePaths),
+    ...options.rankedNodes.flatMap((item) => item.node.metadata.evidencePaths),
+    ...options.rankedProjections.flatMap((item) => item.projection.representativePaths.map((pathInfo) => pathInfo.label))
+  ]).map(toForwardSlash);
+  const preferredPathPrefixes = unique(
+    evidencePaths
+      .map((entry) => deriveOntologyPathPrefix(entry))
+      .filter((entry): entry is string => Boolean(entry))
+  ).slice(0, 10);
+  const preferredPathTokens = tokenizeOntologyPathSignals([
+    options.question,
+    ...evidencePaths,
+    ...options.rankedNodes.flatMap((item) => [
+      item.node.label,
+      item.node.summary,
+      ...item.node.metadata.domains,
+      ...item.node.metadata.subdomains,
+      ...item.node.metadata.channels,
+      ...item.node.metadata.actions,
+      ...item.node.metadata.moduleRoles,
+      ...item.node.metadata.processRoles
+    ]),
+    ...options.rankedUnits.flatMap((item) => [item.unit.title, item.unit.summary, ...item.unit.searchText]),
+    ...options.rankedProjections.flatMap((item) => [
+      item.projection.title,
+      item.projection.summary,
+      ...item.projection.representativePaths.map((pathInfo) => pathInfo.label)
+    ])
+  ]).slice(0, 24);
+  const preferredTextTokens = unique([
+    ...options.rankedNodes.flatMap((item) => [
+      ...item.node.metadata.actions,
+      ...item.node.metadata.channels,
+      ...item.node.metadata.moduleRoles,
+      ...item.node.metadata.processRoles
+    ]),
+    ...options.rankedUnits.flatMap((item) => item.unit.searchText),
+    ...options.rankedProjections.flatMap((item) => item.projection.representativePaths.map((pathInfo) => pathInfo.label))
+  ]).slice(0, 16);
+  return {
+    evidencePaths: evidencePaths.slice(0, 16),
+    preferredPathPrefixes,
+    preferredPathTokens,
+    preferredTextTokens
+  };
+}
+
+function scoreHitAgainstOntologyRerankContext(hit: ProjectSearchHit, rerankContext?: QmdRerankContext): number {
+  if (!rerankContext) {
+    return 0;
+  }
+
+  const normalizedPath = toForwardSlash(hit.path).toLowerCase();
+  const pathTokens = tokenizeOntologyPathSignals([normalizedPath]);
+  const preferredPathTokens = new Set(tokenizeOntologyPathSignals(rerankContext.preferredPathTokens ?? []));
+  const preferredPathPrefixes = unique((rerankContext.preferredPathPrefixes ?? []).map((entry) => toForwardSlash(entry).toLowerCase()));
+  const evidencePaths = new Set((rerankContext.evidencePaths ?? []).map((entry) => toForwardSlash(entry).toLowerCase()));
+  const preferredTextTokens = unique(
+    (rerankContext.preferredTextTokens ?? []).map((entry) => entry.trim().toLowerCase()).filter((entry) => entry.length >= 3)
+  );
+  const combinedText = `${hit.title ?? ""} ${hit.snippet ?? ""}`.toLowerCase();
+
+  let delta = 0;
+  const tokenOverlap = pathTokens.filter((token) => preferredPathTokens.has(token)).length;
+  if (tokenOverlap > 0) {
+    delta += Math.min(1.8, tokenOverlap * 0.32);
+  }
+  const prefixMatches = preferredPathPrefixes.filter((prefix) => normalizedPath.startsWith(prefix)).length;
+  if (prefixMatches > 0) {
+    delta += Math.min(2.4, prefixMatches * 1.1);
+  }
+  if (evidencePaths.has(normalizedPath)) {
+    delta += 2.8;
+  }
+  for (const token of preferredTextTokens.slice(0, 8)) {
+    if (combinedText.includes(token)) {
+      delta += 0.12;
+    }
+  }
+  if (
+    preferredPathTokens.size > 0 &&
+    tokenOverlap === 0 &&
+    prefixMatches === 0 &&
+    !evidencePaths.has(normalizedPath) &&
+    pathTokens.filter((token) => token.length >= 4).length >= 2
+  ) {
+    delta -= 1.15;
+  }
+
+  return delta;
+}
+
 function rerankProjectSearchHitsWithRetrievalUnits(options: {
   hits: ProjectSearchHit[];
   rankedUnits: Array<{ unit: { id: string; title: string; summary: string; searchText: string[]; evidencePaths: string[] }; score: number }>;
+  rerankContext?: QmdRerankContext;
 }): ProjectSearchHit[] {
   if (options.rankedUnits.length === 0 || options.hits.length === 0) {
-    return options.hits;
+    if (!options.rerankContext) {
+      return options.hits;
+    }
+    return options.hits
+      .map((hit) => ({
+        ...hit,
+        score: hit.score + scoreHitAgainstOntologyRerankContext(hit, options.rerankContext)
+      }))
+      .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.path.localeCompare(b.path)));
   }
 
   return options.hits
@@ -1516,6 +1693,12 @@ function rerankProjectSearchHitsWithRetrievalUnits(options: {
           boostedScore += 0.7;
           extraReasons.push(`retrieval-unit-text=${ranked.unit.id}`);
         }
+      }
+
+      const ontologyDelta = scoreHitAgainstOntologyRerankContext(hit, options.rerankContext);
+      if (ontologyDelta !== 0) {
+        boostedScore += ontologyDelta;
+        extraReasons.push(ontologyDelta > 0 ? "ontology-path-align" : "ontology-path-mismatch");
       }
 
       return {
@@ -7678,6 +7861,12 @@ export async function askServerProject(options: {
         matchedKnowledgeIds: matchedKnowledge.map((item) => item.id)
       });
       const ontologyTerms = collectOntologyQueryTerms(rankedOntologyNodes, 10);
+      const ontologyRerankContext = buildOntologyRetrievalRerankContext({
+        question,
+        rankedUnits: rankedRetrievalUnits,
+        rankedNodes: rankedOntologyNodes,
+        rankedProjections: rankedOntologyProjections
+      });
       const matchedOntologyConcepts = summarizeOntologyConceptSignals(questionTags);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
@@ -7782,14 +7971,14 @@ export async function askServerProject(options: {
             strategy: strategyDecision.strategy,
             moduleCandidates: strategyDecision.moduleCandidates,
             focusTokens: askFocusTokens
-          });
+          }) + scoreHitAgainstOntologyRerankContext(a, ontologyRerankContext);
           const bScore = scoreAskHitRelevance({
             hit: b,
             question,
             strategy: strategyDecision.strategy,
             moduleCandidates: strategyDecision.moduleCandidates,
             focusTokens: askFocusTokens
-          });
+          }) + scoreHitAgainstOntologyRerankContext(b, ontologyRerankContext);
           return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
         })
         .slice(0, options.limit ?? 14);
@@ -9113,6 +9302,12 @@ export async function searchServerProject(options: {
         })
       : [];
     const ontologyTerms = collectOntologyQueryTerms(rankedOntologyNodes, 10);
+    const ontologyRerankContext = buildOntologyRetrievalRerankContext({
+      question: query,
+      rankedUnits: rankedRetrievalUnits,
+      rankedNodes: rankedOntologyNodes,
+      rankedProjections: rankedOntologyProjections
+    });
     const plannedQuery = buildSearchPlannedQuery({
       query,
       questionType: questionTypeDecision.type,
@@ -9179,7 +9374,8 @@ export async function searchServerProject(options: {
           source,
           limit
         }),
-        rankedUnits: rankedRetrievalUnits
+        rankedUnits: rankedRetrievalUnits,
+        rerankContext: ontologyRerankContext
       });
     const searchDiagnosticsBase = {
       questionType: questionTypeDecision.type,
@@ -9210,7 +9406,8 @@ export async function searchServerProject(options: {
           },
           config: retrievalConfig.qmd,
           timeoutMs: retrievalConfig.timeoutMs.qmd,
-          limit
+          limit,
+          rerankContext: ontologyRerankContext
         });
         const qmdQueries = qmdResult.queriesTried;
         const usedQmdQuery = qmdResult.corpusResults.find((entry) => entry.status === "ok")?.query ?? "";

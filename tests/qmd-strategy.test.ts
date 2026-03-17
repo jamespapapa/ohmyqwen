@@ -63,6 +63,67 @@ describe("qmd strategy", () => {
     ]);
   });
 
+  it("prefers ontology-aligned hits over unrelated higher raw-score paths", () => {
+    const hits: QmdSearchHit[] = [
+      {
+        path: "dcp-loan/src/main/java/com/acme/LoanRequestController.java",
+        score: 0.91,
+        title: "LoanRequestController",
+        snippet: "loan request status update"
+      },
+      {
+        path: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+        score: 0.73,
+        title: "BenefitClaimController",
+        snippet: "benefit claim insert submit"
+      }
+    ];
+
+    const ranked = postprocessQmdHits({
+      hits,
+      query: "프론트부터 백엔드까지 엔드투엔드 흐름을 분석해줘",
+      limit: 10,
+      rerankContext: {
+        evidencePaths: [
+          "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java"
+        ],
+        preferredPathPrefixes: ["dcp-insurance/"],
+        preferredPathTokens: ["insurance", "benefit", "claim", "insert", "submit"],
+        preferredTextTokens: ["benefit", "claim", "insert"]
+      }
+    });
+
+    expect(ranked[0]?.path).toBe("dcp-insurance/src/main/java/com/acme/BenefitClaimController.java");
+  });
+
+  it("suppresses mixed-namespace hits when ontology context is coherent", () => {
+    const hits: QmdSearchHit[] = [
+      {
+        path: "dcp-member/src/main/java/com/acme/MemberRegisterController.java",
+        score: 0.89,
+        title: "MemberRegisterController"
+      },
+      {
+        path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java",
+        score: 0.74,
+        title: "AccBenefitClaimService"
+      }
+    ];
+
+    const ranked = postprocessQmdHits({
+      hits,
+      query: "보험금 청구 저장 흐름을 코드 기준으로 분석해줘",
+      limit: 10,
+      rerankContext: {
+        preferredPathPrefixes: ["dcp-insurance/"],
+        preferredPathTokens: ["insurance", "benefit", "claim", "save"],
+        preferredTextTokens: ["benefit", "claim", "save"]
+      }
+    });
+
+    expect(ranked[0]?.path).toBe("dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java");
+  });
+
   it("adds code-shaped English composite symbols for business-domain Korean questions", () => {
     const candidates = buildQmdQueryCandidates({
       task: "dcp-insurance 보험금 청구 로직을 탑다운으로 분석해줘"

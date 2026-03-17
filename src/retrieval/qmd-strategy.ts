@@ -3,6 +3,45 @@ import type { QmdSearchHit } from "./qmd-cli.js";
 
 const NOISE_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
 const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".java", ".kt", ".kts", ".py", ".go", ".rs", ".vue", ".jsp", ".html"]);
+const PATH_SIGNAL_STOP_WORDS = new Set([
+  "src",
+  "main",
+  "test",
+  "tests",
+  "java",
+  "kotlin",
+  "resources",
+  "views",
+  "view",
+  "pages",
+  "page",
+  "components",
+  "component",
+  "controller",
+  "service",
+  "services",
+  "mapper",
+  "mappers",
+  "repository",
+  "repositories",
+  "dao",
+  "model",
+  "models",
+  "entity",
+  "entities",
+  "com",
+  "org",
+  "net",
+  "api",
+  "gw"
+]);
+
+export interface QmdRerankContext {
+  preferredPathTokens?: string[];
+  preferredPathPrefixes?: string[];
+  preferredTextTokens?: string[];
+  evidencePaths?: string[];
+}
 
 function toForwardSlash(value: string): string {
   return value.replace(/\\/g, "/");
@@ -18,6 +57,31 @@ function extractModuleCandidates(query: string): string[] {
 
 function extractQueryTokens(query: string): string[] {
   return unique((query.match(/[A-Za-z0-9가-힣._/-]+/g) ?? []).map((item) => item.trim()).filter(Boolean));
+}
+
+function extractPathSignalTokens(value: string): string[] {
+  return unique(
+    toForwardSlash(value)
+      .toLowerCase()
+      .split(/[^a-z0-9가-힣]+/i)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 3 && !PATH_SIGNAL_STOP_WORDS.has(item))
+  );
+}
+
+function normalizePrefix(value: string): string {
+  const normalized = toForwardSlash(value).toLowerCase().replace(/^\/+/, "");
+  return normalized.endsWith("/") ? normalized : `${normalized}/`;
+}
+
+function countTokenOverlap(tokens: string[], preferred: Set<string>): number {
+  let overlap = 0;
+  for (const token of tokens) {
+    if (preferred.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap;
 }
 
 function isVendorNoisePath(filePath: string): boolean {
@@ -75,6 +139,7 @@ export function scoreQmdHit(options: {
   query: string;
   corpusId?: string;
   corpusWeight?: number;
+  rerankContext?: QmdRerankContext;
 }): number {
   const modules = extractModuleCandidates(options.query);
   const queryTokens = extractQueryTokens(options.query).map((item) => item.toLowerCase());
@@ -109,6 +174,52 @@ export function scoreQmdHit(options: {
     }
   }
 
+  const preferredPathTokens = new Set(
+    (options.rerankContext?.preferredPathTokens ?? []).flatMap((item) => extractPathSignalTokens(item))
+  );
+  const preferredPathPrefixes = unique((options.rerankContext?.preferredPathPrefixes ?? []).map(normalizePrefix));
+  const preferredTextTokens = unique(
+    (options.rerankContext?.preferredTextTokens ?? [])
+      .map((item) => item.trim().toLowerCase())
+      .filter((item) => item.length >= 3)
+  );
+  const evidencePaths = unique(
+    (options.rerankContext?.evidencePaths ?? []).map((item) => toForwardSlash(item).toLowerCase())
+  );
+
+  const hitPathTokens = extractPathSignalTokens(normalizedPath);
+  const preferredTokenOverlap = countTokenOverlap(hitPathTokens, preferredPathTokens);
+  if (preferredTokenOverlap > 0) {
+    score += Math.min(180, preferredTokenOverlap * 32);
+  }
+
+  const prefixMatches = preferredPathPrefixes.filter((prefix) => normalizedPath.startsWith(prefix)).length;
+  if (prefixMatches > 0) {
+    score += Math.min(220, prefixMatches * 120);
+  }
+
+  const evidenceMatch = evidencePaths.some((entry) => entry === normalizedPath);
+  if (evidenceMatch) {
+    score += 260;
+  }
+
+  const combinedText = `${options.hit.title ?? ""} ${options.hit.context ?? ""} ${options.hit.snippet ?? ""}`.toLowerCase();
+  for (const token of preferredTextTokens.slice(0, 8)) {
+    if (combinedText.includes(token)) {
+      score += 14;
+    }
+  }
+
+  if (
+    preferredPathTokens.size > 0 &&
+    preferredTokenOverlap === 0 &&
+    prefixMatches === 0 &&
+    !evidenceMatch &&
+    hitPathTokens.filter((item) => item.length >= 4).length >= 2
+  ) {
+    score -= 95;
+  }
+
   return score * (options.corpusWeight ?? 1);
 }
 
@@ -116,6 +227,7 @@ export function postprocessQmdHits(options: {
   hits: QmdSearchHit[];
   query: string;
   limit: number;
+  rerankContext?: QmdRerankContext;
 }): QmdSearchHit[] {
   return options.hits
     .filter((hit) => !isQmdNoisePath(hit.path))
@@ -123,7 +235,8 @@ export function postprocessQmdHits(options: {
       hit,
       score: scoreQmdHit({
         hit,
-        query: options.query
+        query: options.query,
+        rerankContext: options.rerankContext
       })
     }))
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.hit.path.localeCompare(b.hit.path)))
