@@ -500,6 +500,22 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "emits-contract" &&
+          edge.fromId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.toId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "receives-contract" &&
+          edge.fromId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.toId === "data-contract:monimoauthresponse"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "accepts-contract" &&
           edge.fromId === "api:/member/monimo/registe" &&
           edge.toId === "data-contract:monimoauthrequest"
@@ -565,10 +581,30 @@ describe("knowledge schema foundation", () => {
       snapshot.edges.some(
         (edge) =>
           edge.type === "propagates-contract" &&
+          edge.fromId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.toId === "api:/member/monimo/registe" &&
+          edge.attributes.direction === "request" &&
+          edge.attributes.contractId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
           edge.fromId === "controller:RegisteUseDcpChnelController.registe" &&
           edge.toId === "service:EmbededMemberLoginService.authenticate" &&
           edge.attributes.direction === "request" &&
           edge.attributes.contractId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
+          edge.fromId === "api:/member/monimo/registe" &&
+          edge.toId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.attributes.direction === "response" &&
+          edge.attributes.contractId === "data-contract:monimoauthresponse"
       )
     ).toBe(true);
     expect(

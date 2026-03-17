@@ -41,6 +41,8 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "consumes-from",
   "transitions-to",
   "propagates-contract",
+  "emits-contract",
+  "receives-contract",
   "accepts-contract",
   "returns-contract",
   "stores-model",
@@ -405,6 +407,8 @@ function knowledgeEdgePriority(edge: KnowledgeEdge): number {
     case "accepts-contract":
     case "returns-contract":
     case "propagates-contract":
+    case "emits-contract":
+    case "receives-contract":
       return 120;
     case "maps-to":
     case "stores-model":
@@ -2246,6 +2250,28 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         evidencePath: backendPath,
         moduleName: backendModuleName
       });
+      if (uiActionId) {
+        upsertEdge({
+          id: `edge:emits-contract:${uiActionId}:${requestContractId}`,
+          type: "emits-contract",
+          fromId: uiActionId,
+          toId: requestContractId,
+          label: "UI action emits request contract",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            actions: inferActionsFromTexts(link.api.functionName, requestModelName, "request input payload"),
+            moduleRoles: ["data-contract"],
+            confidence: Math.max(0.72, link.confidence),
+            evidencePaths: [link.frontend.screenPath, backendPath].filter(Boolean) as string[],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            direction: "request"
+          }
+        });
+      }
       upsertEdge({
         id: `edge:accepts-contract:${apiId}:${requestContractId}`,
         type: "accepts-contract",
@@ -2295,6 +2321,28 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         evidencePath: backendPath,
         moduleName: backendModuleName
       });
+      if (uiActionId) {
+        upsertEdge({
+          id: `edge:receives-contract:${uiActionId}:${responseContractId}`,
+          type: "receives-contract",
+          fromId: uiActionId,
+          toId: responseContractId,
+          label: "UI action receives response contract",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            actions: inferActionsFromTexts(link.api.functionName, responseModelName, "response output result payload"),
+            moduleRoles: ["data-contract"],
+            confidence: Math.max(0.72, link.confidence),
+            evidencePaths: [link.frontend.screenPath, backendPath].filter(Boolean) as string[],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            direction: "response"
+          }
+        });
+      }
       upsertEdge({
         id: `edge:returns-contract:${apiId}:${responseContractId}`,
         type: "returns-contract",
@@ -2703,6 +2751,8 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   }
 
   const mappedSupportEdgeTypes: KnowledgeEdgeType[] = [
+    "emits-contract",
+    "receives-contract",
     "accepts-contract",
     "returns-contract",
     "uses-store",
@@ -2796,18 +2846,26 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
-  const requestContractsByNode = new Map<string, Set<string>>();
-  const responseContractsByNode = new Map<string, Set<string>>();
+  const requestSourceContractsByNode = new Map<string, Set<string>>();
+  const requestTargetContractsByNode = new Map<string, Set<string>>();
+  const responseSourceContractsByNode = new Map<string, Set<string>>();
+  const responseTargetContractsByNode = new Map<string, Set<string>>();
   const addContractForNode = (bucket: Map<string, Set<string>>, nodeId: string, contractId: string) => {
     const contracts = bucket.get(nodeId) ?? new Set<string>();
     contracts.add(contractId);
     bucket.set(nodeId, contracts);
   };
   for (const edge of edges.values()) {
-    if (edge.type === "accepts-contract") {
-      addContractForNode(requestContractsByNode, edge.fromId, edge.toId);
+    if (edge.type === "emits-contract") {
+      addContractForNode(requestSourceContractsByNode, edge.fromId, edge.toId);
+    } else if (edge.type === "accepts-contract") {
+      addContractForNode(requestSourceContractsByNode, edge.fromId, edge.toId);
+      addContractForNode(requestTargetContractsByNode, edge.fromId, edge.toId);
     } else if (edge.type === "returns-contract") {
-      addContractForNode(responseContractsByNode, edge.fromId, edge.toId);
+      addContractForNode(responseSourceContractsByNode, edge.fromId, edge.toId);
+      addContractForNode(responseTargetContractsByNode, edge.fromId, edge.toId);
+    } else if (edge.type === "receives-contract") {
+      addContractForNode(responseTargetContractsByNode, edge.fromId, edge.toId);
     }
   }
 
@@ -2892,8 +2950,8 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
 
   const forwardFlowTypes = new Set<KnowledgeEdgeType>(["calls", "routes-to", "proxies-to"]);
   for (const flowEdge of Array.from(edges.values()).filter((edge) => forwardFlowTypes.has(edge.type))) {
-    const fromRequestContracts = requestContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
-    const toRequestContracts = requestContractsByNode.get(flowEdge.toId) ?? new Set<string>();
+    const fromRequestContracts = requestSourceContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
+    const toRequestContracts = requestTargetContractsByNode.get(flowEdge.toId) ?? new Set<string>();
     for (const contractId of fromRequestContracts) {
       if (toRequestContracts.has(contractId)) {
         addContractPropagationEdge({
@@ -2906,10 +2964,10 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }
     }
 
-    const fromResponseContracts = responseContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
-    const toResponseContracts = responseContractsByNode.get(flowEdge.toId) ?? new Set<string>();
-    for (const contractId of fromResponseContracts) {
-      if (toResponseContracts.has(contractId)) {
+    const responseSourceContracts = responseSourceContractsByNode.get(flowEdge.toId) ?? new Set<string>();
+    const responseTargetContracts = responseTargetContractsByNode.get(flowEdge.fromId) ?? new Set<string>();
+    for (const contractId of responseSourceContracts) {
+      if (responseTargetContracts.has(contractId)) {
         addContractPropagationEdge({
           fromId: flowEdge.toId,
           toId: flowEdge.fromId,

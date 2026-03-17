@@ -338,7 +338,7 @@ export function buildRetrievalUnitSnapshot(options: {
         }
         const controllerCalls = (outgoing.get(controller.id) ?? []).filter((edge) => edge.type === "calls");
         const services = controllerCalls.map((edge) => entitiesById.get(edge.toId)).filter(Boolean) as KnowledgeEntity[];
-        const supportRoots = [apiEntity, gatewayNode, controller, ...services].filter(Boolean) as KnowledgeEntity[];
+        const supportRoots = [fromEntity, apiEntity, gatewayNode, controller, ...services].filter(Boolean) as KnowledgeEntity[];
         const mappedSymbolEdges = supportRoots.flatMap((root) =>
           (outgoing.get(root.id) ?? []).filter((edge) => edge.type === "maps-to")
         );
@@ -356,6 +356,8 @@ export function buildRetrievalUnitSnapshot(options: {
               "consumes-from",
               "transitions-to",
               "propagates-contract",
+              "emits-contract",
+              "receives-contract",
               "uses-eai",
               "uses-cache-key",
               "stores-model",
@@ -376,6 +378,8 @@ export function buildRetrievalUnitSnapshot(options: {
               "consumes-from",
               "transitions-to",
               "propagates-contract",
+              "emits-contract",
+              "receives-contract",
               "uses-eai",
               "uses-cache-key",
               "stores-model",
@@ -490,10 +494,10 @@ export function buildRetrievalUnitSnapshot(options: {
       continue;
     }
     const relatedOutgoing = (outgoing.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "emits-contract", "receives-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedIncoming = (incoming.get(entity.id) ?? []).filter((edge) =>
-      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
+      ["uses-store", "dispatches-to", "consumes-from", "propagates-contract", "emits-contract", "receives-contract", "accepts-contract", "returns-contract", "maps-to-table", "queries-table", "uses-cache-key", "stores-model", "contains", "declares"].includes(edge.type)
     );
     const relatedEdges = unique([...relatedOutgoing, ...relatedIncoming].map((edge) => edge.id))
       .map((id) => knowledgeSchema.edges.find((edge) => edge.id === id))

@@ -499,6 +499,51 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:emits-contract:ui-action:request",
+      type: "emits-contract",
+      fromId: "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+      toId: "data-contract:monimoauthrequest",
+      label: "UI action emits request contract",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["data-contract"],
+        processRoles: [],
+        confidence: 0.82,
+        evidencePaths: ["src/views/login/MDP-MYCER999999M.vue"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { direction: "request" }
+    },
+    {
+      id: "edge:propagates-contract:ui-action:api:request",
+      type: "propagates-contract",
+      fromId: "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+      toId: "api:/member/monimo/registe",
+      label: "request contract propagation",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["data-contract"],
+        processRoles: ["contract-propagation"],
+        confidence: 0.82,
+        evidencePaths: ["src/views/login/MDP-MYCER999999M.vue"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {
+        contractId: "data-contract:monimoauthrequest",
+        direction: "request",
+        viaEdgeId: "edge:calls:ui-action:api",
+        viaType: "calls"
+      }
+    },
+    {
       id: "edge:routes-to:api:gateway",
       type: "routes-to",
       fromId: "api:/member/monimo/registe",
@@ -928,6 +973,8 @@ describe("retrieval unit standardization", () => {
       ])
     );
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:controller:service");
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:emits-contract:ui-action:request");
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:ui-action:api:request");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:controller:service:request");
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
