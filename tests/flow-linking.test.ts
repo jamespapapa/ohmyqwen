@@ -539,7 +539,9 @@ describe("flow linking", () => {
     expect(linked[0]?.backendControllerMethod).toBe("BenefitClaimController.insertBenefitClaim");
     expect(linked[0]?.apiUrl).toBe("/gw/api/insurance/benefit/claim/insert");
     expect(linked[0]?.capabilityTags).toEqual(expect.arrayContaining(["benefit-claim", "action-submit"]));
-    expect(linked[0]?.reasons).toEqual(expect.arrayContaining(["capability:benefit-claim", "benefit-claim-api-match"]));
+    expect(linked[0]?.reasons).toEqual(
+      expect.arrayContaining(["capability:benefit-claim", "capability:claim-submit"])
+    );
   });
 
   it("builds a multi-phase claim answer when insert/check/doc flows and downstream traces are available", () => {

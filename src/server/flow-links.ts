@@ -3,6 +3,7 @@ import type { DownstreamFlowTrace } from "./flow-trace.js";
 import type { DomainPack } from "./domain-packs.js";
 import type { LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
 import { extractLearnedKnowledgeTagsFromTexts } from "./learned-knowledge.js";
+import { inferQuestionActionHints } from "./question-types.js";
 import {
   extractFlowCapabilityTagsFromTexts,
   extractSpecificQuestionCapabilityTags,
@@ -54,6 +55,112 @@ function tokenize(value: string): string[] {
   return unique(value.toLowerCase().match(/[a-z0-9가-힣._/-]+/g) ?? []);
 }
 
+function isActionCapabilityTag(tag: string): boolean {
+  return tag.startsWith("action-");
+}
+
+function flowText(item: {
+  screenCode?: string;
+  routePath?: string;
+  screenPath?: string;
+  apiUrl: string;
+  gatewayPath?: string;
+  gatewayControllerMethod?: string;
+  backendPath: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+}): string {
+  return [
+    item.screenCode,
+    item.routePath,
+    item.screenPath,
+    item.apiUrl,
+    item.gatewayPath,
+    item.gatewayControllerMethod,
+    item.backendPath,
+    item.backendControllerMethod,
+    ...(item.serviceHints ?? [])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function inferFlowActionTags(item: {
+  apiUrl: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+  capabilityTags?: string[];
+}): string[] {
+  const direct = (item.capabilityTags ?? []).filter(isActionCapabilityTag);
+  const inferred = extractFlowCapabilityTagsFromTexts(
+    [item.apiUrl, item.backendControllerMethod, ...(item.serviceHints ?? [])],
+    {}
+  ).filter(isActionCapabilityTag);
+  return unique([...direct, ...inferred]);
+}
+
+function expandDesiredActionTags(actionHints: string[]): string[] {
+  const expanded = new Set<string>();
+  for (const action of actionHints) {
+    expanded.add(action);
+    switch (action) {
+      case "action-auth":
+        expanded.add("action-check");
+        expanded.add("action-token");
+        expanded.add("action-register");
+        break;
+      case "action-register":
+        expanded.add("action-submit");
+        expanded.add("action-write");
+        break;
+      case "action-status-read":
+        expanded.add("action-read");
+        expanded.add("action-inquiry");
+        expanded.add("action-check");
+        break;
+      case "action-read":
+        expanded.add("action-status-read");
+        expanded.add("action-inquiry");
+        expanded.add("action-check");
+        break;
+      case "action-write":
+        expanded.add("action-submit");
+        expanded.add("action-register");
+        expanded.add("action-doc");
+        break;
+      case "action-update":
+        expanded.add("action-write");
+        break;
+      case "action-state-store":
+        expanded.add("action-check");
+        expanded.add("action-read");
+        break;
+      case "action-token":
+        expanded.add("action-auth");
+        break;
+    }
+  }
+  return Array.from(expanded);
+}
+
+function scoreActionAlignment(flowActions: string[], desiredActions: string[]): { score: number; reasons: string[] } {
+  if (flowActions.length === 0 || desiredActions.length === 0) {
+    return { score: 0, reasons: [] };
+  }
+  const overlaps = desiredActions.filter((action) => flowActions.includes(action));
+  if (overlaps.length > 0) {
+    return {
+      score: overlaps.length * 18,
+      reasons: overlaps.slice(0, 3).map((action) => `action-match:${action}`)
+    };
+  }
+  return {
+    score: -12,
+    reasons: ["action-mismatch"]
+  };
+}
+
 function resolveLinkCapabilityTags(
   link: FrontBackGraphLink,
   domainPacks?: DomainPack[],
@@ -92,12 +199,25 @@ export function buildLinkedFlowEvidence(options: {
     question: options.question,
     domainPacks: options.domainPacks
   });
+  const specificQuestionTags = extractSpecificQuestionCapabilityTags(questionTags, {
+    domainPacks: options.domainPacks
+  });
+  const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
+  const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
+  const minSharedNonActionTags =
+    nonActionQuestionTags.length >= 3 ? 2 : nonActionQuestionTags.length >= 1 ? 1 : 0;
   const hitPaths = (options.hits ?? []).map((hit) => hit.path.toLowerCase());
   const crossLayer = isCrossLayerFlowQuestion(options.question);
 
   return options.snapshot.links
     .map((link) => {
       const capabilityTags = resolveLinkCapabilityTags(link, options.domainPacks, options.learnedKnowledge);
+      const flowActions = inferFlowActionTags({
+        apiUrl: link.api.normalizedUrl,
+        backendControllerMethod: link.backend.controllerMethod,
+        serviceHints: link.backend.serviceHints,
+        capabilityTags
+      });
       const capabilityAlignment = scoreFlowCapabilityAlignment(questionTags, capabilityTags, {
         domainPacks: options.domainPacks,
         question: options.question,
@@ -105,8 +225,14 @@ export function buildLinkedFlowEvidence(options: {
         apiText: [link.api.rawUrl, link.api.normalizedUrl].join(" "),
         methodText: [link.gateway.controllerMethod, link.backend.controllerMethod, ...link.backend.serviceHints].join(" ")
       });
+      const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, capabilityTags, {
+        domainPacks: options.domainPacks
+      });
       let score = link.confidence * 100 + capabilityAlignment.score;
       const reasons: string[] = [...capabilityAlignment.reasons];
+      const actionAlignment = scoreActionAlignment(flowActions, desiredActions);
+      score += actionAlignment.score;
+      reasons.push(...actionAlignment.reasons);
       if (crossLayer) {
         score += 25;
         reasons.push("cross-layer-question");
@@ -142,45 +268,51 @@ export function buildLinkedFlowEvidence(options: {
         score += 10;
         reasons.push("controller-token-match");
       }
-      if (questionTags.includes("benefit-claim") && capabilityTags.includes("insurance-internet")) {
-        score += 10;
-        reasons.push("insurance-internet-match");
+      const fullFlowText = flowText({
+        screenCode: link.frontend.screenCode,
+        routePath: link.frontend.routePath,
+        screenPath: link.frontend.screenPath,
+        apiUrl: link.api.normalizedUrl,
+        gatewayPath: link.gateway.path,
+        gatewayControllerMethod: link.gateway.controllerMethod,
+        backendPath: link.backend.path,
+        backendControllerMethod: link.backend.controllerMethod,
+        serviceHints: link.backend.serviceHints
+      });
+      const tokenHits = tokens.filter((token) => fullFlowText.includes(token));
+      if (tokenHits.length > 0) {
+        score += Math.min(18, tokenHits.length * 4);
+        reasons.push(`question-token-match:${tokenHits.slice(0, 3).join(",")}`);
       }
-      if (questionTags.includes("benefit-claim") && /(?:^|\.)(BenefitClaimController|AccBenefitClaimController)\./i.test(link.backend.controllerMethod)) {
-        score += 24;
-        reasons.push("benefit-claim-controller-match");
-      } else if (questionTags.includes("benefit-claim") && /benefitclaim|accbenefitclaim/i.test(link.backend.controllerMethod)) {
-        score += 16;
-        reasons.push("benefit-claim-controller-match");
+      if (specificCoverage.matchedSpecificTags.length > 0) {
+        score += Math.min(28, specificCoverage.matchedSpecificTags.length * 16);
+        reasons.push(
+          ...specificCoverage.matchedSpecificTags.slice(0, 3).map((tag) => `specific-capability:${tag}`)
+        );
       }
-      if (questionTags.includes("benefit-claim") && /\/((acc)?benefit)\/claim\//i.test(link.api.normalizedUrl)) {
-        score += 22;
-        reasons.push("benefit-claim-api-match");
-      } else if (questionTags.includes("benefit-claim") && /\/((agent|diff)benefit)\/claim\//i.test(link.api.normalizedUrl)) {
-        score += 8;
-        reasons.push("benefit-claim-api-match");
+      if (specificCoverage.sharedDomainParents.length > 0) {
+        score += Math.min(10, specificCoverage.sharedDomainParents.length * 4);
+        reasons.push(
+          ...specificCoverage.sharedDomainParents.slice(0, 2).map((tag) => `shared-domain-parent:${tag}`)
+        );
       }
-      if (questionTags.includes("benefit-claim")) {
-        const flowText = `${link.api.normalizedUrl} ${link.backend.controllerMethod}`.toLowerCase();
-        if (!/(취소|cancel|delete)/i.test(options.question) && /delete|cancel/.test(flowText)) {
-          score -= 16;
-          reasons.push("benefit-claim-delete-penalty");
-        }
-        if (/spotsave|spotload/.test(flowText)) {
-          score -= 10;
-          reasons.push("benefit-claim-draft-penalty");
-        }
-        if (/\/doc\/insert|insertbenefitclaimdoc/.test(flowText)) {
-          score += 14;
-          reasons.push("benefit-claim-doc-submit-match");
-        }
-        if (/insert|save|submit|proc/.test(flowText)) {
-          score += 8;
-          reasons.push("benefit-claim-submit-preference");
-        } else if (/inqury|inquiry|check|load/.test(flowText)) {
-          score += 4;
-          reasons.push("benefit-claim-inquiry-preference");
-        }
+      if (specificQuestionTags.length > 0 && specificCoverage.matchedSpecificTags.length === 0) {
+        score -= 18;
+        reasons.push("missing-specific-capability-match");
+      }
+      if (specificCoverage.adjacentConfusers.length > 0) {
+        score -= Math.min(32, specificCoverage.adjacentConfusers.length * 12);
+        reasons.push(
+          ...specificCoverage.adjacentConfusers.slice(0, 3).map((tag) => `adjacent-capability:${tag}`)
+        );
+      }
+      if (!/(취소|cancel|delete)/i.test(options.question) && /delete|cancel/.test(fullFlowText)) {
+        score -= 14;
+        reasons.push("destructive-action-penalty");
+      }
+      if (/spotsave|spotload/.test(fullFlowText)) {
+        score -= 8;
+        reasons.push("draft-flow-penalty");
       }
       if (
         questionTags.length > 0 &&
@@ -248,9 +380,10 @@ export function buildDeterministicFlowAnswer(options: {
   const specificQuestionTags = extractSpecificQuestionCapabilityTags(questionTags, {
     domainPacks: options.domainPacks
   });
-  const questionIsClaim = questionTags.includes("benefit-claim") || /(보험금|청구|benefit|claim)/i.test(options.question);
-  const questionIsSunshineLoan =
-    questionTags.includes("sunshine-loan") || questionTags.includes("credit-low-worker-loan") || /햇살론/i.test(options.question);
+  const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
+  const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
+  const minSharedNonActionTags =
+    nonActionQuestionTags.length >= 3 ? 2 : nonActionQuestionTags.length >= 1 ? 1 : 0;
 
   const scorePhaseCandidate = (
     item: LinkedFlowEvidence,
@@ -265,6 +398,15 @@ export function buildDeterministicFlowAnswer(options: {
     const haystack = [item.apiUrl, item.backendControllerMethod, ...(item.serviceHints ?? [])].join(" ");
     const lowerApi = item.apiUrl.toLowerCase();
     let score = item.confidence * 100;
+    const itemTagSet = new Set(item.capabilityTags ?? []);
+    const sharedQuestionTags = questionTags.filter((tag) => itemTagSet.has(tag));
+    const actionAlignment = scoreActionAlignment(inferFlowActionTags(item), desiredActions);
+    score += actionAlignment.score;
+    if (sharedQuestionTags.length > 0) {
+      score += Math.min(140, sharedQuestionTags.length * 42);
+    } else if (questionTags.length > 0 && (item.capabilityTags ?? []).length > 0) {
+      score -= 75;
+    }
     for (const tag of criteria.tags ?? []) {
       if (flowHasCapability(item, tag)) {
         score += 70;
@@ -290,11 +432,17 @@ export function buildDeterministicFlowAnswer(options: {
         score -= 120;
       }
     }
-    if (questionIsSunshineLoan && /\/loan\/contract\/inqury\//i.test(item.apiUrl)) {
-      score -= 160;
+    const specificCoverage = scoreSpecificCapabilityCoverage(questionTags, item.capabilityTags ?? [], {
+      domainPacks: options.domainPacks
+    });
+    if (specificCoverage.matchedSpecificTags.length > 0) {
+      score += specificCoverage.matchedSpecificTags.length * 60;
     }
-    if (questionIsClaim && /\/loan\//i.test(item.apiUrl)) {
-      score -= 120;
+    if (specificQuestionTags.length > 0 && specificCoverage.matchedSpecificTags.length === 0) {
+      score -= 140;
+    }
+    if (specificCoverage.adjacentConfusers.length > 0) {
+      score -= specificCoverage.adjacentConfusers.length * 90;
     }
     return score;
   };
@@ -305,75 +453,50 @@ export function buildDeterministicFlowAnswer(options: {
       .sort((a, b) => b.score - a.score)
       .find((entry) => entry.score >= 120)?.item;
 
-  const checkFlow = questionIsSunshineLoan
-    ? pickBestFlow({
-        tags: ["low-worker-loan-check"],
-        apiPatterns: [/\/checktime$/i, /\/selectCustInfo$/i, /\/customer\/check$/i],
-        methodPatterns: [/checkTimeService/i, /selectCustInfo/i, /checkCustomer/i]
-      })
-    : pickBestFlow({
-        tags: ["claim-inquiry", "action-check"],
-        apiPatterns: [/\/claim\/check$/i],
-        methodPatterns: [/benefitClaimCheck/i, /checkApply/i]
-      });
+  const checkFlow = pickBestFlow({
+    tags: ["action-check", "action-status-read"],
+    apiPatterns: [/\/check(?:\/|$)/i, /status/i, /verify/i, /validate/i],
+    methodPatterns: [/check/i, /verify/i, /valid/i, /status/i]
+  });
 
-  const inquiryFlow = questionIsSunshineLoan
-    ? pickBestFlow({
-        tags: ["low-worker-loan-limit"],
-        apiPatterns: [/\/limit\/amount(?:\/tmp)?$/i, /\/lowWorker\/getInput$/i],
-        methodPatterns: [/limitAmount/i, /getLoanMemberInfo/i]
-      })
-    : pickBestFlow({
-        tags: ["claim-inquiry", "action-inquiry"],
-        apiPatterns: [/\/claim\/inqury$/i, /\/claim\/inquiry$/i],
-        methodPatterns: [/benefitClaimInqr/i, /claimInq/i]
-      });
+  const inquiryFlow = pickBestFlow({
+    tags: ["action-inquiry", "action-read"],
+    apiPatterns: [/\/inqury(?:\/|$)/i, /\/inquiry(?:\/|$)/i, /\/select/i, /\/get/i, /\/load/i],
+    methodPatterns: [/inq/i, /inquiry/i, /select/i, /load/i, /get/i]
+  });
 
-  const accountFlow = questionIsSunshineLoan
-    ? pickBestFlow({
-        tags: ["low-worker-loan-account"],
-        apiPatterns: [/\/insertAccntNo$/i, /\/getAccntNo$/i],
-        methodPatterns: [/insertAccntNo/i, /getAccntNo/i]
-      })
-    : pickBestFlow({
-        tags: ["action-account-register"],
-        apiPatterns: [/insertAccntNo/i, /getAccntNo/i]
-      });
+  const accountFlow = pickBestFlow({
+    tags: ["action-account-register"],
+    apiPatterns: [/account/i, /accnt/i],
+    methodPatterns: [/account/i, /accnt/i]
+  });
 
-  const insertFlow = questionIsSunshineLoan
-    ? pickBestFlow({
-        tags: ["low-worker-loan-apply"],
-        apiPatterns: [
-          /\/requestLoanMember$/i,
-          /\/loanAdmit$/i,
-          /\/apply$/i,
-          /\/lowWorker\/saveInput$/i,
-          /\/lowWorker\/saveInputInfo$/i
-        ],
-        methodPatterns: [/registLoanMember/i, /loanAdmit/i, /saveLoanMemberInfo/i, /saveLoanInputInfo/i]
-      })
-    : pickBestFlow({
-        tags: ["claim-submit", "action-submit"],
-        apiPatterns: [/\/claim\/insert$/i],
-        methodPatterns: [/saveBenefitClaim/i, /insertBenefitClaim/i]
-      });
+  const insertFlow = pickBestFlow({
+    tags: ["action-submit", "action-write", "action-register"],
+    apiPatterns: [/\/insert(?:\/|$)/i, /\/apply(?:\/|$)/i, /\/submit(?:\/|$)/i, /\/save/i, /\/proc(?:\/|$)/i],
+    methodPatterns: [/insert/i, /apply/i, /submit/i, /save/i, /regist/i, /register/i]
+  });
 
-  const docInsertFlow = questionIsSunshineLoan
-    ? pickBestFlow({
-        tags: ["low-worker-loan-doc"],
-        apiPatterns: [/\/make\/owner\/agreement$/i],
-        methodPatterns: [/makeOwnerAgreement/i, /makeDocListBeforeApply/i]
-      })
-    : pickBestFlow({
-        tags: ["claim-doc", "action-doc"],
-        apiPatterns: [/\/doc\/insert$/i],
-        methodPatterns: [/saveBenefitClaimDoc/i, /insertBenefitClaimDoc/i]
-      });
+  const docInsertFlow = pickBestFlow({
+    tags: ["action-doc", "action-agreement"],
+    apiPatterns: [/\/doc(?:\/|$)/i, /agreement/i, /owner\/agreement/i, /upload/i, /pdf/i],
+    methodPatterns: [/doc/i, /agreement/i, /upload/i, /pdf/i]
+  });
 
   const orderedFlows: LinkedFlowEvidence[] = [];
   const seenFlowKeys = new Set<string>();
   for (const candidate of [checkFlow, inquiryFlow, accountFlow, insertFlow, docInsertFlow, primary]) {
     if (!candidate) {
+      continue;
+    }
+    const sharedNonActionTagCount = nonActionQuestionTags.filter((tag) =>
+      (candidate.capabilityTags ?? []).includes(tag)
+    ).length;
+    if (
+      candidate !== primary &&
+      minSharedNonActionTags > 0 &&
+      sharedNonActionTagCount < minSharedNonActionTags
+    ) {
       continue;
     }
     const key = `${candidate.apiUrl}|${candidate.backendControllerMethod}`;
@@ -431,6 +554,7 @@ export function buildDeterministicFlowAnswer(options: {
   const primarySpecificCoverage = scoreSpecificCapabilityCoverage(questionTags, primary.capabilityTags ?? [], {
     domainPacks: options.domainPacks
   });
+  const primaryFlowActions = inferFlowActionTags(primary);
   const flowSpecificMatches = unique(
     orderedFlows.flatMap((flow) =>
       scoreSpecificCapabilityCoverage(questionTags, flow.capabilityTags ?? [], {
@@ -438,16 +562,21 @@ export function buildDeterministicFlowAnswer(options: {
       }).matchedSpecificTags
     )
   );
+  const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
   let confidence = 0.34;
   confidence += Math.min(0.16, Math.max(0, primary.confidence) * 0.12);
   confidence += orderedFlows.length >= 2 ? 0.08 : 0.03;
   confidence += primary.serviceHints.length > 0 ? 0.08 : 0;
   confidence += (options.downstreamTraces ?? []).length > 0 ? 0.12 : 0;
   confidence += mentionedEaiIds.length > 0 ? 0.06 : 0;
+  confidence += Math.min(0.08, distinctFlowActions.length * 0.02);
   if (primarySpecificCoverage.matchedSpecificTags.length > 0) {
     confidence += 0.18;
   } else if (specificQuestionTags.length === 0 && questionTags.some((tag) => (primary.capabilityTags ?? []).includes(tag))) {
     confidence += 0.08;
+  }
+  if (desiredActions.length > 0 && desiredActions.some((action) => primaryFlowActions.includes(action))) {
+    confidence += 0.06;
   }
   if (flowSpecificMatches.length > 1) {
     confidence += 0.05;
@@ -458,7 +587,13 @@ export function buildDeterministicFlowAnswer(options: {
   if (primarySpecificCoverage.adjacentConfusers.length > 0) {
     confidence -= Math.min(0.24, primarySpecificCoverage.adjacentConfusers.length * 0.12);
   }
-  confidence = Math.max(0.18, Math.min(0.9, Number(confidence.toFixed(2))));
+  if ((options.downstreamTraces ?? []).length === 0) {
+    confidence = Math.min(confidence, 0.78);
+  }
+  if (specificQuestionTags.length > 0 && primarySpecificCoverage.matchedSpecificTags.length === 0) {
+    confidence = Math.min(confidence, 0.62);
+  }
+  confidence = Math.max(0.18, Math.min(0.86, Number(confidence.toFixed(2))));
   const answer = [
     ...answerLines,
     mentionedEaiIds.length > 0
