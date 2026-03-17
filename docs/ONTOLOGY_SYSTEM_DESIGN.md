@@ -10,6 +10,24 @@
 
 ---
 
+## 현재 북극성
+
+최종 질의응답은 아래 세 축으로 분리한다.
+
+- **ontology graph**: semantic control plane
+- **QMD / vector / FTS / rerank**: retrieval engine
+- **agentic workflow**: 계획, 검증, 재시도, 중단
+
+즉, ontology가 검색 엔진을 대체하는 것이 아니라:
+
+> ontology가 무엇을 찾아야 하는지와 어떤 경로가 핵심인지 결정하고,  
+> QMD가 실제 증거를 찾고,  
+> workflow가 결과를 검증하고 답변을 조립한다.
+
+이 구조가 최종형이다.
+
+---
+
 ## 1. 큰 방향
 
 ### 핵심 방향
@@ -173,6 +191,9 @@ domain pack은 ontology graph의 중심이 아니라:
 즉 최종 구조는 **typed knowledge graph 중심**이고,  
 domain pack은 보조 계층으로 남는다.
 
+현재 설계 방향상 domain pack / preset은 **호환성 계층**으로만 유지하고,  
+질문 해석 / 랭킹 / 게이팅 / 응답 생성의 중심에서는 단계적으로 제거한다.
+
 ## 4.2 preset의 역할
 
 preset은 단순 UI 템플릿이 아니라:
@@ -185,6 +206,12 @@ preset은 단순 UI 템플릿이 아니라:
 를 정하는 **project policy/profile**이다.
 
 자동 생성은 가능하지만, 자동 적용보다 **추천/초안 생성**이 적절하다.
+
+장기적으로 preset도 ontology 위의 운영 프로파일로 흡수한다.
+
+즉:
+- 지금은 preset이 일부 동작할 수 있음
+- 최종적으로는 `matchedOntologyConcepts / matchedPaths / validated user inputs`가 preset 역할을 대체해야 함
 
 ---
 
@@ -258,11 +285,76 @@ preset은 단순 UI 템플릿이 아니라:
 - async/sync 경계
 
 이 모든 입력은 ontology에 직접 진실로 들어가는 것이 아니라,  
-**candidate evidence source**로 들어간다.
+**candidate node / edge / boundary / path**로 들어가고 검증 후 승격한다.
 
 ---
 
-## 7. pattern 확장 전략
+## 7. 코드베이스만으로 최대한 강화해야 하는 축
+
+사용자 입력을 받기 전에, 코드에서 먼저 끝까지 뽑아내야 하는 정보는 다음과 같다.
+
+### 7.1 구조 / 경로
+- frontend screen / route
+- ui-action / handler
+- api call
+- gateway-handler / proxy-route
+- controller / service / dao / mapper
+- async / callback / queue / processor
+
+### 7.2 저장소 / 데이터
+- redis / session / cache
+- cache-key / redis operation / ttl / serializer
+- entity / model / query / table / mapper / repository
+
+### 7.3 제어 흐름
+- validator / guard / decision path
+- check / read / write / submit / callback / token / auth / register action
+- branch / adjacent path / not-core relation
+
+즉 ontology 강화는 특정 업무 맞춤 보정이 아니라:
+
+> **path + action + state-store + data-persistence + negative relation**
+
+을 일반적으로 풍부하게 만드는 작업이어야 한다.
+
+---
+
+## 8. projection 기반 시각화
+
+시각화는 “그래프 하나”가 아니라 projection 단위로 제공한다.
+
+필수 projection:
+- Project Overview Graph
+- Front -> API -> Gateway -> Controller -> Service Path
+- Storage / Data Persistence Graph
+- Integration Graph
+- Process / Batch Graph
+- Knowledge Lifecycle Dashboard
+- Question Trace Viewer
+- Draft / Review / Revert Workspace
+
+즉 사용자는:
+- 현재 그래프를 보고
+- 특정 node/edge/path를 수정하거나 제거/추가하고
+- draft 상태로 저장한 뒤
+- self-evaluation을 수행하고
+- 이전 상태로 되돌릴 수 있어야 한다.
+
+---
+
+## 9. 현재 migration 원칙
+
+현재 구현은 버리지 않는다. 다만 방향은 명확하다.
+
+1. 기존 `domain pack / preset / matchedDomains / activeDomains`는 **점진 폐기**
+2. `matchedOntologyNodes / matchedOntologyPaths / matchedOntologyProjections`로 치환
+3. QMD query planning도 ontology terms / path grounding 중심으로 치환
+4. quality gate는 question-type + direct evidence contract 중심으로 강화
+5. confidence는 static trace / direct path / adjacent-flow confusion을 반영해 보수화한다.
+
+---
+
+## 10. pattern 확장 전략
 
 사용자가 seed를 주면 시스템은 비슷한 것들을 추천해야 한다.
 
@@ -292,11 +384,11 @@ preset은 단순 UI 템플릿이 아니라:
 
 ---
 
-## 8. feedback 설계
+## 11. feedback 설계
 
 feedback은 answer-level만 있으면 부족하다.
 
-## 8.1 feedback scope
+## 11.1 feedback scope
 
 - `answer`
 - `evidence`
@@ -305,14 +397,14 @@ feedback은 answer-level만 있으면 부족하다.
 - `path`
 - `boundary`
 
-## 8.2 feedback verdict
+## 11.2 feedback verdict
 
 - `correct`
 - `partial`
 - `incorrect`
 - `unsafe`
 
-## 8.3 feedback payload 최소 스키마
+## 11.3 feedback payload 최소 스키마
 
 - `kind` (`ask` / `search` / `graph-review` / `ontology-review`)
 - `scope`
@@ -332,9 +424,9 @@ feedback은 answer-level만 있으면 부족하다.
 
 ---
 
-## 9. 평가 기준
+## 12. 평가 기준
 
-## 9.1 answer 평가
+## 12.1 answer 평가
 
 - `relevance`
 - `structural correctness`
@@ -343,7 +435,7 @@ feedback은 answer-level만 있으면 부족하다.
 - `completeness`
 - `risk`
 
-## 9.2 ontology 평가
+## 12.2 ontology 평가
 
 ### node
 - 존재가 맞는가
@@ -361,7 +453,7 @@ feedback은 answer-level만 있으면 부족하다.
 
 ---
 
-## 10. 승격 / 강등 상태머신
+## 13. 승격 / 강등 상태머신
 
 현재 `candidate / validated / stale`만으로는 부족하다.  
 다음 상태를 기준으로 간다.
@@ -372,7 +464,7 @@ feedback은 answer-level만 있으면 부족하다.
 - `stale`
 - `deprecated`
 
-## 10.1 승격
+## 13.1 승격
 
 candidate -> validated
 
@@ -384,7 +476,7 @@ candidate -> validated
 - freshness 양호
 - 여러 질문 타입에서 재사용
 
-## 10.2 contested
+## 13.2 contested
 
 feedback이 충돌하거나,
 replay와 user verdict가 엇갈리는 경우
@@ -392,7 +484,7 @@ replay와 user verdict가 엇갈리는 경우
 - 바로 승격/삭제하지 않는다
 - review queue로 올린다
 
-## 10.3 강등
+## 13.3 강등
 
 validated -> stale / deprecated
 
@@ -405,7 +497,7 @@ validated -> stale / deprecated
 
 ---
 
-## 11. score 모델
+## 14. score 모델
 
 상태는 점수 기반으로 관리한다.
 
@@ -424,7 +516,7 @@ validated -> stale / deprecated
 
 ---
 
-## 12. projection과 시각화
+## 15. projection과 시각화
 
 graph는 하나의 거대한 canvas보다 projection 중심으로 본다.
 
@@ -474,7 +566,7 @@ graph는 하나의 거대한 canvas보다 projection 중심으로 본다.
 
 ---
 
-## 13. 단계별 구현 전략
+## 16. 단계별 구현 전략
 
 ## Phase A — 최소 ontology snapshot
 
@@ -521,7 +613,7 @@ graph는 하나의 거대한 canvas보다 projection 중심으로 본다.
 
 ---
 
-## 14. 핵심 운영 원칙
+## 17. 핵심 운영 원칙
 
 1. **코드에서 뽑을 수 있는 구조는 결정론적으로 뽑는다.**
 2. **추상 지식은 candidate로만 시작한다.**

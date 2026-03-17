@@ -31,10 +31,16 @@
 - Front 페이지 목록
 - Front -> Backend 매핑 사전
 - Controller / Service / Mapper / EAI / Batch / Async 역할 정보
-- Domain / Channel / Module-role / Process 후보 지식
+- Ontology node / edge / path / action / state-store / data-persistence 후보 지식
 - 질문 실행 결과와 품질 진단 기록
 
 핵심은 **모델 가중치 학습이 아니라, 프로젝트 지식의 구조화와 승격**이다.
+
+최종 구조는 아래 역할 분리를 따른다.
+
+- ontology: semantic control plane
+- QMD / vector / FTS / rerank: retrieval engine
+- agentic workflow: 계획 / 검증 / 재시도 / 중단
 
 ---
 
@@ -51,9 +57,9 @@
 
 시스템은 이 힌트를 받아:
 
-- candidate knowledge 생성
+- candidate ontology node / edge / path 생성
 - retrieval / rerank 보정
-- domain / channel / process 지식 강화
+- channel / action / process / state-store / data-persistence 지식 강화
 - regression scenario 추가
 
 로 연결해야 한다.
@@ -131,6 +137,9 @@
 
 이다.
 
+legacy domain pack / preset은 호환성 계층일 뿐,  
+질문 해석과 응답 생성의 중심 로직은 ontology graph로 이동해야 한다.
+
 ---
 
 ### B. 의미 계층을 분리한다
@@ -141,6 +150,8 @@
 - domain
 - subdomain
 - action
+- state-store
+- data-persistence
 - module-role
 - process-role
 

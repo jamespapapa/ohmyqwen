@@ -11,6 +11,34 @@
 
 ---
 
+## 최종 구조 요약
+
+최종 구조는 아래 세 층으로 분리한다.
+
+1. **Ontology Graph**
+   - semantic control plane
+   - 질문 grounding
+   - path / action / state-store / data-persistence 모델
+
+2. **QMD / Retrieval Layer**
+   - vector / FTS / rerank / multi-corpus retrieval
+   - ontology-guided query planning과 결합
+
+3. **Agentic Workflow**
+   - 질문 유형 판별
+   - retrieval 계획
+   - quality gate
+   - retry / replay / abstain
+   - answer synthesis
+
+즉:
+
+> ontology가 retrieval을 안내하고,  
+> QMD가 증거를 찾고,  
+> workflow가 검증과 응답 조립을 담당한다.
+
+---
+
 ## 현재 판단
 
 현재 상태는 다음과 같이 본다.
@@ -27,7 +55,7 @@
 - front-back graph
 - EAI dictionary
 - learned knowledge
-- domain packs / maturity
+- ontology graph / projection / draft / review 기반
 - ask / quality gate / retry loop
 
 아직 부족한 것:
@@ -36,7 +64,9 @@
 - retrieval unit 정밀화
 - validated knowledge lifecycle
 - 질문 유형별 retrieval contract
-- broad tag 오염 통제
+- path-level grounding
+- adjacent flow suppression
+- domain pack / preset 제거 migration
 - 평가/회귀 체계 일반화
 
 ---
@@ -45,11 +75,12 @@
 
 폐쇄망 내부에서 Qwen3 기반으로 다음이 가능해야 한다.
 
-1. 코드/구조/흐름/운영기록이 모두 **하나의 knowledge system**으로 축적된다.
-2. 검색은 파일명이 아니라 **entity / block / flow / role** 단위로 수행된다.
+1. 코드/구조/흐름/운영기록이 모두 **하나의 ontology-backed knowledge system**으로 축적된다.
+2. 검색은 파일명이 아니라 **entity / block / flow / role / state-store / data-persistence** 단위로 수행된다.
 3. 질문 유형별로 적절한 evidence contract와 quality gate가 적용된다.
 4. 사용자 피드백과 replay 기록이 candidate knowledge를 validated knowledge로 승격시킨다.
 5. 외부 지원 없이도 반복 사용을 통해 정합도가 점진 상승한다.
+6. legacy domain pack / preset 없이도 ontology + QMD + workflow만으로 답변 품질을 유지한다.
 
 ---
 
@@ -70,14 +101,17 @@
 
 검색보다 먼저 **지식 단위와 메타데이터 스키마**를 정리한다.
 
-### 2. File-first를 버리고 Entity-first로 간다
+### 2. File-first를 버리고 Entity-first / Path-first로 간다
 
 retrieval 기본 단위를 파일에서 아래 단위로 옮긴다.
 
 - symbol block
 - route block
+- ui-action block
+- gateway handler block
 - controller -> service edge
 - service -> downstream edge
+- store / query / table / cache-key block
 - EAI usage block
 - batch/process block
 - module-role block
@@ -91,8 +125,17 @@ retrieval 기본 단위를 파일에서 아래 단위로 옮긴다.
 - domain
 - subdomain
 - action
+- state-store
+- data-persistence
 - module-role
 - process-role
+
+그리고 최종적으로는 domain-pack 기반 broad tag보다:
+- ontology concept node
+- path node
+- negative relation
+- action/state transition
+을 더 강하게 신뢰한다.
 
 ### 4. Candidate -> Validated -> Stale lifecycle
 
@@ -120,8 +163,8 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 - front-back graph
 - EAI dictionary
 - learned knowledge
-- domain packs
-- project profile
+- legacy domain packs / presets
+- project profile / operating profile
 
 이를 다음 공통 스키마로 통합한다.
 
@@ -129,12 +172,20 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 - `file`
 - `symbol`
+- `ui-action`
 - `route`
 - `api`
+- `gateway-handler`
 - `controller`
 - `service`
 - `mapper`
 - `dao`
+- `data-store`
+- `data-model`
+- `data-query`
+- `data-table`
+- `cache-key`
+- `control-guard`
 - `eai-interface`
 - `batch-job`
 - `process`
@@ -145,9 +196,16 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 - `declares`
 - `calls`
+- `proxies-to`
 - `routes-to`
 - `maps-to`
 - `uses-eai`
+- `uses-store`
+- `stores-model`
+- `maps-to-table`
+- `queries-table`
+- `uses-cache-key`
+- `validates`
 - `uses-mapper`
 - `depends-on`
 - `belongs-to-domain`
@@ -189,8 +247,9 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 ### 3. Knowledge Units
 - learned knowledge cluster
-- domain/module/process/channel packs
-- validated exemplars
+- validated ontology concepts
+- validated user inputs
+- replay-backed exemplars
 
 ### 4. Evidence Bundle Units
 - answer를 만들 때 여러 unit을 묶은 evidence bundle
@@ -219,6 +278,13 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 를 따로 가진다.
 
+특히 아래를 일반 규칙으로 강화한다.
+
+- `cross_layer_flow` -> front -> api -> gateway -> controller -> service path 복원
+- `state_store_schema` -> redis/cache/session/db/table/model grounding
+- `channel_or_partner_integration` -> channel boundary / callback / bridge grounding
+- `module_role_explanation` -> 책임/비책임/협력구조 grounding
+
 ---
 
 ## D. Knowledge Lifecycle
@@ -245,6 +311,13 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 이 경우 점수 약화 또는 비활성화
 
+### Contested / Deprecated
+
+- 충돌하는 피드백이 누적되면 `contested`
+- 잘못된 관계이거나 더 이상 쓰면 안 되면 `deprecated`
+
+이 상태는 replay / self-evaluation / draft review에서 우선 검토 대상이 된다.
+
 ---
 
 ## E. Replay / Regression 강화
@@ -253,13 +326,27 @@ cross-layer, module-role, domain-overview, process/batch 질문은 각각 다른
 
 - question
 - detected type
-- matched domain/channel/subdomain/action
+- matched ontology concepts / channels / actions / paths
 - used evidence bundle
 - confidence
 - gate result
 - failure reason
-- user feedback
-- final corrected understanding
+
+그리고 ontology draft 편집 후:
+- improved / regressed artifact 수
+- quality risk delta
+- replay candidate delta
+를 비교 평가해 되돌릴 수 있어야 한다.
+
+---
+
+## 현재 마이그레이션 원칙
+
+1. domain pack / preset은 중심 로직에서 제거한다.
+2. `matchedDomains / activeDomains`는 `matchedOntologyConcepts / matchedPaths`로 치환한다.
+3. QMD query는 ontology-guided query planning 하에서만 확장한다.
+4. 특정 업무/채널을 위한 보정 대신, action/path/state-store/data-persistence 일반 규칙으로 강화한다.
+5. replay / draft / user feedback / final corrected understanding은 모두 ontology lifecycle의 입력으로 수렴시킨다.
 
 이 기록은:
 

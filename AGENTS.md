@@ -42,8 +42,10 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - front-back graph
 - EAI dictionary
 - learned knowledge
-- domain/module-role/process/channel packs
-- ontology graph / ontology projections (진행 중)
+- ontology graph / ontology projections
+- retrieval units
+- ontology draft / review / replay / feedback lifecycle
+- legacy domain/module-role/process/channel packs (호환 계층, 제거 대상)
 - 목적: 프로젝트별 정합도를 반복 사용으로 점진 향상
 
 ---
@@ -56,8 +58,9 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 4. 프로젝트 분석 품질은 **하드코딩된 도메인 분기**보다, 사전/그래프/후보지식/회귀테스트 축적을 통해 올린다.
 5. 외부 지원 없이도 폐쇄망 내부 Qwen3 기반으로 점진 강화될 수 있도록, **candidate -> validated knowledge 승격 구조**를 우선한다.
 6. 본격적인 RAG 구축은 **코드/구조/그래프/사전/운영기록을 하나의 knowledge schema 아래 통합**하는 방향으로 진행한다.
-7. domain pack은 중심 본체가 아니라 **typed knowledge graph 위의 보조 semantic layer**로 취급한다.
+7. 최종 질의응답의 중심은 **ontology graph + path grounding + question-type evidence contract**여야 하며, domain pack/preset은 중심 로직에서 제거한다.
 8. 코드베이스에서 먼저 **최소 ontology graph**를 만들고, 사용자 힌트/피드백/CSV/문서/이력으로 semantic layer를 승격한다.
+9. `QMD = retrieval engine`, `ontology = semantic control plane`, `agentic workflow = orchestration / verification loop` 역할 분리를 유지한다.
 
 ---
 
@@ -83,6 +86,12 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 
 7. **사용자 노하우는 정의가 아니라 사례/경계/비교/판단기준/단계 흐름으로 받는다.**  
    자유 메모도 허용하지만, 가능하면 구조화된 입력과 provenance를 남긴다.
+
+8. **domain pack / preset 치트키에 의존하지 않는다.**
+   남아 있는 domain pack / preset 로직은 호환성 계층이며, 질문 해석/랭킹/게이팅의 중심에서 단계적으로 제거한다.
+
+9. **특정 업무/채널 보정 금지.**
+   `모니모`, `보험금청구`, `햇살론` 같은 개별 케이스를 맞추기 위한 특수분기 대신, action/path/state-store/data-persistence/adjacent-flow 일반 규칙으로 고도화한다.
 
 ---
 
@@ -128,9 +137,9 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 4. replay / regression 기반 품질 향상 루프 강화
 5. 폐쇄망 운영 기록 기반 엔진 일반화
 
-### Phase 3 (다음 본공사)
+### Phase 3 (진행 중)
 
-**목표:** `ohmyqwen`을 프로젝트 특화 RAG 플랫폼으로 승격
+**목표:** `ohmyqwen`을 ontology-first 프로젝트 특화 RAG 플랫폼으로 승격
 
 **핵심 방향**
 
@@ -141,6 +150,9 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - 운영 기록과 사용자 피드백을 replay / regression / pack 승격으로 연결
 - ontology graph / projection / visualization 중심 구조로 점진 이행
 - feedback을 answer-level이 아니라 **node / edge / path 검증 시스템**으로 확장
+- legacy domain packs / presets를 **ontology concept / path 기반 구조로 대체**
+- 프론트 -> API -> gateway -> controller -> service -> store/EAI/async 까지 **action-aware path graph**로 표현
+- `QMD + vector/FTS + rerank`를 ontology-guided retrieval로 묶고, agentic workflow가 검증/재시도/중단을 담당
 
 **설계 문서 우선 참조**
 
@@ -167,10 +179,12 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
    - knowledge lifecycle 정식화
    - 질문 유형별 retrieval / gate contract 정리
    - ontology graph snapshot / projection / planner / lifecycle 설계와 구현
+   - domain pack / preset 제거 migration
 
 3. **질문 품질 일반화**
-   - 특정 도메인 하드코딩 축소
-   - module-role / process-role / channel 질문 대응력 강화
+   - 특정 도메인 하드코딩 제거
+   - module-role / process-role / channel / state-store / cross-layer 질문 대응력 강화
+   - adjacent flow suppression / confidence calibration 강화
 
 4. **사용자 상호작용 기반 지식 승격**
    - 자유 메모 / 구조화 폼 / CSV / 문서 입력 채널
