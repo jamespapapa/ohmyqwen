@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { OntologyGraphSnapshotSchema, type OntologyGraphSnapshot } from "./ontology-graph.js";
+import { maybeValidateSnapshot } from "./snapshot-validation.js";
 
 const OntologyProjectionTypeSchema = z.enum([
   "code-structure",
@@ -95,7 +96,7 @@ function pickLargestProjectionType(projections: OntologyProjectionSnapshot["proj
 }
 
 export function buildOntologyProjectionSnapshot(options: { ontologyGraph: OntologyGraphSnapshot }): OntologyProjectionSnapshot {
-  const ontologyGraph = OntologyGraphSnapshotSchema.parse(options.ontologyGraph);
+  const ontologyGraph = maybeValidateSnapshot(OntologyGraphSnapshotSchema, options.ontologyGraph);
   const { nodesById } = nodeTypeGroups(ontologyGraph);
 
   const codeStructureNodeIds = ontologyGraph.nodes
@@ -157,10 +158,10 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       edgeIds: ontologyGraph.edges.filter((edge) => edge.fromId === node.id).map((edge) => edge.id)
     }));
 
-  const projections = [
+  const projections: Array<z.infer<typeof OntologyProjectionSchema>> = [
     {
       id: "projection:code-structure",
-      type: "code-structure",
+      type: "code-structure" as const,
       title: "Code Structure",
       summary: `modules/files/symbols/services=${codeStructureNodeIds.length}, edges=${codeStructureEdgeIds.length}`,
       nodeIds: unique(codeStructureNodeIds),
@@ -172,7 +173,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     },
     {
       id: "projection:front-back-flow",
-      type: "front-back-flow",
+      type: "front-back-flow" as const,
       title: "Front to Back Flow",
       summary: `flow nodes=${frontBackNodeIds.length}, representativeFlows=${flowPaths.length}`,
       nodeIds: unique(frontBackNodeIds),
@@ -184,7 +185,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     },
     {
       id: "projection:integration",
-      type: "integration",
+      type: "integration" as const,
       title: "Integration / Channel",
       summary: `integration nodes=${integrationNodeIds.length}, representativeIntegrations=${integrationPaths.length}`,
       nodeIds: unique(integrationNodeIds),
@@ -196,7 +197,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     },
     {
       id: "projection:knowledge-lifecycle",
-      type: "knowledge-lifecycle",
+      type: "knowledge-lifecycle" as const,
       title: "Knowledge Lifecycle",
       summary: `feedback/replay/lifecycle nodes=${lifecycleNodeIds.length}, representativePaths=${lifecyclePaths.length}`,
       nodeIds: unique(lifecycleNodeIds),
@@ -206,9 +207,9 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       highlightedNodeIds: lifecyclePaths.flatMap((entry) => entry.nodeIds).slice(0, 16),
       highlightedEdgeIds: lifecyclePaths.flatMap((entry) => entry.edgeIds).slice(0, 16)
     }
-  ].map((projection) => OntologyProjectionSchema.parse(projection));
+  ].map((projection) => maybeValidateSnapshot(OntologyProjectionSchema, projection));
 
-  return OntologyProjectionSnapshotSchema.parse({
+  return maybeValidateSnapshot(OntologyProjectionSnapshotSchema, {
     version: 1,
     generatedAt: ontologyGraph.generatedAt,
     workspaceDir: ontologyGraph.workspaceDir,

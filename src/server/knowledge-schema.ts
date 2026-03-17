@@ -4,6 +4,7 @@ import type { DomainPack } from "./domain-packs.js";
 import type { EaiDictionaryEntry } from "./eai-dictionary.js";
 import type { FrontBackGraphSnapshot } from "./front-back-graph.js";
 import type { LearnedKnowledgeCandidate, LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
+import { maybeValidateSnapshot } from "./snapshot-validation.js";
 
 const KnowledgeEntityTypeSchema = z.enum([
   "module",
@@ -457,7 +458,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   const methodSymbolMap = new Map<string, string>();
 
   const upsertEntity = (entity: KnowledgeEntity) => {
-    const next = KnowledgeEntitySchema.parse(entity);
+    const next = maybeValidateSnapshot(KnowledgeEntitySchema, entity);
     const existing = entities.get(next.id);
     if (!existing) {
       entities.set(next.id, next);
@@ -481,7 +482,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   };
 
   const upsertEdge = (edge: KnowledgeEdge) => {
-    const next = KnowledgeEdgeSchema.parse(edge);
+    const next = maybeValidateSnapshot(KnowledgeEdgeSchema, edge);
     const key = `${next.type}:${next.fromId}:${next.toId}`;
     const existing = edges.get(key);
     if (!existing) {
@@ -2085,7 +2086,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   const orderedEdges = Array.from(edges.values()).sort((a, b) => a.id.localeCompare(b.id));
   const clusterEntities = orderedEntities.filter((entity) => entity.type === "knowledge-cluster");
 
-  return KnowledgeSchemaSnapshotSchema.parse({
+  return maybeValidateSnapshot(KnowledgeSchemaSnapshotSchema, {
     version: 1,
     generatedAt: options.generatedAt,
     workspaceDir: options.workspaceDir,

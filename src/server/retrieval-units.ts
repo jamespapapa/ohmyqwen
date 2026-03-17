@@ -8,6 +8,7 @@ import {
   type KnowledgeSchemaSnapshot
 } from "./knowledge-schema.js";
 import { inferQuestionActionHints, type AskQuestionType } from "./question-types.js";
+import { maybeValidateSnapshot } from "./snapshot-validation.js";
 
 const RetrievalUnitTypeSchema = z.enum([
   "symbol-block",
@@ -203,7 +204,7 @@ function ids(items: Array<KnowledgeEntity | KnowledgeEdge | undefined>): string[
 export function buildRetrievalUnitSnapshot(options: {
   knowledgeSchema: KnowledgeSchemaSnapshot;
 }): RetrievalUnitSnapshot {
-  const knowledgeSchema = KnowledgeSchemaSnapshotSchema.parse(options.knowledgeSchema);
+  const knowledgeSchema = maybeValidateSnapshot(KnowledgeSchemaSnapshotSchema, options.knowledgeSchema);
   const entitiesById = new Map(knowledgeSchema.entities.map((entity) => [entity.id, entity]));
   const outgoing = new Map<string, KnowledgeEdge[]>();
   const incoming = new Map<string, KnowledgeEdge[]>();
@@ -219,7 +220,7 @@ export function buildRetrievalUnitSnapshot(options: {
   const units: RetrievalUnit[] = [];
 
   const pushUnit = (unit: RetrievalUnit) => {
-    units.push(RetrievalUnitSchema.parse({
+    const normalizedUnit = {
       ...unit,
       searchText: unique(unit.searchText),
       entityIds: unique(unit.entityIds),
@@ -231,7 +232,8 @@ export function buildRetrievalUnitSnapshot(options: {
       moduleRoles: unique(unit.moduleRoles),
       processRoles: unique(unit.processRoles),
       evidencePaths: unique(unit.evidencePaths.map(toForwardSlash))
-    }));
+    };
+    units.push(maybeValidateSnapshot(RetrievalUnitSchema, normalizedUnit));
   };
 
   for (const entity of knowledgeSchema.entities) {
@@ -506,7 +508,7 @@ export function buildRetrievalUnitSnapshot(options: {
   }
 
   const orderedUnits = units.sort((a, b) => a.id.localeCompare(b.id));
-  return RetrievalUnitSnapshotSchema.parse({
+  return maybeValidateSnapshot(RetrievalUnitSnapshotSchema, {
     version: 1,
     generatedAt: knowledgeSchema.generatedAt,
     workspaceDir: knowledgeSchema.workspaceDir,

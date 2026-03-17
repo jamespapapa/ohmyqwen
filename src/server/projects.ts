@@ -49,6 +49,11 @@ import {
   buildFrontBackGraph,
   type FrontBackGraphSnapshot
 } from "./front-back-graph.js";
+import {
+  compactAnalyzeKnowledgeInputs,
+  resolveAnalyzeInputCompactionLimits,
+  type AnalyzeInputCompactionLimits
+} from "./analyze-input-compaction.js";
 import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import { computeDomainMaturity, type DomainMaturityOutput, type DomainMaturityResult } from "./domain-maturity.js";
@@ -964,6 +969,56 @@ const ONTOLOGY_ANALYZE_COMPACT_LIMITS: OntologyGraphBuildLimits = {
   maxReviewRecords: Math.max(
     8,
     Number.parseInt(process.env.OHMYQWEN_ONTOLOGY_MAX_REVIEW_RECORDS ?? "80", 10) || 80
+  )
+};
+const ANALYZE_INPUT_COMPACT_STRUCTURE_THRESHOLD = Math.max(
+  1000,
+  Number.parseInt(process.env.OHMYQWEN_ANALYZE_COMPACT_STRUCTURE_THRESHOLD ?? "5000", 10) || 5000
+);
+const ANALYZE_INPUT_COMPACT_SCREEN_THRESHOLD = Math.max(
+  500,
+  Number.parseInt(process.env.OHMYQWEN_ANALYZE_COMPACT_SCREEN_THRESHOLD ?? "2500", 10) || 2500
+);
+const ANALYZE_INPUT_COMPACT_LINK_THRESHOLD = Math.max(
+  500,
+  Number.parseInt(process.env.OHMYQWEN_ANALYZE_COMPACT_LINK_THRESHOLD ?? "3000", 10) || 3000
+);
+const ANALYZE_INPUT_COMPACT_EAI_THRESHOLD = Math.max(
+  100,
+  Number.parseInt(process.env.OHMYQWEN_ANALYZE_COMPACT_EAI_THRESHOLD ?? "900", 10) || 900
+);
+const ANALYZE_INPUT_COMPACT_LIMITS: AnalyzeInputCompactionLimits = {
+  maxStructureEntries: Math.max(
+    200,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_STRUCTURE_ENTRIES ?? "2200", 10) || 2200
+  ),
+  maxFrontendScreens: Math.max(
+    100,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_FRONTEND_SCREENS ?? "1400", 10) || 1400
+  ),
+  maxFrontendRoutes: Math.max(
+    100,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_FRONTEND_ROUTES ?? "1600", 10) || 1600
+  ),
+  maxFrontBackLinks: Math.max(
+    100,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_FRONTBACK_LINKS ?? "1400", 10) || 1400
+  ),
+  maxEaiEntries: Math.max(
+    50,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_EAI_ENTRIES ?? "520", 10) || 520
+  ),
+  maxEaiUsagePathsPerEntry: Math.max(
+    1,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_EAI_USAGE_PATHS ?? "8", 10) || 8
+  ),
+  maxEaiCallSitesPerEntry: Math.max(
+    1,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_EAI_CALL_SITES ?? "8", 10) || 8
+  ),
+  maxLearnedKnowledgeCandidates: Math.max(
+    20,
+    Number.parseInt(process.env.OHMYQWEN_ANALYZE_MAX_LEARNED_CANDIDATES ?? "180", 10) || 180
   )
 };
 const RETRIEVAL_NOISE_PATH_PREFIXES = ["memory/", ".ohmyqwen/", "tmp/", "temp/"];
@@ -6183,28 +6238,147 @@ export async function analyzeServerProject(options: {
       },
       eaiEntries
     });
+
+    const analyzeInputCompactionLimits = resolveAnalyzeInputCompactionLimits({
+      structureEntryCount: Object.keys(structure.snapshot.entries).length,
+      frontBackScreenCount: frontBackGraph?.frontend.screenCount ?? 0,
+      frontBackLinkCount: frontBackGraph?.links.length ?? 0,
+      eaiEntryCount: eaiEntries.length,
+      thresholds: {
+        structureEntryCount: ANALYZE_INPUT_COMPACT_STRUCTURE_THRESHOLD,
+        frontBackScreenCount: ANALYZE_INPUT_COMPACT_SCREEN_THRESHOLD,
+        frontBackLinkCount: ANALYZE_INPUT_COMPACT_LINK_THRESHOLD,
+        eaiEntryCount: ANALYZE_INPUT_COMPACT_EAI_THRESHOLD
+      },
+      limits: ANALYZE_INPUT_COMPACT_LIMITS
+    });
+    const analyzeInputs = analyzeInputCompactionLimits
+      ? compactAnalyzeKnowledgeInputs({
+          structureEntries: structure.snapshot.entries,
+          frontBackGraph,
+          eaiEntries,
+          limits: analyzeInputCompactionLimits
+        })
+      : {
+          structureEntries: structure.snapshot.entries,
+          frontBackGraph,
+          eaiEntries,
+          summary: {
+            compactMode: false,
+            structureEntriesBefore: Object.keys(structure.snapshot.entries).length,
+            structureEntriesAfter: Object.keys(structure.snapshot.entries).length,
+            frontendScreensBefore: frontBackGraph?.frontend.screens.length ?? 0,
+            frontendScreensAfter: frontBackGraph?.frontend.screens.length ?? 0,
+            frontendRoutesBefore: frontBackGraph?.frontend.routes.length ?? 0,
+            frontendRoutesAfter: frontBackGraph?.frontend.routes.length ?? 0,
+            frontBackLinksBefore: frontBackGraph?.links.length ?? 0,
+            frontBackLinksAfter: frontBackGraph?.links.length ?? 0,
+            eaiEntriesBefore: eaiEntries.length,
+            eaiEntriesAfter: eaiEntries.length,
+            learnedKnowledgeCandidatesBefore: 0,
+            learnedKnowledgeCandidatesAfter: 0
+          }
+        };
+    if (analyzeInputs.summary.compactMode) {
+      await appendProjectDebugEvent({
+        timestamp: nowIso(),
+        projectId: options.projectId,
+        stage: "analyze",
+        status: "info",
+        message: "analyze knowledge input compact mode enabled",
+        metadata: { ...analyzeInputs.summary }
+      });
+    }
+
     const priorLearnedKnowledge = await readLearnedKnowledgeSnapshot(memoryRoot);
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "learned knowledge build started",
+      metadata: {
+        structureEntryCount: Object.keys(analyzeInputs.structureEntries).length,
+        frontBackLinkCount: analyzeInputs.frontBackGraph?.links.length ?? 0
+      }
+    });
     const learnedKnowledge = computeLearnedKnowledgeSnapshot({
       generatedAt,
-      frontBackGraph,
+      frontBackGraph: analyzeInputs.frontBackGraph,
       structure: {
-        entries: structure.snapshot.entries
+        entries: analyzeInputs.structureEntries
       },
       existing: priorLearnedKnowledge
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "learned knowledge build finished",
+      metadata: {
+        candidateCount: learnedKnowledge.candidates.length
+      }
+    });
+
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "knowledge schema build started",
+      metadata: {
+        structureEntryCount: Object.keys(analyzeInputs.structureEntries).length,
+        frontBackLinkCount: analyzeInputs.frontBackGraph?.links.length ?? 0,
+        eaiEntryCount: analyzeInputs.eaiEntries.length
+      }
     });
     const knowledgeSchema = buildKnowledgeSchemaSnapshot({
       generatedAt,
       workspaceDir: project.workspaceDir,
       structure: {
-        entries: structure.snapshot.entries
+        entries: analyzeInputs.structureEntries
       },
-      frontBackGraph,
-      eaiEntries,
+      frontBackGraph: analyzeInputs.frontBackGraph,
+      eaiEntries: analyzeInputs.eaiEntries,
       learnedKnowledge,
       domainPacks: activeDomainPacks
     });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "knowledge schema build finished",
+      metadata: {
+        entityCount: knowledgeSchema.summary.entityCount,
+        edgeCount: knowledgeSchema.summary.edgeCount
+      }
+    });
+
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "retrieval unit build started",
+      metadata: {
+        entityCount: knowledgeSchema.summary.entityCount,
+        edgeCount: knowledgeSchema.summary.edgeCount
+      }
+    });
     const retrievalUnits = buildRetrievalUnitSnapshot({
       knowledgeSchema
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "retrieval unit build finished",
+      metadata: {
+        unitCount: retrievalUnits.summary.unitCount
+      }
     });
     const historicalFeedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
       memoryRoot,
@@ -6238,6 +6412,18 @@ export async function analyzeServerProject(options: {
         }
       });
     }
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "ontology graph build started",
+      metadata: {
+        entityCount: knowledgeSchema.summary.entityCount,
+        edgeCount: knowledgeSchema.summary.edgeCount,
+        retrievalUnitCount: retrievalUnits.summary.unitCount
+      }
+    });
     const ontologyGraph = buildOntologyGraphSnapshot({
       generatedAt,
       workspaceDir: project.workspaceDir,
@@ -6250,8 +6436,42 @@ export async function analyzeServerProject(options: {
       evaluationPromotions: existingEvaluationPromotions,
       limits: ontologyLimits
     });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "ontology graph build finished",
+      metadata: {
+        nodeCount: ontologyGraph.summary.nodeCount,
+        edgeCount: ontologyGraph.summary.edgeCount,
+        truncated: ontologyGraph.summary.truncated
+      }
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "ontology projection build started",
+      metadata: {
+        nodeCount: ontologyGraph.summary.nodeCount,
+        edgeCount: ontologyGraph.summary.edgeCount
+      }
+    });
     const ontologyProjections = buildOntologyProjectionSnapshot({
       ontologyGraph
+    });
+    await appendProjectDebugEvent({
+      timestamp: nowIso(),
+      projectId: options.projectId,
+      stage: "analyze",
+      status: "info",
+      message: "ontology projection build finished",
+      metadata: {
+        projectionCount: ontologyProjections.summary.projectionCount,
+        truncated: ontologyProjections.summary.truncated
+      }
     });
 
     if (projectPreset) {

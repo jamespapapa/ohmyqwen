@@ -20,6 +20,7 @@ import {
   type OntologyReviewSnapshot,
   canonicalOntologyPathTargetId
 } from "./ontology-review.js";
+import { maybeValidateSnapshot } from "./snapshot-validation.js";
 
 const OntologyNodeTypeSchema = z.enum([
   "module",
@@ -432,20 +433,24 @@ export function buildOntologyGraphSnapshot(options: {
   evaluationPromotions?: EvaluationPromotionSnapshot;
   limits?: OntologyGraphBuildLimits;
 }): OntologyGraphSnapshot {
-  const knowledgeSchema = KnowledgeSchemaSnapshotSchema.parse(options.knowledgeSchema);
-  const retrievalUnits = options.retrievalUnits ? RetrievalUnitSnapshotSchema.parse(options.retrievalUnits) : undefined;
+  const knowledgeSchema = maybeValidateSnapshot(KnowledgeSchemaSnapshotSchema, options.knowledgeSchema);
+  const retrievalUnits = options.retrievalUnits
+    ? maybeValidateSnapshot(RetrievalUnitSnapshotSchema, options.retrievalUnits)
+    : undefined;
   const ontologyInputs = options.ontologyInputs
-    ? OntologyInputSummarySnapshotSchema.parse(options.ontologyInputs)
+    ? maybeValidateSnapshot(OntologyInputSummarySnapshotSchema, options.ontologyInputs)
     : undefined;
   const ontologyReview = options.ontologyReview
-    ? OntologyReviewSnapshotSchema.parse(options.ontologyReview)
+    ? maybeValidateSnapshot(OntologyReviewSnapshotSchema, options.ontologyReview)
     : undefined;
-  const feedbackArtifacts = (options.feedbackArtifacts ?? []).map((artifact) => ProjectFeedbackArtifactSchema.parse(artifact));
+  const feedbackArtifacts = (options.feedbackArtifacts ?? []).map((artifact) =>
+    maybeValidateSnapshot(ProjectFeedbackArtifactSchema, artifact)
+  );
   const evaluationReplay = options.evaluationReplay
-    ? EvaluationReplaySnapshotSchema.parse(options.evaluationReplay)
+    ? maybeValidateSnapshot(EvaluationReplaySnapshotSchema, options.evaluationReplay)
     : undefined;
   const evaluationPromotions = options.evaluationPromotions
-    ? EvaluationPromotionSnapshotSchema.parse(options.evaluationPromotions)
+    ? maybeValidateSnapshot(EvaluationPromotionSnapshotSchema, options.evaluationPromotions)
     : undefined;
   const limits = options.limits ?? {};
   const appliedLimits: string[] = [];
@@ -496,10 +501,10 @@ export function buildOntologyGraphSnapshot(options: {
   const edges = new Map<string, OntologyEdge>();
 
   const upsertNode = (node: OntologyNode) => {
-    nodes.set(node.id, OntologyNodeSchema.parse(node));
+    nodes.set(node.id, maybeValidateSnapshot(OntologyNodeSchema, node));
   };
   const upsertEdge = (edge: OntologyEdge) => {
-    const parsed = OntologyEdgeSchema.parse(edge);
+    const parsed = maybeValidateSnapshot(OntologyEdgeSchema, edge);
     edges.set(`${parsed.type}:${parsed.fromId}:${parsed.toId}`, parsed);
   };
 
@@ -1032,7 +1037,7 @@ export function buildOntologyGraphSnapshot(options: {
   const orderedNodes = Array.from(nodes.values()).sort((a, b) => a.id.localeCompare(b.id));
   const orderedEdges = Array.from(edges.values()).sort((a, b) => a.id.localeCompare(b.id));
 
-  return OntologyGraphSnapshotSchema.parse({
+  return maybeValidateSnapshot(OntologyGraphSnapshotSchema, {
     version: 1,
     generatedAt: options.generatedAt ?? knowledgeSchema.generatedAt,
     workspaceDir: options.workspaceDir ?? knowledgeSchema.workspaceDir,
