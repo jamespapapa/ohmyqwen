@@ -3041,6 +3041,37 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
+  const asyncRequestContractsByChannel = new Map<string, Set<string>>();
+  for (const asyncEdge of Array.from(edges.values()).filter((edge) => edge.type === "dispatches-to")) {
+    const producerContracts = requestSourceContractsByNode.get(asyncEdge.fromId) ?? new Set<string>();
+    for (const contractId of producerContracts) {
+      addContractPropagationEdge({
+        fromId: asyncEdge.fromId,
+        toId: asyncEdge.toId,
+        contractId,
+        direction: "request",
+        flowEdge: asyncEdge
+      });
+      addContractForNode(asyncRequestContractsByChannel, asyncEdge.toId, contractId);
+    }
+  }
+  for (const asyncEdge of Array.from(edges.values()).filter((edge) => edge.type === "consumes-from")) {
+    const consumerContracts = requestTargetContractsByNode.get(asyncEdge.fromId) ?? new Set<string>();
+    const channelContracts = asyncRequestContractsByChannel.get(asyncEdge.toId) ?? new Set<string>();
+    for (const contractId of consumerContracts) {
+      if (!channelContracts.has(contractId)) {
+        continue;
+      }
+      addContractPropagationEdge({
+        fromId: asyncEdge.toId,
+        toId: asyncEdge.fromId,
+        contractId,
+        direction: "request",
+        flowEdge: asyncEdge
+      });
+    }
+  }
+
   const supportTransitionLabels: Partial<Record<KnowledgeEdgeType, string>> = {
     "uses-store": "state store transition",
     "uses-cache-key": "cache key transition",

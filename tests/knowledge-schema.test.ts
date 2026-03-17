@@ -271,7 +271,27 @@ describe("knowledge schema foundation", () => {
               dbAccessTypes: [],
               dbModelNames: [],
               dbTableNames: [],
-              requestModelNames: [],
+              requestModelNames: ["MonimoAuthRequest"],
+              responseModelNames: []
+            }
+          },
+          "dcp-async/src/main/java/com/example/MonimoAuthEventDispatcher.java": {
+            path: "dcp-async/src/main/java/com/example/MonimoAuthEventDispatcher.java",
+            packageName: "com.example",
+            summary: "monimo auth callback dispatcher",
+            classes: [{ name: "MonimoAuthEventDispatcher", line: 9 }],
+            methods: [{ name: "dispatchCallback", className: "MonimoAuthEventDispatcher", line: 19 }],
+            functions: [],
+            resources: {
+              storeKinds: [],
+              redisAccessTypes: [],
+              redisOps: [],
+              redisKeys: [],
+              asyncChannelNames: ["monimo.auth.callback"],
+              dbAccessTypes: [],
+              dbModelNames: [],
+              dbTableNames: [],
+              requestModelNames: ["MonimoAuthRequest"],
               responseModelNames: []
             }
           },
@@ -367,6 +387,7 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "data-model:monimountyplatfmbrbasdaomodel")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "data-table:tb_monimo_member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "async-channel:monimo.auth.callback")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id.includes("MonimoAuthEventDispatcher.dispatchCallback"))).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "MemberAuthValidator")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "validateSessionToken")).toBe(true);
@@ -676,9 +697,35 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "dispatches-to" &&
+          edge.toId === "async-channel:monimo.auth.callback"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "transitions-to" &&
           edge.fromId === "async-channel:monimo.auth.callback" &&
           edge.toId.includes("MonimoAsyncController")
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
+          edge.toId === "async-channel:monimo.auth.callback" &&
+          edge.attributes.contractId === "data-contract:monimoauthrequest" &&
+          edge.attributes.direction === "request"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
+          edge.fromId === "async-channel:monimo.auth.callback" &&
+          edge.toId.includes("MonimoAsyncController.jellyPayRes") &&
+          edge.attributes.contractId === "data-contract:monimoauthrequest" &&
+          edge.attributes.direction === "request"
       )
     ).toBe(true);
     const guardIds = snapshot.entities
