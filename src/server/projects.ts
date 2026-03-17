@@ -56,7 +56,8 @@ import {
 import {
   buildCanonicalLinkedFlowPlan,
   buildDeterministicFlowAnswer,
-  buildLinkedFlowEvidence
+  buildLinkedFlowEvidence,
+  type CanonicalLinkedFlowPlan
 } from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import {
@@ -8175,11 +8176,23 @@ export async function askServerProject(options: {
         });
       }
 
+      const canonicalFlowPlan =
+        crossLayerFlowQuestion && linkedFlows.length > 0
+          ? buildCanonicalLinkedFlowPlan({
+              question,
+              questionTags,
+              linkedFlowEvidence: linkedFlows
+            })
+          : null;
+
       const downstream =
         crossLayerFlowQuestion && linkedFlows.length > 0
           ? await traceLinkedFlowDownstream({
               workspaceDir: project.workspaceDir,
               linkedFlowEvidence: linkedFlows,
+              preferredFlowKeys: canonicalFlowPlan?.canonicalFlows.map(
+                (item) => `${item.apiUrl}|${item.backendControllerMethod}`
+              ),
               structure: structureSnapshot
                 ? {
                     entries: structureSnapshot.entries
@@ -8227,6 +8240,7 @@ export async function askServerProject(options: {
         linkedEaiEvidence: linkedEai,
         linkedFlowEvidence: linkedFlows,
         downstreamFlowTraces: downstream,
+        canonicalFlowPlan,
         rankedOntologyNodes,
         rankedOntologyProjections,
         ontologyRerankContext,
@@ -8250,6 +8264,7 @@ export async function askServerProject(options: {
       }>;
       linkedEaiEvidence: Array<{ interfaceId: string }>;
       downstreamFlowTraces: Array<{ phase: string; serviceMethod: string }>;
+      canonicalFlowPlan: CanonicalLinkedFlowPlan | null;
       rankedOntologyNodes: Array<{ node: { id: string } }>;
       rankedOntologyProjections: Array<{ projection: { id: string } }>;
     }) =>
@@ -8284,6 +8299,7 @@ export async function askServerProject(options: {
       linkedEaiEvidence,
       linkedFlowEvidence,
       downstreamFlowTraces,
+      canonicalFlowPlan: initialCanonicalFlowPlan,
       rankedOntologyNodes,
       rankedOntologyProjections,
       ontologyRerankContext,
@@ -8295,14 +8311,7 @@ export async function askServerProject(options: {
 
     const qualityFailures: string[] = [];
 
-    const canonicalCrossLayerPlan =
-      crossLayerFlowQuestion && linkedFlowEvidence.length > 0
-        ? buildCanonicalLinkedFlowPlan({
-            question,
-            questionTags: questionCapabilityTags,
-            linkedFlowEvidence
-          })
-        : null;
+    let canonicalCrossLayerPlan = initialCanonicalFlowPlan;
 
     const deterministicCrossLayerOutput =
       crossLayerFlowQuestion && linkedFlowEvidence.length > 0
@@ -8732,6 +8741,7 @@ export async function askServerProject(options: {
           linkedFlowEvidence,
           linkedEaiEvidence,
           downstreamFlowTraces,
+          canonicalFlowPlan: canonicalCrossLayerPlan,
           rankedOntologyNodes,
           rankedOntologyProjections
         });
@@ -8809,6 +8819,7 @@ export async function askServerProject(options: {
             linkedEaiEvidence,
             linkedFlowEvidence,
             downstreamFlowTraces,
+            canonicalFlowPlan: canonicalCrossLayerPlan,
             rankedOntologyNodes,
             rankedOntologyProjections,
             ontologyRerankContext,

@@ -150,4 +150,110 @@ public class AccBenefitClaimService {
     expect(docInsert?.steps.join(" ")).toContain("saveClamDocumentFile");
     expect(docInsert?.eaiInterfaces).toEqual(expect.arrayContaining(["F13630020", "F13630014", "F1FCZ0045"]));
   });
+
+  it("traces downstream only from preferred canonical flows when preferredFlowKeys are provided", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-flow-trace-canonical-"));
+    tempDirs.push(workspace);
+
+    const insuranceServiceDir = path.join(
+      workspace,
+      "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/service"
+    );
+    const loanServiceDir = path.join(
+      workspace,
+      "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/service"
+    );
+    await mkdir(insuranceServiceDir, { recursive: true });
+    await mkdir(loanServiceDir, { recursive: true });
+
+    const insuranceServicePath = path.join(insuranceServiceDir, "AccBenefitClaimService.java");
+    const loanServicePath = path.join(loanServiceDir, "RealtyCollateralLoanV2StatusService.java");
+
+    await writeFile(
+      insuranceServicePath,
+      `package com.samsunglife.dcp.insurance.internet.service;
+
+public class AccBenefitClaimService {
+  public void saveBenefitClaimDoc(InsuranceParameters parameters) throws Exception {
+    getRedisInfo(parameters);
+    saveClamDocumentFile(parameters, null);
+  }
+
+  public void getRedisInfo(InsuranceParameters parameters) {}
+
+  public void saveClamDocumentFile(InsuranceParameters parameters, Object files) {}
+}
+`,
+      "utf8"
+    );
+
+    await writeFile(
+      loanServicePath,
+      `package com.samsunglife.dcp.loan.request.service;
+
+public class RealtyCollateralLoanV2StatusService {
+  public void updateHomes(LoanParameters parameters) throws Exception {
+    checkAuth(parameters);
+    updateHomesFamilyList(parameters);
+  }
+
+  public void checkAuth(LoanParameters parameters) {}
+
+  public void updateHomesFamilyList(LoanParameters parameters) {}
+}
+`,
+      "utf8"
+    );
+
+    const traces = await traceLinkedFlowDownstream({
+      workspaceDir: workspace,
+      linkedFlowEvidence: [
+        {
+          apiUrl: "/gw/api/insurance/accBenefit/claim/doc/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["AccBenefitClaimService.saveBenefitClaimDoc"]
+        },
+        {
+          apiUrl: "/gw/api/loan/v2/realty/request/house/collateral/status/homes/update",
+          backendControllerMethod: "RealtyCollateralLoanV2StatusController.updateHomes",
+          serviceHints: ["RealtyCollateralLoanV2StatusService.updateHomes"]
+        }
+      ],
+      preferredFlowKeys: [
+        "/gw/api/insurance/accBenefit/claim/doc/insert|AccBenefitClaimController.insertBenefitClaimDoc"
+      ],
+      structure: {
+        entries: {
+          "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/service/AccBenefitClaimService.java": {
+            path: "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/service/AccBenefitClaimService.java",
+            classes: [{ name: "AccBenefitClaimService" }],
+            methods: [
+              { name: "saveBenefitClaimDoc", className: "AccBenefitClaimService" },
+              { name: "getRedisInfo", className: "AccBenefitClaimService" },
+              { name: "saveClamDocumentFile", className: "AccBenefitClaimService" }
+            ],
+            functions: []
+          },
+          "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/service/RealtyCollateralLoanV2StatusService.java": {
+            path: "dcp-loan/src/main/java/com/samsunglife/dcp/loan/request/service/RealtyCollateralLoanV2StatusService.java",
+            classes: [{ name: "RealtyCollateralLoanV2StatusService" }],
+            methods: [
+              { name: "updateHomes", className: "RealtyCollateralLoanV2StatusService" },
+              { name: "checkAuth", className: "RealtyCollateralLoanV2StatusService" },
+              { name: "updateHomesFamilyList", className: "RealtyCollateralLoanV2StatusService" }
+            ],
+            functions: []
+          }
+        }
+      }
+    });
+
+    expect(traces).toHaveLength(1);
+    expect(traces[0]?.backendControllerMethod).toBe(
+      "AccBenefitClaimController.insertBenefitClaimDoc"
+    );
+    expect(traces[0]?.serviceMethod).toBe("AccBenefitClaimService.saveBenefitClaimDoc");
+    expect(traces[0]?.steps.join(" ")).toContain("getRedisInfo");
+    expect(traces[0]?.steps.join(" ")).toContain("saveClamDocumentFile");
+  });
 });

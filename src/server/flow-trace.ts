@@ -340,8 +340,18 @@ export async function traceLinkedFlowDownstream(options: {
   workspaceDir: string;
   linkedFlowEvidence: LinkedFlowLike[];
   structure?: StructureSnapshotLike;
+  preferredFlowKeys?: string[];
 }): Promise<DownstreamFlowTrace[]> {
-  const representativeFlows = selectRepresentativeFlows(options.linkedFlowEvidence);
+  const preferredFlowKeys = new Set(options.preferredFlowKeys ?? []);
+  const preferredFlows =
+    preferredFlowKeys.size === 0
+      ? options.linkedFlowEvidence
+      : options.linkedFlowEvidence.filter((flow) =>
+          preferredFlowKeys.has(`${flow.apiUrl}|${flow.backendControllerMethod}`)
+        );
+  const representativeFlows = selectRepresentativeFlows(
+    preferredFlows.length > 0 ? preferredFlows : options.linkedFlowEvidence
+  );
   const traces: DownstreamFlowTrace[] = [];
   const seenServiceMethods = new Set<string>();
 
