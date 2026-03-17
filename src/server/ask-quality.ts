@@ -12,6 +12,7 @@ import {
   hasStrongOntologySignalAlignment,
   isCrossLayerFlowQuestion
 } from "./ontology-signals.js";
+import { buildCanonicalLinkedFlowPlan } from "./flow-links.js";
 
 export type AskQualityStrategy = AskStrategyLike;
 
@@ -379,6 +380,18 @@ export function qualityGateForAskOutput(options: {
   if (crossLayerQuestion && linkedFlowEvidence.length > 0) {
     const questionCapabilities =
       options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+    const canonicalFlowPlan = buildCanonicalLinkedFlowPlan({
+      question: options.question,
+      questionTags: questionCapabilities,
+      linkedFlowEvidence: linkedFlowEvidence.map((item) => ({
+        ...item,
+        serviceHints: item.serviceHints ?? [],
+        confidence: 0.7,
+        reasons: []
+      }))
+    });
+    const canonicalPrimary = canonicalFlowPlan.primary;
+    const canonicalFlows = canonicalFlowPlan.canonicalFlows;
     const specificQuestionCapabilities = extractSpecificOntologySignals(questionCapabilities);
     const flowSignals = linkedFlowEvidence.map((item) => ({
       item,
@@ -442,6 +455,12 @@ export function qualityGateForAskOutput(options: {
     const answerMentionsUnalignedFlow = flowSignals.some(
       ({ item }) => !alignedFlowEvidence.includes(item) && answerMentionsFlowDetail(options.output.answer, item)
     );
+    const answerMentionsCanonicalPrimary =
+      !canonicalPrimary ||
+      answerMentionsFlowDetail(options.output.answer, canonicalPrimary);
+    const answerMentionsCanonicalFlow =
+      canonicalFlows.length === 0 ||
+      canonicalFlows.some((item) => answerMentionsFlowDetail(options.output.answer, item));
 
     if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
       failures.push("missing-frontend-route-evidence");
@@ -464,6 +483,12 @@ export function qualityGateForAskOutput(options: {
     }
     if (questionCapabilities.length > 0 && !answerAlignedFlow) {
       failures.push("missing-aligned-flow-detail");
+    }
+    if (!answerMentionsCanonicalPrimary) {
+      failures.push("missing-representative-flow-detail");
+    }
+    if (!answerMentionsCanonicalFlow) {
+      failures.push("missing-canonical-flow-detail");
     }
     if (specificQuestionCapabilities.length > 0 && !answerSpecificFlow) {
       failures.push("missing-specific-ontology-signal-detail");

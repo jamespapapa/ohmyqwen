@@ -507,6 +507,52 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("contains-unaligned-flow-detail");
   });
 
+  it("fails cross-layer answers that omit the representative canonical path", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "보험금 청구 관련 보조 단계로 /gw/api/insurance/benefit/claim/doc/insert 를 호출하고 RouteController.route 를 거쳐 BenefitClaimController.insertBenefitClaimDoc 와 BenefitClaimService.saveBenefitClaimDoc 로 이어진다.",
+        confidence: 0.74,
+        evidence: ["frontend evidence", "backend evidence"],
+        caveats: []
+      },
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 면밀히 분석해줘.",
+      hitPaths: [
+        "dcp-front-develop/src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M.vue",
+        "dcp-services-mevelop/dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/internet/controller/BenefitClaimController.java"
+      ],
+      strategy: "cross_layer_flow",
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M",
+          screenCode: "MDP-MYINT020200M",
+          apiUrl: "/gw/api/insurance/benefit/claim/inquiry",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/inquiry",
+          backendControllerMethod: "BenefitClaimController.benefitClaimInquiry",
+          serviceHints: ["BenefitClaimService.loadBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-read"]
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+          screenCode: "MDP-MYINT020220M",
+          apiUrl: "/gw/api/insurance/benefit/claim/doc/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/benefit/claim/doc/insert",
+          backendControllerMethod: "BenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["BenefitClaimService.saveBenefitClaimDoc"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-document"]
+        }
+      ],
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-document"]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-representative-flow-detail");
+  });
+
   it("fails cross-layer answers when a specific business question is answered with adjacent content flow only", () => {
     const gate = qualityGateForAskOutput({
       output: {

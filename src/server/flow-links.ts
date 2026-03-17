@@ -41,6 +41,13 @@ export interface DeterministicFlowAnswer {
   caveats: string[];
 }
 
+export interface CanonicalLinkedFlowPlan {
+  primary?: LinkedFlowEvidence;
+  canonicalFlows: LinkedFlowEvidence[];
+  droppedIncoherentFlowCount: number;
+  canonicalNamespaceCount: number;
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
@@ -340,6 +347,22 @@ function countDistinctTopNamespaces(flows: LinkedFlowEvidence[]): number {
   ).length;
 }
 
+export function buildCanonicalLinkedFlowPlan(options: {
+  question: string;
+  questionTags?: string[];
+  linkedFlowEvidence: LinkedFlowEvidence[];
+}): CanonicalLinkedFlowPlan {
+  const effectiveQuestionTags =
+    options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const canonicalFlows = buildCanonicalFlowCluster(options.linkedFlowEvidence, effectiveQuestionTags);
+  return {
+    primary: canonicalFlows[0],
+    canonicalFlows,
+    droppedIncoherentFlowCount: countIncoherentFlows(options.linkedFlowEvidence, effectiveQuestionTags),
+    canonicalNamespaceCount: countDistinctTopNamespaces(canonicalFlows)
+  };
+}
+
 function expandDesiredActionTags(actionHints: string[]): string[] {
   const expanded = new Set<string>();
   for (const action of actionHints) {
@@ -605,8 +628,13 @@ export function buildDeterministicFlowAnswer(options: {
 }): DeterministicFlowAnswer {
   const effectiveQuestionTags =
     options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
-  const canonicalFlows = buildCanonicalFlowCluster(options.linkedFlowEvidence, effectiveQuestionTags);
-  const primary = canonicalFlows[0];
+  const canonicalPlan = buildCanonicalLinkedFlowPlan({
+    question: options.question,
+    questionTags: effectiveQuestionTags,
+    linkedFlowEvidence: options.linkedFlowEvidence
+  });
+  const canonicalFlows = canonicalPlan.canonicalFlows;
+  const primary = canonicalPlan.primary;
   if (!primary) {
     return {
       answer: "충분한 근거를 확보하지 못해 확정 답변을 제공하기 어렵습니다. 재색인 후 다시 질의하세요.",
@@ -838,8 +866,8 @@ export function buildDeterministicFlowAnswer(options: {
   const primaryFlowActions = inferFlowActionTags(primary);
   const flowSpecificMatches = unique(orderedFlows.flatMap((flow) => specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag))));
   const distinctFlowActions = unique(orderedFlows.flatMap((flow) => inferFlowActionTags(flow)));
-  const droppedIncoherentFlowCount = countIncoherentFlows(options.linkedFlowEvidence, questionTags);
-  const canonicalNamespaceCount = countDistinctTopNamespaces(canonicalFlows);
+  const droppedIncoherentFlowCount = canonicalPlan.droppedIncoherentFlowCount;
+  const canonicalNamespaceCount = canonicalPlan.canonicalNamespaceCount;
   const actionPhaseCount = unique(orderedFlows.map((flow) => classifyFlowPhase(flow))).length;
   const downstreamTraceCount = (options.downstreamTraces ?? []).length;
   let confidence = 0.34;

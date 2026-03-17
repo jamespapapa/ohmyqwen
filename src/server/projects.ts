@@ -52,7 +52,11 @@ import {
   resolveAnalyzeInputCompactionLimits,
   type AnalyzeInputCompactionLimits
 } from "./analyze-input-compaction.js";
-import { buildDeterministicFlowAnswer, buildLinkedFlowEvidence } from "./flow-links.js";
+import {
+  buildCanonicalLinkedFlowPlan,
+  buildDeterministicFlowAnswer,
+  buildLinkedFlowEvidence
+} from "./flow-links.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import {
   applyLearnedKnowledgePromotionActions,
@@ -8179,6 +8183,15 @@ export async function askServerProject(options: {
 
     const qualityFailures: string[] = [];
 
+    const canonicalCrossLayerPlan =
+      crossLayerFlowQuestion && linkedFlowEvidence.length > 0
+        ? buildCanonicalLinkedFlowPlan({
+            question,
+            questionTags: questionCapabilityTags,
+            linkedFlowEvidence
+          })
+        : null;
+
     const deterministicCrossLayerOutput =
       crossLayerFlowQuestion && linkedFlowEvidence.length > 0
         ? buildDeterministicFlowAnswer({
@@ -8368,6 +8381,30 @@ export async function askServerProject(options: {
             hydratedEvidence,
             linkedEaiEvidence,
             linkedFlowEvidence,
+            canonicalLinkedFlowPlan: canonicalCrossLayerPlan
+              ? {
+                  primary: canonicalCrossLayerPlan.primary
+                    ? {
+                        screenCode: canonicalCrossLayerPlan.primary.screenCode,
+                        routePath: canonicalCrossLayerPlan.primary.routePath,
+                        apiUrl: canonicalCrossLayerPlan.primary.apiUrl,
+                        backendPath: canonicalCrossLayerPlan.primary.backendPath,
+                        backendControllerMethod: canonicalCrossLayerPlan.primary.backendControllerMethod,
+                        serviceHints: canonicalCrossLayerPlan.primary.serviceHints
+                      }
+                    : null,
+                  canonicalFlows: canonicalCrossLayerPlan.canonicalFlows.slice(0, 4).map((flow) => ({
+                    screenCode: flow.screenCode,
+                    routePath: flow.routePath,
+                    apiUrl: flow.apiUrl,
+                    backendPath: flow.backendPath,
+                    backendControllerMethod: flow.backendControllerMethod,
+                    serviceHints: flow.serviceHints
+                  })),
+                  droppedIncoherentFlowCount: canonicalCrossLayerPlan.droppedIncoherentFlowCount,
+                  canonicalNamespaceCount: canonicalCrossLayerPlan.canonicalNamespaceCount
+                }
+              : null,
             downstreamFlowTraces,
             retrievalUnitMatches: matchedRetrievalUnits.map((item) => ({
               id: item.unit.id,
@@ -8407,6 +8444,7 @@ export async function askServerProject(options: {
                 ? "특정 심볼/메서드 추적 질문입니다. target symbol -> direct callee -> downstream(EAI/DAO/async) 순서로 설명하고, hydratedEvidence의 callee:* 메서드를 최소 1개 이상 직접 언급하세요."
                 : questionTypeDecision.type === "cross_layer_flow"
                 ? "프론트-백엔드 통합 추적 질문입니다. 반드시 frontend screen/route -> /gw/api URL -> gateway/controller -> backend controller/service 순서로 설명하고, linkedFlowEvidence의 route/api/controllerMethod를 직접 언급하세요. 질문의 target capability/action과 맞는 flow만 사용하고, 인접 업무 플로우로 대체하지 마세요."
+                + " canonicalLinkedFlowPlan.primary 가 있으면 그 경로를 대표 E2E로 먼저 설명하고, canonicalFlows 밖의 경로는 답변에 섞지 마세요."
                 : questionTypeDecision.type === "module_role_explanation"
                 ? "모듈 역할 설명 질문입니다. 이 모듈의 책임, 진입점, 핵심 클래스/서비스, 처리 대상, 외부 연계를 근거로 설명하세요. 단순 구조 나열이 아니라 무엇을 담당하는 프로젝트인지 명확히 써야 합니다."
                 : questionTypeDecision.type === "process_or_batch_trace"
