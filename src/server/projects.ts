@@ -644,6 +644,9 @@ export interface ProjectAskResponse {
     matchedOntologyNodeTypes?: string[];
     matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
     matchedOntologyProjectionIds?: string[];
+    canonicalFlowCount?: number;
+    droppedIncoherentFlowCount?: number;
+    canonicalNamespaceCount?: number;
     retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
@@ -7513,6 +7516,9 @@ export async function askServerProject(options: {
         matchedOntologyProjectionIds: input.response.diagnostics.matchedOntologyProjectionIds ?? [],
         matchedKnowledgeIds: input.matchedLearnedKnowledgeIds ?? [],
         qualityGateFailures: input.response.diagnostics.qualityGateFailures,
+        canonicalFlowCount: input.response.diagnostics.canonicalFlowCount ?? 0,
+        droppedIncoherentFlowCount: input.response.diagnostics.droppedIncoherentFlowCount ?? 0,
+        canonicalNamespaceCount: input.response.diagnostics.canonicalNamespaceCount ?? 0,
         retryStopReason: input.response.diagnostics.retryStopReason,
         evidenceCount: input.response.evidence.length,
         caveatCount: input.response.caveats.length,
@@ -8956,6 +8962,9 @@ export async function askServerProject(options: {
         matchedOntologyNodeTypes: rankedOntologyNodes.map((item) => item.node.type),
         matchedOntologyNodeStatuses: rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus),
         matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
+        canonicalFlowCount: canonicalCrossLayerPlan?.canonicalFlows.length ?? 0,
+        droppedIncoherentFlowCount: canonicalCrossLayerPlan?.droppedIncoherentFlowCount ?? 0,
+        canonicalNamespaceCount: canonicalCrossLayerPlan?.canonicalNamespaceCount ?? 0,
         retryStopReason,
         memoryFiles: unique([
           analysis.memoryFiles[0],

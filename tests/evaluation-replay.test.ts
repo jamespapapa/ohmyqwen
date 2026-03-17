@@ -33,9 +33,10 @@ describe("evaluation replay automation", () => {
         matchedOntologyNodeStatuses: ["contested"],
         matchedOntologyProjectionIds: ["projection:integration"],
         matchedKnowledgeIds: ["channel:monimo"],
-        activeDomainIds: ["member-auth"],
-        matchedDomainIds: ["member-auth"],
         qualityGateFailures: ["missing-channel-boundary-detail", "stale-retrieval-only"],
+        canonicalFlowCount: 1,
+        droppedIncoherentFlowCount: 2,
+        canonicalNamespaceCount: 2,
         retryStopReason: "low-confidence-gain",
         evidenceCount: 2,
         caveatCount: 1,
@@ -63,8 +64,6 @@ describe("evaluation replay automation", () => {
         matchedRetrievalUnitIds: ["unit:module:dcp-async"],
         matchedRetrievalUnitStatuses: ["validated"],
         matchedKnowledgeIds: ["module:dcp-async"],
-        activeDomainIds: [],
-        matchedDomainIds: [],
         qualityGateFailures: [],
         evidenceCount: 3,
         caveatCount: 0,
@@ -112,6 +111,8 @@ describe("evaluation replay automation", () => {
     expect(replay.replayCandidates[0]?.questionType).toBe("channel_or_partner_integration");
     expect(replay.replayCandidates[0]?.reasons).toContain("failure:stale-retrieval-only");
     expect(replay.replayCandidates[0]?.reasons).toContain("ontology-contested");
+    expect(replay.replayCandidates[0]?.reasons).toContain("canonical-flow-incoherent");
+    expect(replay.replayCandidates[0]?.reasons).toContain("canonical-flow-mixed-namespace");
     expect(replay.replayCandidates.some((item) => item.reasons.includes("ontology-deprecated"))).toBe(true);
   });
 

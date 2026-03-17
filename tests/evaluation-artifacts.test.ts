@@ -37,9 +37,10 @@ describe("evaluation artifacts", () => {
       matchedRetrievalUnitIds: ["unit:flow:monimo", "unit:knowledge:channel:monimo"],
       matchedRetrievalUnitStatuses: ["validated", "stale"],
       matchedKnowledgeIds: ["channel:monimo"],
-      activeDomainIds: ["member-auth"],
-      matchedDomainIds: ["member-auth"],
       qualityGateFailures: ["missing-channel-boundary-detail"],
+      canonicalFlowCount: 2,
+      droppedIncoherentFlowCount: 1,
+      canonicalNamespaceCount: 2,
       retryStopReason: "low-confidence-gain",
       evidenceCount: 3,
       caveatCount: 1,
@@ -55,6 +56,8 @@ describe("evaluation artifacts", () => {
     expect(artifact.metrics.retrievalCoverageScore).toBeGreaterThan(0);
     expect(artifact.metrics.qualityRiskScore).toBeGreaterThan(0);
     expect(artifact.qualityGateFailures).toContain("missing-channel-boundary-detail");
+    expect(artifact.droppedIncoherentFlowCount).toBe(1);
+    expect(artifact.canonicalNamespaceCount).toBe(2);
   });
 
   it("builds search evaluation metrics and markdown summary", () => {

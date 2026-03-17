@@ -49,6 +49,9 @@ export const ProjectAskEvaluationArtifactSchema = EvaluationArtifactBaseSchema.e
   retrievalTopConfidence: z.number().min(0).max(1),
   matchedKnowledgeIds: z.array(z.string().min(1)).default([]),
   qualityGateFailures: z.array(z.string().min(1)).default([]),
+  canonicalFlowCount: z.number().int().min(0).default(0),
+  droppedIncoherentFlowCount: z.number().int().min(0).default(0),
+  canonicalNamespaceCount: z.number().int().min(0).default(0),
   retryStopReason: z.string().optional(),
   evidenceCount: z.number().int().min(0),
   caveatCount: z.number().int().min(0),
@@ -137,6 +140,8 @@ function computeEvidenceStrengthScore(input: {
 function computeQualityRiskScore(input: {
   qualityGatePassed: boolean;
   qualityGateFailureCount: number;
+  droppedIncoherentFlowCount?: number;
+  canonicalNamespaceCount?: number;
   retryStopReason?: string;
   staleCount: number;
   fallbackUsed: boolean;
@@ -145,6 +150,8 @@ function computeQualityRiskScore(input: {
   const raw =
     (input.qualityGatePassed ? 0 : 30) +
     input.qualityGateFailureCount * 8 +
+    (input.droppedIncoherentFlowCount ?? 0) * 4 +
+    Math.max(0, (input.canonicalNamespaceCount ?? 0) - 1) * 10 +
     input.staleCount * 10 +
     (input.retryStopReason ? 8 : 0) +
     (input.fallbackUsed ? 6 : 0) +
@@ -176,6 +183,9 @@ export function buildProjectAskEvaluationArtifact(input: {
   matchedOntologyProjectionIds?: string[];
   matchedKnowledgeIds?: string[];
   qualityGateFailures?: string[];
+  canonicalFlowCount?: number;
+  droppedIncoherentFlowCount?: number;
+  canonicalNamespaceCount?: number;
   retryStopReason?: string;
   evidenceCount: number;
   caveatCount: number;
@@ -210,6 +220,9 @@ export function buildProjectAskEvaluationArtifact(input: {
     matchedOntologyProjectionIds: input.matchedOntologyProjectionIds ?? [],
     matchedKnowledgeIds: input.matchedKnowledgeIds ?? [],
     qualityGateFailures: input.qualityGateFailures ?? [],
+    canonicalFlowCount: input.canonicalFlowCount ?? 0,
+    droppedIncoherentFlowCount: input.droppedIncoherentFlowCount ?? 0,
+    canonicalNamespaceCount: input.canonicalNamespaceCount ?? 0,
     retryStopReason: input.retryStopReason,
     evidenceCount: input.evidenceCount,
     caveatCount: input.caveatCount,
@@ -238,6 +251,8 @@ export function buildProjectAskEvaluationArtifact(input: {
       qualityRiskScore: computeQualityRiskScore({
         qualityGatePassed: input.qualityGatePassed,
         qualityGateFailureCount: (input.qualityGateFailures ?? []).length,
+        droppedIncoherentFlowCount: input.droppedIncoherentFlowCount ?? 0,
+        canonicalNamespaceCount: input.canonicalNamespaceCount ?? 0,
         retryStopReason: input.retryStopReason,
         staleCount: retrievalUnitStatuses.stale,
         fallbackUsed: input.retrievalFallbackUsed,
@@ -348,6 +363,9 @@ export function buildEvaluationArtifactMarkdown(
       `- confidence: ${artifact.confidence.toFixed(2)}`,
       `- qualityGatePassed: ${artifact.qualityGatePassed}`,
       `- qualityGateFailures: ${artifact.qualityGateFailures.join(", ") || "(none)"}`,
+      `- canonicalFlowCount: ${artifact.canonicalFlowCount}`,
+      `- droppedIncoherentFlowCount: ${artifact.droppedIncoherentFlowCount}`,
+      `- canonicalNamespaceCount: ${artifact.canonicalNamespaceCount}`,
       `- attempts: ${artifact.attempts}`,
       `- llmCallCount: ${artifact.llmCallCount}`,
       `- retrieval: ${artifact.retrievalProvider} fallback=${artifact.retrievalFallbackUsed} hits=${artifact.retrievalHitCount} topConfidence=${artifact.retrievalTopConfidence.toFixed(2)}`,

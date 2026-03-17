@@ -75,6 +75,8 @@ function buildReplayCandidate(
     const reasons = unique([
       ...artifact.qualityGateFailures.map((item) => `failure:${item}`),
       artifact.retryStopReason ? `retry:${artifact.retryStopReason}` : "",
+      artifact.droppedIncoherentFlowCount > 0 ? "canonical-flow-incoherent" : "",
+      artifact.canonicalNamespaceCount > 1 ? "canonical-flow-mixed-namespace" : "",
       artifact.metrics.retrievalUnitStatuses.stale > 0 ? "stale-units" : "",
       artifact.matchedOntologyNodeStatuses.includes("contested") ? "ontology-contested" : "",
       artifact.matchedOntologyNodeStatuses.includes("deprecated") ? "ontology-deprecated" : "",
@@ -87,6 +89,8 @@ function buildReplayCandidate(
     const score =
       artifact.metrics.qualityRiskScore +
       artifact.qualityGateFailures.length * 12 +
+      artifact.droppedIncoherentFlowCount * 6 +
+      Math.max(0, artifact.canonicalNamespaceCount - 1) * 12 +
       artifact.metrics.retrievalUnitStatuses.stale * 10 +
       artifact.matchedOntologyNodeStatuses.filter((status) => status === "contested").length * 8 +
       artifact.matchedOntologyNodeStatuses.filter((status) => status === "deprecated").length * 14 +
