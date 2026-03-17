@@ -193,6 +193,7 @@ import {
   summarizeAskRetryEvidence
 } from "./ask-retry.js";
 import { capAskConfidence } from "./ask-confidence.js";
+import { selectPreferredAskOutput } from "./ask-output-selection.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -8512,28 +8513,62 @@ export async function askServerProject(options: {
           matchedOntologyNodeLabels: rankedOntologyNodes.map((item) => item.node.label),
           matchedOntologyNodeActions: rankedOntologyNodes.flatMap((item) => item.node.metadata.actions)
         });
+
+        const selectedOutput = selectPreferredAskOutput({
+          questionType: questionTypeDecision.type,
+          retryTargetConfidence: askRetryTargetConfidence,
+          deterministic: normalizedDeterministicCrossLayerOutput && deterministicCrossLayerGate
+            ? {
+                output: normalizedDeterministicCrossLayerOutput,
+                gatePassed: deterministicCrossLayerGate.passed,
+                failures: deterministicCrossLayerGate.failures
+              }
+            : null,
+          generated: {
+            output: bestOutput,
+            gatePassed: gate.passed,
+            failures: gate.failures
+          }
+        });
+        const effectiveGatePassed = selectedOutput.gatePassed;
+        const effectiveFailures = selectedOutput.failures;
+        if (selectedOutput.source === "deterministic") {
+          bestOutput = selectedOutput.output;
+          await appendProjectDebugEvent({
+            timestamp: nowIso(),
+            projectId: options.projectId,
+            stage: "ask",
+            status: "info",
+            message: `deterministic canonical answer selected after attempt ${attempt}/${maxAttempts}`,
+            metadata: {
+              reason: selectedOutput.reason,
+              deterministicConfidence: normalizedDeterministicCrossLayerOutput?.confidence ?? null,
+              generatedConfidence: generation.output.confidence
+            }
+          });
+        }
         const confidenceBelowRetryThreshold = bestOutput.confidence < askRetryTargetConfidence;
 
         if (learnedKnowledgeSnapshot && matchedLearnedKnowledge.length > 0) {
           learnedKnowledgeSnapshot = applyLearnedKnowledgeObservation({
             snapshot: learnedKnowledgeSnapshot,
             matchedCandidateIds: matchedLearnedKnowledge.map((item) => item.id),
-            successful: gate.passed,
+            successful: effectiveGatePassed,
             question
           });
           await persistLearnedKnowledgeSnapshot(memoryRoot, learnedKnowledgeSnapshot);
           learnedKnowledgeObservedInLoop = true;
         }
 
-        if (gate.passed && !confidenceBelowRetryThreshold) {
+        if (effectiveGatePassed && !confidenceBelowRetryThreshold) {
           passed = true;
           break;
         }
 
-        if (!gate.passed) {
-          qualityFailures.push(...gate.failures);
+        if (!effectiveGatePassed) {
+          qualityFailures.push(...effectiveFailures);
         }
-        if (gate.passed && confidenceBelowRetryThreshold) {
+        if (effectiveGatePassed && confidenceBelowRetryThreshold) {
           await appendProjectDebugEvent({
             timestamp: nowIso(),
             projectId: options.projectId,
@@ -8580,7 +8615,7 @@ export async function askServerProject(options: {
         retryStopReason = retryDecision.shouldRetry ? undefined : retryDecision.reason;
 
         if (!retryDecision.shouldRetry) {
-          if (gate.passed) {
+          if (effectiveGatePassed) {
             passed = true;
           }
           await appendProjectDebugEvent({
@@ -8591,7 +8626,7 @@ export async function askServerProject(options: {
             message: `ask retry stopped after attempt ${attempt}/${maxAttempts}`,
             metadata: {
               reason: retryDecision.reason,
-              gatePassed: gate.passed,
+              gatePassed: effectiveGatePassed,
               confidence: bestOutput.confidence,
               confidenceGain: Number.isFinite(retryDecision.confidenceGain)
                 ? retryDecision.confidenceGain
