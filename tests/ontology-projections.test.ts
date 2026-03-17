@@ -248,11 +248,15 @@ describe("ontology projections", () => {
 
     const frontBack = snapshot.projections.find((projection) => projection.type === "front-back-flow");
     expect(frontBack?.representativePaths.length).toBeGreaterThan(0);
+    expect(frontBack?.statusCounts.derived).toBeGreaterThan(0);
     const integration = snapshot.projections.find((projection) => projection.type === "integration");
     expect(integration?.representativePaths.length).toBeGreaterThan(0);
+    expect(integration?.statusCounts.validated).toBeGreaterThan(0);
+    expect(snapshot.summary.topProjectionTypes.some((item) => item.id === "front-back-flow")).toBe(true);
 
     const markdown = buildOntologyProjectionMarkdown(snapshot);
     expect(markdown).toContain("# Ontology Projections");
     expect(markdown).toContain("projectionCount: 4");
+    expect(markdown).toContain("status=");
   });
 });

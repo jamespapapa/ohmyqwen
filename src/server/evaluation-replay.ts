@@ -28,6 +28,8 @@ const EvaluationReplaySummarySchema = z.object({
   searchCount: z.number().int().min(0),
   failedAskCount: z.number().int().min(0),
   staleBackedCount: z.number().int().min(0),
+  ontologyContestedBackedCount: z.number().int().min(0).default(0),
+  ontologyDeprecatedBackedCount: z.number().int().min(0).default(0),
   topQuestionTypes: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   topFailureCodes: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   averageRetrievalCoverage: z.number().min(0).max(100),
@@ -74,6 +76,8 @@ function buildReplayCandidate(
       ...artifact.qualityGateFailures.map((item) => `failure:${item}`),
       artifact.retryStopReason ? `retry:${artifact.retryStopReason}` : "",
       artifact.metrics.retrievalUnitStatuses.stale > 0 ? "stale-units" : "",
+      artifact.matchedOntologyNodeStatuses.includes("contested") ? "ontology-contested" : "",
+      artifact.matchedOntologyNodeStatuses.includes("deprecated") ? "ontology-deprecated" : "",
       artifact.metrics.qualityRiskScore >= 50 ? "quality-risk-high" : "",
       artifact.confidence < 0.5 ? "confidence-low" : ""
     ]);
@@ -84,6 +88,8 @@ function buildReplayCandidate(
       artifact.metrics.qualityRiskScore +
       artifact.qualityGateFailures.length * 12 +
       artifact.metrics.retrievalUnitStatuses.stale * 10 +
+      artifact.matchedOntologyNodeStatuses.filter((status) => status === "contested").length * 8 +
+      artifact.matchedOntologyNodeStatuses.filter((status) => status === "deprecated").length * 14 +
       (artifact.confidence < 0.5 ? 10 : 0);
     return ReplayCandidateSchema.parse({
       kind: "ask",
@@ -99,6 +105,8 @@ function buildReplayCandidate(
 
   const reasons = unique([
     artifact.metrics.retrievalUnitStatuses.stale > 0 ? "stale-units" : "",
+    artifact.matchedOntologyNodeStatuses.includes("contested") ? "ontology-contested" : "",
+    artifact.matchedOntologyNodeStatuses.includes("deprecated") ? "ontology-deprecated" : "",
     artifact.fallbackUsed ? "fallback-used" : "",
     artifact.topConfidence < 0.45 ? "top-confidence-low" : "",
     artifact.metrics.qualityRiskScore >= 45 ? "quality-risk-high" : ""
@@ -109,6 +117,8 @@ function buildReplayCandidate(
   const score =
     artifact.metrics.qualityRiskScore +
     artifact.metrics.retrievalUnitStatuses.stale * 10 +
+    artifact.matchedOntologyNodeStatuses.filter((status) => status === "contested").length * 8 +
+    artifact.matchedOntologyNodeStatuses.filter((status) => status === "deprecated").length * 14 +
     (artifact.fallbackUsed ? 8 : 0);
   return ReplayCandidateSchema.parse({
     kind: "search",
@@ -149,6 +159,12 @@ export function buildEvaluationReplaySnapshot(options: {
       searchCount: searchArtifacts.length,
       failedAskCount: askArtifacts.filter((artifact) => !artifact.qualityGatePassed).length,
       staleBackedCount: artifacts.filter((artifact) => artifact.metrics.retrievalUnitStatuses.stale > 0).length,
+      ontologyContestedBackedCount: artifacts.filter((artifact) =>
+        artifact.matchedOntologyNodeStatuses.includes("contested")
+      ).length,
+      ontologyDeprecatedBackedCount: artifacts.filter((artifact) =>
+        artifact.matchedOntologyNodeStatuses.includes("deprecated")
+      ).length,
       topQuestionTypes: countTop(artifacts.map((artifact) => artifact.questionType)),
       topFailureCodes: countTop(askArtifacts.flatMap((artifact) => artifact.qualityGateFailures)),
       averageRetrievalCoverage: average(artifacts.map((artifact) => artifact.metrics.retrievalCoverageScore)),
@@ -168,6 +184,8 @@ export function buildEvaluationReplayMarkdown(snapshot: EvaluationReplaySnapshot
   lines.push(`- searchCount: ${snapshot.summary.searchCount}`);
   lines.push(`- failedAskCount: ${snapshot.summary.failedAskCount}`);
   lines.push(`- staleBackedCount: ${snapshot.summary.staleBackedCount}`);
+  lines.push(`- ontologyContestedBackedCount: ${snapshot.summary.ontologyContestedBackedCount}`);
+  lines.push(`- ontologyDeprecatedBackedCount: ${snapshot.summary.ontologyDeprecatedBackedCount}`);
   lines.push(`- averageRetrievalCoverage: ${snapshot.summary.averageRetrievalCoverage}`);
   lines.push(`- averageQualityRisk: ${snapshot.summary.averageQualityRisk}`);
   lines.push("");

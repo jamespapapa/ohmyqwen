@@ -94,4 +94,31 @@ describe("ontology inputs", () => {
     expect(markdown).toContain("## Top Scopes");
     expect(markdown).toContain("csvRowCount: 2");
   });
+
+  it("derives semantic metadata from csv semantic columns when explicit tags are absent", () => {
+    const artifact = buildOntologyInputArtifact({
+      generatedAt: "2026-03-17T00:00:00.000Z",
+      projectId: "p1",
+      projectName: "demo",
+      kind: "csv",
+      scope: "general",
+      title: "semantic csv",
+      csvText: [
+        "domain,subdomain,channel,action,module_role,processRole,screen,api",
+        "member-auth,member-registration,monimo,register,bridge,callback,MDP-MYCER999999M,/monimo/registe",
+        "member-auth,embedded-login,monimo,login,bridge,callback,MDP-MYCER999998M,/member/embedded/login"
+      ].join("\n")
+    });
+
+    expect(deriveOntologyInputMetadata(artifact)).toEqual({
+      domains: ["member-auth"],
+      subdomains: ["member-registration", "embedded-login"],
+      channels: ["monimo"],
+      actions: ["register", "login"],
+      moduleRoles: ["bridge"],
+      processRoles: ["callback"]
+    });
+    expect(artifact.normalizedTerms).toContain("embedded");
+    expect(artifact.normalizedTerms).toContain("monimo");
+  });
 });

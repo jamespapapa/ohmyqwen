@@ -23,6 +23,7 @@ const OntologyProjectionSchema = z.object({
   nodeIds: z.array(z.string().min(1)).default([]),
   edgeIds: z.array(z.string().min(1)).default([]),
   representativePaths: z.array(OntologyProjectionPathSchema).default([]),
+  statusCounts: z.record(z.string(), z.number().int().min(0)).default({}),
   highlightedNodeIds: z.array(z.string().min(1)).default([]),
   highlightedEdgeIds: z.array(z.string().min(1)).default([])
 });
@@ -30,6 +31,7 @@ const OntologyProjectionSchema = z.object({
 const OntologyProjectionSummarySchema = z.object({
   projectionCount: z.number().int().min(0),
   projectionTypeCounts: z.record(z.string(), z.number().int().min(0)),
+  topProjectionTypes: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })).default([]),
   totalRepresentativePathCount: z.number().int().min(0),
   largestProjectionType: z.string().default(""),
   lifecycleProjectionPathCount: z.number().int().min(0)
@@ -57,10 +59,29 @@ function countBy(values: string[]): Record<string, number> {
   return Object.fromEntries(Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0])));
 }
 
+function countTop(values: string[], limit = 10): Array<{ id: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([id, count]) => ({ id, count }))
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.id.localeCompare(b.id)))
+    .slice(0, limit);
+}
+
 function nodeTypeGroups(snapshot: OntologyGraphSnapshot) {
   const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
   const edgesById = new Map(snapshot.edges.map((edge) => [edge.id, edge]));
   return { nodesById, edgesById };
+}
+
+function projectionStatusCounts(nodeIds: string[], nodesById: Map<string, OntologyGraphSnapshot["nodes"][number]>): Record<string, number> {
+  return countBy(
+    nodeIds
+      .map((nodeId) => nodesById.get(nodeId)?.metadata.validatedStatus ?? "")
+      .filter(Boolean)
+  );
 }
 
 function pickLargestProjectionType(projections: OntologyProjectionSnapshot["projections"]): string {
@@ -143,6 +164,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       nodeIds: unique(codeStructureNodeIds),
       edgeIds: unique(codeStructureEdgeIds),
       representativePaths: [],
+      statusCounts: projectionStatusCounts(codeStructureNodeIds, nodesById),
       highlightedNodeIds: codeStructureNodeIds.filter((id) => nodesById.get(id)?.type === "module").slice(0, 12),
       highlightedEdgeIds: []
     },
@@ -154,6 +176,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       nodeIds: unique(frontBackNodeIds),
       edgeIds: unique(frontBackEdgeIds),
       representativePaths: flowPaths,
+      statusCounts: projectionStatusCounts(frontBackNodeIds, nodesById),
       highlightedNodeIds: flowPaths.flatMap((entry) => entry.nodeIds).slice(0, 16),
       highlightedEdgeIds: flowPaths.flatMap((entry) => entry.edgeIds).slice(0, 16)
     },
@@ -165,6 +188,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       nodeIds: unique(integrationNodeIds),
       edgeIds: unique(integrationEdgeIds),
       representativePaths: integrationPaths,
+      statusCounts: projectionStatusCounts(integrationNodeIds, nodesById),
       highlightedNodeIds: integrationPaths.flatMap((entry) => entry.nodeIds).slice(0, 16),
       highlightedEdgeIds: integrationPaths.flatMap((entry) => entry.edgeIds).slice(0, 16)
     },
@@ -176,6 +200,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       nodeIds: unique(lifecycleNodeIds),
       edgeIds: unique(lifecycleEdgeIds),
       representativePaths: lifecyclePaths,
+      statusCounts: projectionStatusCounts(lifecycleNodeIds, nodesById),
       highlightedNodeIds: lifecyclePaths.flatMap((entry) => entry.nodeIds).slice(0, 16),
       highlightedEdgeIds: lifecyclePaths.flatMap((entry) => entry.edgeIds).slice(0, 16)
     }
@@ -189,6 +214,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     summary: {
       projectionCount: projections.length,
       projectionTypeCounts: countBy(projections.map((projection) => projection.type)),
+      topProjectionTypes: countTop(projections.map((projection) => projection.type)),
       totalRepresentativePathCount: projections.reduce((sum, projection) => sum + projection.representativePaths.length, 0),
       largestProjectionType: pickLargestProjectionType(projections),
       lifecycleProjectionPathCount: projections.find((projection) => projection.type === "knowledge-lifecycle")?.representativePaths.length ?? 0
@@ -211,6 +237,10 @@ export function buildOntologyProjectionMarkdown(snapshot: OntologyProjectionSnap
     lines.push(`- [${projection.type}] ${projection.title} | nodes=${projection.nodeIds.length} | edges=${projection.edgeIds.length} | paths=${projection.representativePaths.length}`);
     if (projection.summary) {
       lines.push(`  - ${projection.summary}`);
+    }
+    const statusEntries = Object.entries(projection.statusCounts);
+    if (statusEntries.length > 0) {
+      lines.push(`  - status=${statusEntries.map(([status, count]) => `${status}:${count}`).join(", ")}`);
     }
   }
   lines.push("");

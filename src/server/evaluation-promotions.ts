@@ -67,6 +67,15 @@ function buildActionForCandidate(options: {
     (artifact) => artifact.hitCount > 0 && !artifact.fallbackUsed && artifact.topConfidence >= 0.45
   ).length;
   const staleCount = options.artifacts.filter((artifact) => artifact.metrics.retrievalUnitStatuses.stale > 0).length;
+  const ontologyContestedCount = options.artifacts.filter((artifact) =>
+    artifact.matchedOntologyNodeStatuses.includes("contested")
+  ).length;
+  const ontologyDeprecatedCount = options.artifacts.filter((artifact) =>
+    artifact.matchedOntologyNodeStatuses.includes("deprecated")
+  ).length;
+  const ontologyValidatedCount = options.artifacts.filter((artifact) =>
+    artifact.matchedOntologyNodeStatuses.includes("validated")
+  ).length;
   const averageCoverage =
     options.artifacts.reduce((sum, artifact) => sum + artifact.metrics.retrievalCoverageScore, 0) / Math.max(total, 1);
   const averageRisk =
@@ -90,21 +99,45 @@ function buildActionForCandidate(options: {
     total >= 2 &&
     successfulAskCount + successfulSearchCount >= 2 &&
     failedAskCount === 0 &&
+    ontologyDeprecatedCount === 0 &&
     averageCoverage >= 45 &&
     averageRisk <= 35 &&
     averageConfidence >= 0.55
   ) {
     targetStatus = "validated";
-    reasons.push("promotion-ready", `artifacts=${total}`, `coverage=${Math.round(averageCoverage)}`, `risk=${Math.round(averageRisk)}`);
-    score = averageCoverage + (100 - averageRisk) + total * 5 + qmdCount * 3;
+    reasons.push(
+      "promotion-ready",
+      `artifacts=${total}`,
+      `coverage=${Math.round(averageCoverage)}`,
+      `risk=${Math.round(averageRisk)}`,
+      `ontology-validated=${ontologyValidatedCount}`
+    );
+    score = averageCoverage + (100 - averageRisk) + total * 5 + qmdCount * 3 + ontologyValidatedCount * 5;
   } else if (
     options.currentStatus !== "stale" &&
-    (failedAskCount >= 2 || staleCount >= 2) &&
+    (failedAskCount >= 2 || staleCount >= 2 || ontologyContestedCount >= 1 || ontologyDeprecatedCount >= 1) &&
     averageRisk >= 45
   ) {
     targetStatus = "stale";
-    reasons.push("stale-risk-high", `failedAsk=${failedAskCount}`, `stale=${staleCount}`, `risk=${Math.round(averageRisk)}`);
-    score = averageRisk + failedAskCount * 8 + staleCount * 10 + fallbackCount * 4;
+    reasons.push(
+      "stale-risk-high",
+      `failedAsk=${failedAskCount}`,
+      `stale=${staleCount}`,
+      `risk=${Math.round(averageRisk)}`
+    );
+    if (ontologyContestedCount > 0) {
+      reasons.push(`ontology-contested=${ontologyContestedCount}`);
+    }
+    if (ontologyDeprecatedCount > 0) {
+      reasons.push(`ontology-deprecated=${ontologyDeprecatedCount}`);
+    }
+    score =
+      averageRisk +
+      failedAskCount * 8 +
+      staleCount * 10 +
+      fallbackCount * 4 +
+      ontologyContestedCount * 8 +
+      ontologyDeprecatedCount * 14;
   }
 
   if (!targetStatus || targetStatus === options.currentStatus) {
@@ -121,7 +154,8 @@ function buildActionForCandidate(options: {
       0.45 +
         Math.min(0.35, total * 0.08) +
         Math.min(0.15, qmdCount * 0.05) -
-        Math.min(0.2, averageRisk / 500)
+        Math.min(0.2, averageRisk / 500) +
+        Math.min(0.08, ontologyValidatedCount * 0.03)
     )
   });
 }

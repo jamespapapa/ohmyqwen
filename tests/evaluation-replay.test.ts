@@ -29,6 +29,9 @@ describe("evaluation replay automation", () => {
         plannedQuery: "모니모 회원인증 callback bridge",
         matchedRetrievalUnitIds: ["unit:flow:monimo"],
         matchedRetrievalUnitStatuses: ["stale"],
+        matchedOntologyNodeIds: ["controller:RegisteUseDcpChnelController.registe"],
+        matchedOntologyNodeStatuses: ["contested"],
+        matchedOntologyProjectionIds: ["projection:integration"],
         matchedKnowledgeIds: ["channel:monimo"],
         activeDomainIds: ["member-auth"],
         matchedDomainIds: ["member-auth"],
@@ -83,6 +86,9 @@ describe("evaluation replay automation", () => {
         hitCount: 2,
         topConfidence: 0.37,
         plannedQuery: "IRP가입 join apply contract",
+        matchedOntologyNodeIds: ["service:DisplayBoardContentService.selectClassList"],
+        matchedOntologyNodeStatuses: ["deprecated"],
+        matchedOntologyProjectionIds: ["projection:front-back-flow"],
         matchedRetrievalUnitIds: ["unit:knowledge:irp-join"],
         matchedRetrievalUnitStatuses: ["candidate"]
       })
@@ -99,10 +105,14 @@ describe("evaluation replay automation", () => {
     expect(replay.summary.searchCount).toBe(1);
     expect(replay.summary.failedAskCount).toBe(1);
     expect(replay.summary.staleBackedCount).toBe(1);
+    expect(replay.summary.ontologyContestedBackedCount).toBe(1);
+    expect(replay.summary.ontologyDeprecatedBackedCount).toBe(1);
     expect(replay.summary.topQuestionTypes.map((item) => item.id)).toContain("channel_or_partner_integration");
     expect(replay.summary.topFailureCodes.some((item) => item.id === "stale-retrieval-only")).toBe(true);
     expect(replay.replayCandidates[0]?.questionType).toBe("channel_or_partner_integration");
     expect(replay.replayCandidates[0]?.reasons).toContain("failure:stale-retrieval-only");
+    expect(replay.replayCandidates[0]?.reasons).toContain("ontology-contested");
+    expect(replay.replayCandidates.some((item) => item.reasons.includes("ontology-deprecated"))).toBe(true);
   });
 
   it("renders replay markdown with candidate queue", () => {

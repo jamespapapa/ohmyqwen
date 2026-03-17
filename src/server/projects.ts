@@ -6644,6 +6644,9 @@ export async function askServerProject(options: {
         plannedQuery: input.plannedQuery ?? question,
         matchedRetrievalUnitIds: (input.matchedRetrievalUnits ?? []).map((item) => item.unit.id),
         matchedRetrievalUnitStatuses: (input.matchedRetrievalUnits ?? []).map((item) => item.unit.validatedStatus),
+        matchedOntologyNodeIds: input.response.diagnostics.matchedOntologyNodeIds ?? [],
+        matchedOntologyNodeStatuses: input.response.diagnostics.matchedOntologyNodeStatuses ?? [],
+        matchedOntologyProjectionIds: input.response.diagnostics.matchedOntologyProjectionIds ?? [],
         matchedKnowledgeIds: input.matchedLearnedKnowledgeIds ?? [],
         activeDomainIds: input.activeDomainIds ?? [],
         matchedDomainIds: input.matchedDomainIds ?? [],
@@ -8412,7 +8415,10 @@ export async function searchServerProject(options: {
         plannedQuery,
         matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
         matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-        matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus)
+        matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+        matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+        matchedOntologyNodeStatuses: rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus),
+        matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id)
       });
       const evaluationFiles = await writeEvaluationArtifact({
         memoryRoot,

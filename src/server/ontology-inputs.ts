@@ -89,13 +89,16 @@ function topCounts<T extends string>(values: T[], limit = 10, label: "scope" | "
 }
 
 function tokenize(value: string): string[] {
-  return unique(
-    String(value)
-      .toLowerCase()
-      .replace(/[^a-z0-9가-힣_:/.-]+/gi, " ")
-      .split(/\s+/)
-      .filter((item) => item.length >= 2)
-  );
+  const normalized = String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣_:/.-]+/gi, " ")
+    .split(/\s+/)
+    .filter((item) => item.length >= 2);
+  const expanded = normalized.flatMap((item) => [
+    item,
+    ...item.split(/[_:/.-]+/).filter((part) => part.length >= 2)
+  ]);
+  return unique(expanded);
 }
 
 export function parseOntologyCsvText(input: string): { headers: string[]; rows: Array<Record<string, string>> } {
@@ -224,7 +227,31 @@ function deriveNormalizedTerms(input: {
   return unique(values.flatMap((value) => tokenize(value)));
 }
 
-export function deriveOntologyInputMetadata(input: Pick<OntologyInputArtifact, "scope" | "tags">): {
+function normalizeSemanticKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function collectCsvSemanticValues(
+  rows: Array<Record<string, string>>,
+  aliases: string[]
+): string[] {
+  const aliasSet = new Set(aliases.map((alias) => normalizeSemanticKey(alias)));
+  const values: string[] = [];
+  for (const row of rows) {
+    for (const [key, rawValue] of Object.entries(row)) {
+      if (!aliasSet.has(normalizeSemanticKey(key))) {
+        continue;
+      }
+      const value = String(rawValue).trim();
+      if (value) {
+        values.push(value);
+      }
+    }
+  }
+  return unique(values);
+}
+
+export function deriveOntologyInputMetadata(input: Pick<OntologyInputArtifact, "scope" | "tags" | "csvRows">): {
   domains: string[];
   subdomains: string[];
   channels: string[];
@@ -244,6 +271,26 @@ export function deriveOntologyInputMetadata(input: Pick<OntologyInputArtifact, "
 
   if (prefixed.domains.length > 0 || prefixed.subdomains.length > 0 || prefixed.channels.length > 0 || prefixed.actions.length > 0 || prefixed.moduleRoles.length > 0 || prefixed.processRoles.length > 0) {
     return prefixed;
+  }
+
+  const csvRows = "csvRows" in input && Array.isArray(input.csvRows) ? input.csvRows : [];
+  const csvDerived = {
+    domains: collectCsvSemanticValues(csvRows, ["domain", "domains"]),
+    subdomains: collectCsvSemanticValues(csvRows, ["subdomain", "subdomains", "capability", "sub-capability"]),
+    channels: collectCsvSemanticValues(csvRows, ["channel", "channels", "partner"]),
+    actions: collectCsvSemanticValues(csvRows, ["action", "actions", "verb"]),
+    moduleRoles: collectCsvSemanticValues(csvRows, ["moduleRole", "module_role", "module-role", "role"]),
+    processRoles: collectCsvSemanticValues(csvRows, ["processRole", "process_role", "process-role", "stepRole", "step_role"])
+  };
+  if (
+    csvDerived.domains.length > 0 ||
+    csvDerived.subdomains.length > 0 ||
+    csvDerived.channels.length > 0 ||
+    csvDerived.actions.length > 0 ||
+    csvDerived.moduleRoles.length > 0 ||
+    csvDerived.processRoles.length > 0
+  ) {
+    return csvDerived;
   }
 
   switch (input.scope) {

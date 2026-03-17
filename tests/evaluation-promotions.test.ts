@@ -99,6 +99,9 @@ describe("evaluation promotions", () => {
         fallbackUsed: false,
         hitCount: 4,
         topConfidence: 0.71,
+        matchedOntologyNodeIds: ["controller:RegisteUseDcpChnelController.registe"],
+        matchedOntologyNodeStatuses: ["validated"],
+        matchedOntologyProjectionIds: ["projection:integration"],
         matchedKnowledgeIds: ["channel:monimo"],
         matchedRetrievalUnitIds: ["unit:flow:monimo"],
         matchedRetrievalUnitStatuses: ["validated"]
@@ -118,6 +121,9 @@ describe("evaluation promotions", () => {
         retrievalFallbackUsed: false,
         retrievalHitCount: 5,
         retrievalTopConfidence: 0.76,
+        matchedOntologyNodeIds: ["controller:RegisteUseDcpChnelController.registe"],
+        matchedOntologyNodeStatuses: ["validated"],
+        matchedOntologyProjectionIds: ["projection:integration"],
         matchedKnowledgeIds: ["channel:monimo"],
         matchedRetrievalUnitIds: ["unit:flow:monimo"],
         matchedRetrievalUnitStatuses: ["validated"],
@@ -144,6 +150,9 @@ describe("evaluation promotions", () => {
         retrievalFallbackUsed: true,
         retrievalHitCount: 2,
         retrievalTopConfidence: 0.31,
+        matchedOntologyNodeIds: ["module:dcp-async"],
+        matchedOntologyNodeStatuses: ["contested"],
+        matchedOntologyProjectionIds: ["projection:knowledge-lifecycle"],
         matchedKnowledgeIds: ["module:dcp-async"],
         matchedRetrievalUnitIds: ["unit:module:dcp-async"],
         matchedRetrievalUnitStatuses: ["stale"],
@@ -171,6 +180,9 @@ describe("evaluation promotions", () => {
         retrievalFallbackUsed: true,
         retrievalHitCount: 2,
         retrievalTopConfidence: 0.29,
+        matchedOntologyNodeIds: ["module:dcp-async"],
+        matchedOntologyNodeStatuses: ["deprecated"],
+        matchedOntologyProjectionIds: ["projection:knowledge-lifecycle"],
         matchedKnowledgeIds: ["module:dcp-async"],
         matchedRetrievalUnitIds: ["unit:module:dcp-async"],
         matchedRetrievalUnitStatuses: ["stale"],
@@ -196,6 +208,11 @@ describe("evaluation promotions", () => {
     expect(snapshot.summary.staleCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.actions.some((action) => action.candidateId === "channel:monimo" && action.targetStatus === "validated")).toBe(true);
     expect(snapshot.actions.some((action) => action.candidateId === "module:dcp-async" && action.targetStatus === "stale")).toBe(true);
+    expect(
+      snapshot.actions.find((action) => action.candidateId === "module:dcp-async")?.reasons.some((item) =>
+        item.startsWith("ontology-")
+      )
+    ).toBe(true);
   });
 
   it("applies promotion actions back into learned knowledge lifecycle", () => {

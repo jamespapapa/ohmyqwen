@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AskQuestionType } from "./question-types.js";
 
 const RetrievalUnitStatusSchema = z.enum(["candidate", "validated", "derived", "stale"]);
+const OntologyNodeStatusSchema = z.enum(["candidate", "validated", "derived", "stale", "contested", "deprecated"]);
 
 const RetrievalUnitStatusSummarySchema = z.object({
   total: z.number().int().min(0),
@@ -28,6 +29,9 @@ const EvaluationArtifactBaseSchema = z.object({
   plannedQuery: z.string().default(""),
   matchedRetrievalUnitIds: z.array(z.string().min(1)).default([]),
   matchedRetrievalUnitStatuses: z.array(RetrievalUnitStatusSchema).default([]),
+  matchedOntologyNodeIds: z.array(z.string().min(1)).default([]),
+  matchedOntologyNodeStatuses: z.array(OntologyNodeStatusSchema).default([]),
+  matchedOntologyProjectionIds: z.array(z.string().min(1)).default([]),
   metrics: EvaluationMetricsSchema
 });
 
@@ -69,6 +73,7 @@ export const ProjectSearchEvaluationArtifactSchema = EvaluationArtifactBaseSchem
 });
 
 export type RetrievalUnitStatus = z.infer<typeof RetrievalUnitStatusSchema>;
+export type OntologyNodeStatus = z.infer<typeof OntologyNodeStatusSchema>;
 export type RetrievalUnitStatusSummary = z.infer<typeof RetrievalUnitStatusSummarySchema>;
 export type ProjectAskEvaluationArtifact = z.infer<typeof ProjectAskEvaluationArtifactSchema>;
 export type ProjectSearchEvaluationArtifact = z.infer<typeof ProjectSearchEvaluationArtifactSchema>;
@@ -168,6 +173,9 @@ export function buildProjectAskEvaluationArtifact(input: {
   plannedQuery?: string;
   matchedRetrievalUnitIds?: string[];
   matchedRetrievalUnitStatuses?: RetrievalUnitStatus[];
+  matchedOntologyNodeIds?: string[];
+  matchedOntologyNodeStatuses?: OntologyNodeStatus[];
+  matchedOntologyProjectionIds?: string[];
   matchedKnowledgeIds?: string[];
   activeDomainIds?: string[];
   matchedDomainIds?: string[];
@@ -201,6 +209,9 @@ export function buildProjectAskEvaluationArtifact(input: {
     plannedQuery: input.plannedQuery ?? "",
     matchedRetrievalUnitIds: input.matchedRetrievalUnitIds ?? [],
     matchedRetrievalUnitStatuses: input.matchedRetrievalUnitStatuses ?? [],
+    matchedOntologyNodeIds: input.matchedOntologyNodeIds ?? [],
+    matchedOntologyNodeStatuses: input.matchedOntologyNodeStatuses ?? [],
+    matchedOntologyProjectionIds: input.matchedOntologyProjectionIds ?? [],
     matchedKnowledgeIds: input.matchedKnowledgeIds ?? [],
     activeDomainIds: input.activeDomainIds ?? [],
     matchedDomainIds: input.matchedDomainIds ?? [],
@@ -258,6 +269,9 @@ export function buildProjectSearchEvaluationArtifact(input: {
   matchedKnowledgeIds?: string[];
   matchedRetrievalUnitIds?: string[];
   matchedRetrievalUnitStatuses?: RetrievalUnitStatus[];
+  matchedOntologyNodeIds?: string[];
+  matchedOntologyNodeStatuses?: OntologyNodeStatus[];
+  matchedOntologyProjectionIds?: string[];
 }): ProjectSearchEvaluationArtifact {
   const retrievalUnitStatuses = summarizeRetrievalUnitStatuses(input.matchedRetrievalUnitStatuses ?? []);
   return ProjectSearchEvaluationArtifactSchema.parse({
@@ -278,6 +292,9 @@ export function buildProjectSearchEvaluationArtifact(input: {
     matchedKnowledgeIds: input.matchedKnowledgeIds ?? [],
     matchedRetrievalUnitIds: input.matchedRetrievalUnitIds ?? [],
     matchedRetrievalUnitStatuses: input.matchedRetrievalUnitStatuses ?? [],
+    matchedOntologyNodeIds: input.matchedOntologyNodeIds ?? [],
+    matchedOntologyNodeStatuses: input.matchedOntologyNodeStatuses ?? [],
+    matchedOntologyProjectionIds: input.matchedOntologyProjectionIds ?? [],
     metrics: {
       retrievalUnitStatuses,
       retrievalCoverageScore: computeRetrievalCoverageScore({
@@ -317,6 +334,9 @@ export function buildEvaluationArtifactMarkdown(
     `- plannedQuery: ${artifact.plannedQuery || "(none)"}`,
     `- retrievalUnits: ${artifact.matchedRetrievalUnitIds.join(", ") || "(none)"}`,
     `- retrievalUnitStatuses: ${artifact.matchedRetrievalUnitStatuses.join(", ") || "(none)"}`,
+    `- ontologyNodes: ${artifact.matchedOntologyNodeIds.join(", ") || "(none)"}`,
+    `- ontologyNodeStatuses: ${artifact.matchedOntologyNodeStatuses.join(", ") || "(none)"}`,
+    `- ontologyProjections: ${artifact.matchedOntologyProjectionIds.join(", ") || "(none)"}`,
     "",
     "## Metrics",
     `- retrievalCoverageScore: ${artifact.metrics.retrievalCoverageScore}`,
