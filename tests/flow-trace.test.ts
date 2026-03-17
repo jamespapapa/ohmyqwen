@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("flow trace", () => {
-  it("derives downstream DB/EAI steps from representative claim service methods", async () => {
+  it("derives generic downstream DB/EAI steps from representative write/document service methods", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-flow-trace-"));
     tempDirs.push(workspace);
 
@@ -140,8 +140,8 @@ public class AccBenefitClaimService {
       }
     });
 
-    const claimInsert = traces.find((item) => item.phase === "claim-insert");
-    const docInsert = traces.find((item) => item.phase === "doc-insert");
+    const claimInsert = traces.find((item) => item.phase === "action-write");
+    const docInsert = traces.find((item) => item.phase === "action-document");
 
     expect(claimInsert?.steps.join(" ")).toContain("getRedisInfo");
     expect(claimInsert?.steps.join(" ")).toContain("saveClamDocument");

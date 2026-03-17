@@ -51,22 +51,105 @@ const STOPWORDS = new Set([
   "확인해줘"
 ]);
 
-const DOMAIN_EXPANSIONS: Array<[RegExp, string[]]> = [
-  [/(보험금|benefit)/i, ["benefit", "insurance", "claim"]],
+const GENERIC_SYNONYM_PATTERNS: Array<[RegExp, string[]]> = [
+  [/(보험)/i, ["insurance"]],
+  [/(보험금)/i, ["benefit"]],
   [/(청구|claim)/i, ["claim", "submit", "receipt"]],
   [/(사고|accident)/i, ["accident"]],
   [/(대출|loan)/i, ["loan"]],
-  [/(회원|member|auth)/i, ["member", "auth"]],
+  [/(담보|collateral)/i, ["collateral"]],
+  [/(주택|house|home)/i, ["house", "home"]],
+  [/(회원|member)/i, ["member"]],
+  [/(인증|auth|verify)/i, ["auth", "verify"]],
+  [/(로그인|login|signin)/i, ["login", "signin"]],
+  [/(등록|register|regist|signup|join)/i, ["register", "regist"]],
+  [/(조회|inquiry|inqury|query|read|select|load|get)/i, ["inquiry", "query", "read", "select", "load"]],
+  [/(저장|save|insert|write|create|persist)/i, ["save", "insert", "write"]],
+  [/(수정|update|modify|change)/i, ["update", "modify"]],
+  [/(삭제|delete|remove|clear)/i, ["delete", "remove"]],
+  [/(문서|document|doc|agreement|pdf)/i, ["document", "doc", "agreement", "pdf"]],
+  [/(파일|첨부|upload|attachment|file)/i, ["upload", "attachment", "file"]],
+  [/(세션|session)/i, ["session"]],
+  [/(캐시|cache)/i, ["cache"]],
+  [/(리디스|redis)/i, ["redis"]],
+  [/(토큰|token|refresh|issue)/i, ["token", "refresh", "issue"]],
+  [/(채널|channel|partner|제휴|연계|integration|bridge|브릿지|callback|콜백)/i, ["channel", "partner", "integration", "bridge", "callback"]],
   [/(탑다운|topdown|큰 그림|overview|아키텍처|architecture)/i, ["topdown", "architecture", "overview"]],
   [/(로직|흐름|실행|구현|처리|오케스트레이션|orchestration)/i, ["flow", "execution", "controller", "service", "downstream"]],
-  [/(컨트롤러|controller|endpoint|requestmapping)/i, ["controller", "endpoint", "requestmapping"]],
-  [/(서비스|service|domain)/i, ["service", "domain"]],
-  [/(매퍼|mapper|mybatis|dao|repository)/i, ["mapper", "mybatis", "dao"]],
-  [/(eai|인터페이스|연계|전문)/i, ["eai", "interface", "integration"]],
-  [/(오류|에러|error|exception|typeerror)/i, ["error", "exception", "typeerror"]],
-  [/(검증|verify|validation)/i, ["verify", "validation"]],
-  [/(저장|save|submit)/i, ["save", "submit"]]
+  [/(컨트롤러|controller|endpoint|requestmapping|handler)/i, ["controller", "endpoint", "requestmapping", "handler"]],
+  [/(서비스|service|domain|facade|manager|helper|support)/i, ["service", "domain", "facade", "manager", "helper", "support"]],
+  [/(매퍼|mapper|mybatis|dao|repository|query|entity|model|table|sql)/i, ["mapper", "mybatis", "dao", "repository", "query", "entity", "model", "table", "sql"]],
+  [/(eai|인터페이스|전문|external)/i, ["eai", "interface", "integration", "external"]],
+  [/(오류|에러|error|exception|typeerror|fail)/i, ["error", "exception", "typeerror", "failure"]],
+  [/(검증|verify|validation|guard|validator|check)/i, ["verify", "validation", "guard", "validator", "check"]]
 ];
+
+const ROLE_TERMS = new Set([
+  "controller",
+  "service",
+  "mapper",
+  "repository",
+  "dao",
+  "client",
+  "handler",
+  "support",
+  "helper",
+  "manager",
+  "facade"
+]);
+
+const ACTION_TERMS = new Set([
+  "auth",
+  "verify",
+  "login",
+  "signin",
+  "register",
+  "regist",
+  "request",
+  "apply",
+  "inquiry",
+  "query",
+  "read",
+  "select",
+  "load",
+  "save",
+  "insert",
+  "write",
+  "update",
+  "modify",
+  "delete",
+  "remove",
+  "check",
+  "status",
+  "state",
+  "document",
+  "doc",
+  "upload",
+  "attachment",
+  "file",
+  "token",
+  "callback",
+  "bridge"
+]);
+
+const GENERIC_TERMS = new Set([
+  "flow",
+  "logic",
+  "execution",
+  "downstream",
+  "architecture",
+  "overview",
+  "endpoint",
+  "requestmapping",
+  "domain",
+  "external",
+  "integration",
+  "topdown",
+  "error",
+  "exception",
+  "typeerror",
+  "failure"
+]);
 
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
@@ -120,20 +203,23 @@ function extractSymbolCandidates(tokens: string[]): string[] {
       if (token.includes(".")) {
         return false;
       }
-      return /[A-Z]/.test(token) || /(Service|Controller|Mapper|Repository|Client|Async|Claim|save|submit|insert)/.test(token);
+      return /[A-Z]/.test(token) || /(Service|Controller|Mapper|Repository|Client|Handler|Support|Helper|Manager|Facade|Async|save|submit|insert|update|check|query|register|auth)/.test(token);
     })
   ).slice(0, 8);
 }
 
-function expandDomainTerms(values: string[]): string[] {
+function expandSemanticTerms(values: string[]): string[] {
   const combined = values.join(" ");
   const expanded: string[] = [];
-  for (const [pattern, synonyms] of DOMAIN_EXPANSIONS) {
+  for (const [pattern, synonyms] of GENERIC_SYNONYM_PATTERNS) {
     if (pattern.test(combined)) {
       expanded.push(...synonyms);
     }
   }
-  return unique(expanded);
+  for (const token of extractTokens(combined).map((entry) => entry.toLowerCase())) {
+    expanded.push(token);
+  }
+  return unique(expanded.filter((entry) => entry.length >= 2));
 }
 
 function toPascalCase(parts: string[]): string {
@@ -143,30 +229,44 @@ function toPascalCase(parts: string[]): string {
     .join("");
 }
 
-function buildCompositeSymbolHints(domainTerms: string[], symbols: string[]): string[] {
+function buildCompositeSymbolHints(semanticTerms: string[], symbols: string[], pathTokens: string[]): string[] {
   const hints = new Set<string>();
-  const lower = new Set(domainTerms.map((item) => item.toLowerCase()));
+  const lower = unique(semanticTerms.map((item) => item.toLowerCase()));
+  const lowerSet = new Set(lower);
+  const nounTerms = lower.filter((item) => !ROLE_TERMS.has(item) && !ACTION_TERMS.has(item) && !GENERIC_TERMS.has(item));
+  const roleTerms = lower.filter((item) => ROLE_TERMS.has(item));
+  const symbolRoles = symbols
+    .map((symbol) => {
+      const match = symbol.match(/(Controller|Service|Mapper|Repository|Client|Handler|Support|Helper|Manager|Facade)$/);
+      return match?.[1]?.toLowerCase();
+    })
+    .filter((item): item is string => Boolean(item));
+  const combinedRoles = unique([...roleTerms, ...symbolRoles]);
 
-  if (lower.has("benefit") && lower.has("claim")) {
-    hints.add("BenefitClaim");
-    hints.add("BenefitClaimController");
-    hints.add("BenefitClaimService");
+  const englishStemCandidates = nounTerms
+    .filter((item) => /^[a-z][a-z0-9-]*$/.test(item))
+    .flatMap((item) => item.split(/[-_]/).filter((part) => part.length >= 3));
+  const rawStemCandidates = nounTerms.flatMap((item) => item.split(/[-_]/).filter((part) => part.length >= 2));
+  const stemCandidates = unique([
+    ...englishStemCandidates,
+    ...rawStemCandidates,
+    ...pathTokens.map((item) => item.toLowerCase()).flatMap((item) => item.split(/[-_]/)).filter((part) => part.length >= 3)
+  ]).filter((item) => !ROLE_TERMS.has(item) && !ACTION_TERMS.has(item) && !GENERIC_TERMS.has(item));
+
+  for (let size = Math.min(3, stemCandidates.length); size >= 2; size -= 1) {
+    const composite = stemCandidates.slice(0, size);
+    if (composite.length >= 2) {
+      hints.add(toPascalCase(composite));
+    }
   }
-  if (lower.has("accident") && lower.has("benefit") && lower.has("claim")) {
-    hints.add("AccBenefitClaim");
-    hints.add("AccBenefitClaimController");
-    hints.add("AccBenefitClaimService");
-  }
-  if (lower.has("loan") && lower.has("request")) {
-    hints.add("LoanRequest");
-    hints.add("LoanRequestController");
-    hints.add("LoanRequestService");
+  if (stemCandidates.length >= 2 && lowerSet.has("insurance") && !stemCandidates.includes("insurance")) {
+    hints.add(toPascalCase(["insurance", ...stemCandidates.slice(0, 2)]));
   }
 
-  const claimish = ["benefit", "claim", "controller", "service", "mapper"];
-  const composite = claimish.filter((item) => lower.has(item));
-  if (composite.length >= 2) {
-    hints.add(toPascalCase(composite.slice(0, 2)));
+  for (const base of Array.from(hints)) {
+    for (const role of combinedRoles.slice(0, 4)) {
+      hints.add(`${base}${toPascalCase([role])}`);
+    }
   }
 
   for (const symbol of symbols) {
@@ -195,13 +295,13 @@ export function buildQmdQueryCandidates(signals: QmdPlannerSignals): string[] {
   const signalTokens = extractSignalTokens(signals);
   const symbols = extractSymbolCandidates(signalTokens);
   const pathTokens = unique((signals.targetFiles ?? []).flatMap((entry) => extractPathTokens(entry)));
-  const domainTerms = expandDomainTerms(allValues);
+  const semanticTerms = expandSemanticTerms(allValues);
   const compactTaskTokens = signalTokens.slice(0, 10);
-  const compositeSymbols = buildCompositeSymbolHints(domainTerms, symbols);
-  const errorTerms = expandDomainTerms([...(signals.errorLogs ?? []), ...(signals.verifyFeedback ?? [])]);
+  const compositeSymbols = buildCompositeSymbolHints(semanticTerms, symbols, pathTokens);
+  const errorTerms = expandSemanticTerms([...(signals.errorLogs ?? []), ...(signals.verifyFeedback ?? [])]);
   const logicTerms = unique(
-    domainTerms.filter((entry) =>
-      ["controller", "service", "downstream", "mapper", "mybatis", "dao", "claim", "benefit", "save", "submit", "error", "exception"].includes(entry)
+    semanticTerms.filter((entry) =>
+      ["controller", "service", "downstream", "mapper", "mybatis", "dao", "repository", "save", "submit", "insert", "check", "status", "query", "verify", "error", "exception"].includes(entry)
     )
   );
 
@@ -217,7 +317,7 @@ export function buildQmdQueryCandidates(signals: QmdPlannerSignals): string[] {
       buildCandidate([modules, pathTokens.slice(0, 6), compositeSymbols.slice(0, 4), logicTerms.slice(0, 4)]),
       buildCandidate([compositeSymbols.slice(0, 5), symbols.slice(0, 5), logicTerms.slice(0, 4)]),
       buildCandidate([pathTokens.slice(0, 8), errorTerms.slice(0, 4), compositeSymbols.slice(0, 4), symbols.slice(0, 4)]),
-      buildCandidate([compactTaskTokens.slice(0, 8), compositeSymbols.slice(0, 4), errorTerms.slice(0, 4), domainTerms.slice(0, 4)])
+      buildCandidate([compactTaskTokens.slice(0, 8), compositeSymbols.slice(0, 4), errorTerms.slice(0, 4), semanticTerms.slice(0, 4)])
     ].filter(Boolean)
   );
 

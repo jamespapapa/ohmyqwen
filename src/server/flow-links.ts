@@ -661,8 +661,15 @@ export function buildDeterministicFlowAnswer(options: {
     if (!trace) {
       return [];
     }
-    if (trace.phase === "doc-insert") {
-      const priorityPatterns = [/getRedisInfo/i, /selectClamDocument/i, /callMODC/i, /callF/i, /saveClamDocumentFile/i, /updateSubmitdate/i];
+    if (trace.phase === "action-document") {
+      const priorityPatterns = [
+        /redis|session|cache/i,
+        /select|get|load|read|query/i,
+        /callMODC|document|agreement|pdf|upload|attachment|file/i,
+        /callF|eai/i,
+        /save|insert|persist|write/i,
+        /update|modify|change/i
+      ];
       const selected: string[] = [];
       for (const pattern of priorityPatterns) {
         const match = trace.steps.find((step) => pattern.test(step));
@@ -678,9 +685,13 @@ export function buildDeterministicFlowAnswer(options: {
   const answerLines = orderedFlows.map((flow, index) => {
     const stepPrefix = `${index + 1}) `;
     const phaseTrace =
-      (/\/doc\/insert/i.test(flow.apiUrl) ? traceByPhase.get("doc-insert") : undefined) ??
-      (/\/claim\/insert/i.test(flow.apiUrl) && !/\/doc\/insert/i.test(flow.apiUrl) ? traceByPhase.get("claim-insert") : undefined) ??
-      (/\/claim\/check/i.test(flow.apiUrl) ? traceByPhase.get("check") : undefined) ??
+      (/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment/i.test(flow.apiUrl) ? traceByPhase.get("action-document") : undefined) ??
+      (/\/insert(?:\/|$)|\/apply(?:\/|$)|\/submit(?:\/|$)|\/save(?:\/|$)|\/proc(?:\/|$)|\/update(?:\/|$)|register|regist/i.test(flow.apiUrl) &&
+      !(/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment/i.test(flow.apiUrl))
+        ? traceByPhase.get("action-write")
+        : undefined) ??
+      (/\/check(?:\/|$)|\/status(?:\/|$)|verify|validate/i.test(flow.apiUrl) ? traceByPhase.get("action-check") : undefined) ??
+      (/inqury|inquiry|load|select|get|read/i.test(flow.apiUrl) ? traceByPhase.get("action-read") : undefined) ??
       flow.serviceHints.map((hint) => traceByService.get(hint)).find(Boolean);
     const servicePhrase =
       flow.serviceHints.length > 0

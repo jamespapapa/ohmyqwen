@@ -25,7 +25,7 @@ interface LinkedFlowLike {
 }
 
 export interface DownstreamFlowTrace {
-  phase: "check" | "claim-insert" | "doc-insert" | "inquiry" | "other";
+  phase: "action-check" | "action-write" | "action-document" | "action-read" | "other";
   apiUrl: string;
   backendControllerMethod: string;
   serviceMethod: string;
@@ -180,17 +180,17 @@ function extractEaiInterfaceIds(snippet: string, constants: Map<string, string>)
 
 function detectFlowPhase(apiUrl: string): DownstreamFlowTrace["phase"] {
   const normalized = apiUrl.toLowerCase();
-  if (/\/doc\/insert/.test(normalized)) {
-    return "doc-insert";
+  if (/\/doc(?:\/|$)|agreement|upload|pdf|file|attachment/.test(normalized)) {
+    return "action-document";
   }
-  if (/\/claim\/check/.test(normalized)) {
-    return "check";
+  if (/\/check(?:\/|$)|\/status(?:\/|$)|verify|validate/.test(normalized)) {
+    return "action-check";
   }
-  if (/\/claim\/insert/.test(normalized)) {
-    return "claim-insert";
+  if (/\/insert(?:\/|$)|\/apply(?:\/|$)|\/submit(?:\/|$)|\/save(?:\/|$)|\/proc(?:\/|$)|\/update(?:\/|$)|register|regist/.test(normalized)) {
+    return "action-write";
   }
   if (/inqury|inquiry|check|load/.test(normalized)) {
-    return "inquiry";
+    return "action-read";
   }
   return "other";
 }
@@ -217,36 +217,36 @@ function describeOwnedCall(owner: string, method: string): string | undefined {
 
 function describeLocalCall(methodName: string, nestedSnippet: string | undefined, constants: Map<string, string>): string | undefined {
   if (/^callF[0-9A-Z]{6,}$/i.test(methodName)) {
-    return `${methodName}: 청구 관련 EAI 전문 호출`;
+    return `${methodName}: 외부/EAI 호출`;
   }
   if (methodName === "callMODC0008") {
     const ids = extractEaiInterfaceIds(nestedSnippet ?? "", constants);
-    return `callMODC0008${ids.length > 0 ? ` -> ${ids.join(", ")}` : ""}: 동의서/청구서 문서변환 호출`;
+    return `callMODC0008${ids.length > 0 ? ` -> ${ids.join(", ")}` : ""}: 문서 변환 호출`;
   }
   if (methodName === "callMODC0010") {
     const ids = extractEaiInterfaceIds(nestedSnippet ?? "", constants);
-    return `callMODC0010${ids.length > 0 ? ` -> ${ids.join(", ")}` : ""}: 업로드 이미지/PDF 변환 호출`;
+    return `callMODC0010${ids.length > 0 ? ` -> ${ids.join(", ")}` : ""}: 이미지/PDF 변환 호출`;
   }
   if (methodName === "getRedisInfo") {
-    return "getRedisInfo: Redis 세션/청구 진행상태 조회";
+    return "getRedisInfo: 세션/캐시 상태 조회";
   }
-  if (methodName === "selectClamDocument") {
-    return "selectClamDocument: 기존 청구문서/최근 제출 이력 조회";
+  if (/^select[A-Z]/.test(methodName)) {
+    return `${methodName}: 조회 단계`;
   }
-  if (methodName === "saveClamDocument") {
-    return "saveClamDocument: 청구 기본정보 DB insert/update";
+  if (/^(save|insert|persist|write|create)[A-Z]/.test(methodName)) {
+    return `${methodName}: 저장 단계`;
   }
-  if (methodName === "saveClamDocumentFile") {
-    return "saveClamDocumentFile: 첨부파일 이력 DB 저장";
+  if (/^(update|modify|change)[A-Z]/.test(methodName)) {
+    return `${methodName}: 상태 갱신 단계`;
   }
-  if (methodName === "updateSubmitdate") {
-    return "updateSubmitdate: 제출일자/제출상태 갱신";
+  if (/^(delete|remove|clear|expire)[A-Z]/.test(methodName)) {
+    return `${methodName}: 정리/삭제 단계`;
   }
-  if (methodName === "moveConvertUploadFile") {
-    return "moveConvertUploadFile: 업로드 파일 변환/NAS 이동";
+  if (/^(move|convert|upload)[A-Z]/.test(methodName)) {
+    return `${methodName}: 파일/데이터 이동 단계`;
   }
-  if (methodName === "chkAccnNo") {
-    return "chkAccnNo: 입금계좌 유효성 검증";
+  if (/^(chk|check|validate|verify|guard|ensure|assert)[A-Z]/.test(methodName)) {
+    return `${methodName}: 검증 단계`;
   }
   if (/^(check|select|save|insert|update|delete|send|make|move|get)[A-Z]/.test(methodName)) {
     return `${methodName}: 하위 업무 처리 단계`;
@@ -267,7 +267,7 @@ function shouldKeepOwnedCall(owner: string, method: string): boolean {
 function selectRepresentativeFlows(flows: LinkedFlowLike[]): LinkedFlowLike[] {
   const chosen: LinkedFlowLike[] = [];
   const seenKeys = new Set<string>();
-  const phases = ["check", "claim-insert", "doc-insert", "inquiry", "other"] as const;
+  const phases = ["action-check", "action-write", "action-document", "action-read", "other"] as const;
 
   for (const phase of phases) {
     const match = flows.find((flow) => detectFlowPhase(flow.apiUrl) === phase);
@@ -303,9 +303,9 @@ function scoreServiceHintForPhase(serviceHint: string, phase: DownstreamFlowTrac
   const lowerMethod = methodName.toLowerCase();
   let score = 0;
 
-  if (/claimservice|benefitclaimservice|accbenefitclaimservice/.test(lowerClass)) {
-    score += 40;
-  } else if (/service|manager|support|helper|client/.test(lowerClass)) {
+  if (/service|manager|support|helper|client|facade|handler/.test(lowerClass)) {
+    score += 28;
+  } else if (/controller|validator|guard|processor/.test(lowerClass)) {
     score += 15;
   }
 
@@ -313,21 +313,24 @@ function scoreServiceHintForPhase(serviceHint: string, phase: DownstreamFlowTrac
     score -= 30;
   }
 
-  if (/save|insert|submit|proc|check|inqury|inquiry|doc/.test(lowerMethod)) {
+  if (/save|insert|submit|proc|check|inqury|inquiry|doc|query|select|load|get|update|register|regist|verify/.test(lowerMethod)) {
     score += 24;
   }
   if (/sendlms|delete|get$|load|spot/.test(lowerMethod)) {
     score -= 12;
   }
 
-  if (phase === "doc-insert" && /savebenefitclaimdoc|callf|callmodc/.test(lowerMethod)) {
+  if (phase === "action-document" && /doc|document|agreement|upload|pdf|file|callf|callmodc/.test(lowerMethod)) {
     score += 30;
   }
-  if (phase === "claim-insert" && /savebenefitclaim|chkaccnno/.test(lowerMethod)) {
+  if (phase === "action-write" && /save|insert|submit|apply|regist|register|proc|update/.test(lowerMethod)) {
     score += 24;
   }
-  if (phase === "check" && /checkapply|chk|check/.test(lowerMethod)) {
+  if (phase === "action-check" && /chk|check|verify|validate|status/.test(lowerMethod)) {
     score += 24;
+  }
+  if (phase === "action-read" && /inqury|inquiry|query|select|get|load|read|status/.test(lowerMethod)) {
+    score += 20;
   }
 
   return score;

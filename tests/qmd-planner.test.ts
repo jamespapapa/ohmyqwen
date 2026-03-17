@@ -55,4 +55,12 @@ describe("qmd planner", () => {
 
     expect(primary).toBe(candidates[0]);
   });
+
+  it("builds composite symbol hints from generic ontology-aligned semantics without domain pack rules", () => {
+    const candidates = buildQmdQueryCandidates({
+      task: "주택 담보 대출 신청 상태 확인 흐름을 controller service 기준으로 추적해줘."
+    });
+
+    expect(candidates.some((entry) => /(Loan|Collateral|House)[A-Za-z]*(Service|Controller)/.test(entry))).toBe(true);
+  });
 });
