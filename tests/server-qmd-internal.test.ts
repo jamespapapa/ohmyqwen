@@ -175,6 +175,92 @@ async function writeWorkspaceFixture(workspaceDir: string): Promise<void> {
 }
 
 describe("server projects with vendored internal qmd runtime", () => {
+  it("accepts ontology inputs and feeds ontology matches into analyze/search/ask", async () => {
+    const appRoot = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-app-root-"));
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-external-workspace-"));
+    tempDirs.push(appRoot, workspaceDir);
+
+    await writeFakeInternalQmdRuntime(appRoot);
+    await writeWorkspaceFixture(workspaceDir);
+    await mkdir(path.join(appRoot, ".ohmyqwen", "runtime", "qmd", "models"), { recursive: true });
+    await mkdir(path.join(appRoot, "config"), { recursive: true });
+
+    installFakeLlm();
+    process.chdir(appRoot);
+    process.env.OHMYQWEN_PROJECT_HOME = path.join(appRoot, ".project-home");
+    process.env.OHMYQWEN_SERVER_TRACE = "0";
+    process.env.OHMYQWEN_LLM_BASE_URL = "http://fake-llm.local/v1";
+    process.env.OHMYQWEN_LLM_MODEL = "Fake-Model";
+    process.env.OHMYQWEN_LLM_ENDPOINT_KIND = "openai";
+
+    const projectsModule = await import("../src/server/projects.js");
+
+    const project = await projectsModule.upsertServerProject({
+      name: "external-demo-ontology",
+      workspaceDir,
+      retrieval: {
+        qmd: {
+          integrationMode: "internal-runtime",
+          command: "definitely-missing-qmd"
+        }
+      }
+    });
+
+    await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+
+    const ontologyInput = await projectsModule.recordServerProjectOntologyInput({
+      projectId: project.id,
+      kind: "structured",
+      scope: "channel",
+      title: "모니모 회원인증",
+      message: "모니모 회원인증은 브릿지와 등록 흐름이 핵심이다.",
+      tags: ["channel:monimo", "domain:member-auth", "action:register"],
+      positiveExamples: ["/monimo/registe", "EmbededMemberLoginController"],
+      relatedNodeIds: ["controller:RegisteUseDcpChnelController.registe"]
+    });
+    expect(ontologyInput.artifact.kind).toBe("structured");
+    expect(ontologyInput.summary.totalInputs).toBeGreaterThanOrEqual(1);
+
+    const analysis = await projectsModule.analyzeServerProject({
+      projectId: project.id,
+      maxFiles: 20
+    });
+    expect(analysis.ontologyInputs?.totalInputs).toBeGreaterThanOrEqual(1);
+    expect(analysis.ontologyReview?.totalTargets).toBeGreaterThanOrEqual(0);
+    expect(analysis.ontologyGraph?.nodeCount).toBeGreaterThan(0);
+    expect(analysis.ontologyProjections?.projectionCount).toBeGreaterThan(0);
+
+    const search = await projectsModule.searchServerProject({
+      projectId: project.id,
+      query: "모니모 회원인증 등록 흐름"
+    });
+    expect(search.diagnostics.ontologyGraphLoaded).toBe(true);
+    expect((search.diagnostics.matchedOntologyNodeIds ?? []).length).toBeGreaterThan(0);
+    expect((search.diagnostics.matchedOntologyProjectionIds ?? []).length).toBeGreaterThan(0);
+
+    const ask = await projectsModule.askServerProject({
+      projectId: project.id,
+      question: "모니모 회원인증의 흐름이 프론트에서부터 백엔드까지 어떻게 이루어지는지 설명해줘.",
+      maxAttempts: 2,
+      deterministicOnly: false,
+      domainSelectionMode: "auto"
+    });
+    expect(ask.diagnostics.ontologyGraphLoaded).toBe(true);
+    expect((ask.diagnostics.matchedOntologyNodeIds ?? []).length).toBeGreaterThan(0);
+    expect((ask.diagnostics.matchedOntologyProjectionIds ?? []).length).toBeGreaterThan(0);
+    expect((ask.diagnostics.memoryFiles ?? []).some((entry) => entry.includes("ontology-graph/latest.md"))).toBe(true);
+
+    const ontologyInputPath = path.join(appRoot, ".project-home", "memory", "ontology-inputs", "summary.json");
+    const ontologyReviewPath = path.join(appRoot, ".project-home", "memory", "ontology-review", "latest.json");
+    const ontologyInputSnapshot = JSON.parse(await readFile(ontologyInputPath, "utf8")) as { summary?: { totalInputs?: number } };
+    const ontologyReviewSnapshot = JSON.parse(await readFile(ontologyReviewPath, "utf8")) as { summary?: { totalTargets?: number } };
+    expect(Number(ontologyInputSnapshot.summary?.totalInputs ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(Number(ontologyReviewSnapshot.summary?.totalTargets ?? 0)).toBeGreaterThanOrEqual(0);
+  });
+
   afterEach(async () => {
     globalThis.fetch = originalFetch;
     process.chdir(originalCwd);

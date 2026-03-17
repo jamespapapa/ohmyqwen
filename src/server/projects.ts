@@ -86,6 +86,33 @@ import {
   type OntologyProjectionSnapshot
 } from "./ontology-projections.js";
 import {
+  buildOntologyInputArtifact,
+  buildOntologyInputMarkdown,
+  buildOntologyInputSummaryMarkdown,
+  buildOntologyInputSummarySnapshot,
+  OntologyInputArtifactSchema,
+  OntologyInputScopeSchema,
+  OntologyInputSummarySnapshotSchema,
+  parseOntologyCsvText,
+  type OntologyInputArtifact,
+  type OntologyInputSummarySnapshot
+} from "./ontology-inputs.js";
+import {
+  buildOntologyReviewMarkdown,
+  buildOntologyReviewSnapshot,
+  OntologyReviewSnapshotSchema,
+  type OntologyReviewSnapshot
+} from "./ontology-review.js";
+import {
+  buildOntologySupportCandidates,
+  collectOntologyQueryTerms,
+  findOntologyEdgesForNodes,
+  rankOntologyNodesForQuestion,
+  rankOntologyProjectionsForQuestion,
+  type RankedOntologyNode,
+  type RankedOntologyProjection
+} from "./ontology-planner.js";
+import {
   buildRetrievalUnitSupportCandidates,
   buildRetrievalUnitMarkdown,
   buildRetrievalUnitSnapshot,
@@ -235,6 +262,13 @@ export interface ProjectSearchResult {
     matchedLearnedKnowledgeIds?: string[];
     matchedRetrievalUnitIds?: string[];
     matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
+    ontologyGraphLoaded?: boolean;
+    ontologyProjectionLoaded?: boolean;
+    ontologyInputLoaded?: boolean;
+    ontologyReviewLoaded?: boolean;
+    matchedOntologyNodeIds?: string[];
+    matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
+    matchedOntologyProjectionIds?: string[];
     plannedQuery?: string;
   };
 }
@@ -327,6 +361,46 @@ export interface ProjectAnalysisResult {
     largestProjectionType: string;
     lifecycleProjectionPathCount: number;
     topProjectionTypes: string[];
+    projections: Array<{
+      id: string;
+      type: string;
+      title: string;
+      nodeCount: number;
+      edgeCount: number;
+      pathCount: number;
+      samplePaths: string[];
+    }>;
+  };
+  ontologyInputs?: {
+    generatedAt: string;
+    totalInputs: number;
+    noteCount: number;
+    structuredCount: number;
+    csvCount: number;
+    csvRowCount: number;
+    topScopes: Array<{
+      scope: string;
+      count: number;
+    }>;
+    topTags: Array<{
+      tag: string;
+      count: number;
+    }>;
+  };
+  ontologyReview?: {
+    generatedAt: string;
+    totalTargets: number;
+    validatedCount: number;
+    contestedCount: number;
+    deprecatedCount: number;
+    statusCounts: Record<string, number>;
+    topTargets: Array<{
+      targetKind: string;
+      targetId: string;
+      status: string;
+      feedbackCount: number;
+      confidence: number;
+    }>;
   };
   evaluationTrends?: {
     generatedAt: string;
@@ -511,6 +585,13 @@ export interface ProjectAskResponse {
     retrievalUnitCount?: number;
     matchedRetrievalUnitIds?: string[];
     matchedRetrievalUnitStatuses?: Array<"candidate" | "validated" | "derived" | "stale">;
+    ontologyGraphLoaded?: boolean;
+    ontologyProjectionLoaded?: boolean;
+    ontologyInputLoaded?: boolean;
+    ontologyReviewLoaded?: boolean;
+    matchedOntologyNodeIds?: string[];
+    matchedOntologyNodeStatuses?: Array<"candidate" | "validated" | "derived" | "stale" | "contested" | "deprecated">;
+    matchedOntologyProjectionIds?: string[];
     retryStopReason?: string;
     deterministicUsed?: boolean;
     deterministicSymbol?: string;
@@ -533,6 +614,21 @@ export interface ProjectReplayExecutionResult {
     hitCount?: number;
     provider?: "qmd" | "lexical";
   }>;
+}
+
+export interface ProjectOntologyInputResult {
+  project: ServerProject;
+  artifact: OntologyInputArtifact;
+  summary: {
+    totalInputs: number;
+    noteCount: number;
+    structuredCount: number;
+    csvCount: number;
+    csvRowCount: number;
+    topScopes: Array<{ scope: string; count: number }>;
+    topTags: Array<{ tag: string; count: number }>;
+  };
+  memoryFiles: string[];
 }
 
 export interface ServerLlmModelOption {
@@ -713,6 +809,8 @@ const KNOWLEDGE_SCHEMA_MEMORY_DIR = "knowledge-schema";
 const RETRIEVAL_UNITS_MEMORY_DIR = "retrieval-units";
 const ONTOLOGY_GRAPH_MEMORY_DIR = "ontology-graph";
 const ONTOLOGY_PROJECTION_MEMORY_DIR = "ontology-projections";
+const ONTOLOGY_INPUT_MEMORY_DIR = "ontology-inputs";
+const ONTOLOGY_REVIEW_MEMORY_DIR = "ontology-review";
 const QUERY_MEMORY_DIR = "query-reports";
 const EVALUATION_MEMORY_DIR = "evaluation-artifacts";
 const EVALUATION_REPLAY_MEMORY_DIR = "evaluation-replay";
@@ -1112,6 +1210,7 @@ function buildAskQueryCandidates(options: {
   questionTags?: string[];
   learnedMatches?: LearnedKnowledgeMatch[];
   retrievalUnitTerms?: string[];
+  ontologyTerms?: string[];
 }): string[] {
   const question = options.question;
   const compact = compactQueryForSearch(question);
@@ -1135,6 +1234,7 @@ function buildAskQueryCandidates(options: {
     (options.learnedMatches ?? []).flatMap((item) => [item.label, ...item.searchTerms])
   ).slice(0, 10);
   const retrievalUnitTerms = unique(options.retrievalUnitTerms ?? []).slice(0, 10);
+  const ontologyTerms = unique(options.ontologyTerms ?? []).slice(0, 10);
 
   const candidates = [
     question,
@@ -1169,6 +1269,9 @@ function buildAskQueryCandidates(options: {
   if (retrievalUnitTerms.length > 0) {
     candidates.push(`${retrievalUnitTerms.join(" ")} ${compact}`.trim());
   }
+  if (ontologyTerms.length > 0) {
+    candidates.push(`${ontologyTerms.join(" ")} ${compact}`.trim());
+  }
 
   if (hasInsuranceClaim) {
     candidates.push(`${compact} 보험금 청구 dcp-insurance`);
@@ -1187,10 +1290,12 @@ function buildSearchPlannedQuery(options: {
   query: string;
   questionType: AskQuestionType;
   retrievalUnitTerms?: string[];
+  ontologyTerms?: string[];
 }): string {
   const contract = getAskQuestionTypeRetrievalContract(options.questionType);
   const retrievalUnitTerms = unique(options.retrievalUnitTerms ?? []).slice(0, 6);
-  return unique([options.query, ...contract.queryHints.slice(0, 6), ...retrievalUnitTerms]).join(" ");
+  const ontologyTerms = unique(options.ontologyTerms ?? []).slice(0, 6);
+  return unique([options.query, ...contract.queryHints.slice(0, 6), ...retrievalUnitTerms, ...ontologyTerms]).join(" ");
 }
 
 function rerankProjectSearchHitsWithRetrievalUnits(options: {
@@ -1240,6 +1345,32 @@ function mergeRetrievalUnitSupportHits(options: {
   const baseHits = options.hits.slice(0, options.limit);
   const supports = buildRetrievalUnitSupportCandidates({
     rankedUnits: options.rankedUnits,
+    existingPaths: baseHits.map((hit) => hit.path),
+    limit: Math.max(0, options.limit - baseHits.length)
+  }).map(
+    (candidate) =>
+      ({
+        path: candidate.path,
+        score: candidate.score,
+        source: options.source,
+        reasons: candidate.reasons,
+        title: candidate.title,
+        snippet: candidate.summary
+      }) as ProjectSearchHit
+  );
+
+  return [...baseHits, ...supports];
+}
+
+function mergeOntologySupportHits(options: {
+  hits: ProjectSearchHit[];
+  rankedNodes: RankedOntologyNode[];
+  source: "qmd" | "lexical";
+  limit: number;
+}): ProjectSearchHit[] {
+  const baseHits = options.hits.slice(0, options.limit);
+  const supports = buildOntologySupportCandidates({
+    rankedNodes: options.rankedNodes,
     existingPaths: baseHits.map((hit) => hit.path),
     limit: Math.max(0, options.limit - baseHits.length)
   }).map(
@@ -2664,6 +2795,108 @@ async function writeUserFeedbackArtifacts(options: {
   };
 }
 
+async function writeOntologyInputArtifacts(options: {
+  memoryRoot: string;
+  artifact: OntologyInputArtifact;
+}): Promise<{
+  latestPath: string;
+  snapshotPath: string;
+  jsonPath: string;
+  jsonSnapshotPath: string;
+  summaryLatestPath: string;
+  summarySnapshotPath: string;
+  summaryJsonPath: string;
+  summarySnapshot: ReturnType<typeof buildOntologyInputSummarySnapshot>;
+  relativePaths: string[];
+}> {
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildOntologyInputMarkdown(options.artifact)
+  });
+  const jsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: options.artifact
+  });
+  const jsonSnapshotPath = await writeSnapshotMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    payload: options.artifact
+  });
+  const historicalArtifacts = await readRecentMemoryJsonSnapshots<OntologyInputArtifact>({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    limit: 120,
+    parse: (value) => OntologyInputArtifactSchema.parse(value)
+  });
+  const summarySnapshot = buildOntologyInputSummarySnapshot({
+    generatedAt: nowIso(),
+    artifacts: historicalArtifacts
+  });
+  const summaryDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    latestFileName: "summary.md",
+    content: buildOntologyInputSummaryMarkdown(summarySnapshot)
+  });
+  const summaryJsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_INPUT_MEMORY_DIR,
+    fileName: "summary.json",
+    payload: summarySnapshot
+  });
+
+  return {
+    latestPath: docs.latestPath,
+    snapshotPath: docs.snapshotPath,
+    jsonPath,
+    jsonSnapshotPath,
+    summaryLatestPath: summaryDocs.latestPath,
+    summarySnapshotPath: summaryDocs.snapshotPath,
+    summaryJsonPath,
+    summarySnapshot,
+    relativePaths: [
+      ...docs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, jsonPath)),
+      toForwardSlash(path.relative(options.memoryRoot, jsonSnapshotPath)),
+      ...summaryDocs.relativePaths,
+      toForwardSlash(path.relative(options.memoryRoot, summaryJsonPath))
+    ]
+  };
+}
+
+async function writeOntologyReviewArtifacts(options: {
+  memoryRoot: string;
+  snapshot: ReturnType<typeof buildOntologyReviewSnapshot>;
+}): Promise<{
+  latestPath: string;
+  snapshotPath: string;
+  jsonPath: string;
+  relativePaths: string[];
+}> {
+  const docs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_REVIEW_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildOntologyReviewMarkdown(options.snapshot)
+  });
+  const jsonPath = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_REVIEW_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: options.snapshot
+  });
+  return {
+    latestPath: docs.latestPath,
+    snapshotPath: docs.snapshotPath,
+    jsonPath,
+    relativePaths: [...docs.relativePaths, toForwardSlash(path.relative(options.memoryRoot, jsonPath))]
+  };
+}
+
 async function persistLearnedKnowledgeSnapshot(
   memoryRoot: string,
   snapshot: LearnedKnowledgeSnapshot
@@ -2763,6 +2996,8 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
     const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
     const ontologyGraph = await readOntologyGraphSnapshot(memoryRoot);
     const ontologyProjections = await readOntologyProjectionSnapshot(memoryRoot);
+    const ontologyInputs = await readOntologyInputSummarySnapshot(memoryRoot);
+    const ontologyReview = await readOntologyReviewSnapshot(memoryRoot);
     return {
       ...parsed,
       evaluationTrends: evaluationTrends
@@ -2785,6 +3020,8 @@ async function readAnalysisSnapshot(memoryRoot: string): Promise<ProjectAnalysis
       userFeedback: buildUserFeedbackSummary(userFeedback) ?? parsed.userFeedback,
       ontologyGraph: buildOntologyGraphSummary(ontologyGraph) ?? parsed.ontologyGraph,
       ontologyProjections: buildOntologyProjectionSummary(ontologyProjections) ?? parsed.ontologyProjections,
+      ontologyInputs: buildOntologyInputSummary(ontologyInputs) ?? parsed.ontologyInputs,
+      ontologyReview: buildOntologyReviewSummary(ontologyReview) ?? parsed.ontologyReview,
       diagnostics: {
         ...parsed.diagnostics,
         llmCallCount: Number(parsed.diagnostics?.llmCallCount || 0),
@@ -3009,6 +3246,108 @@ async function readUserFeedbackSummarySnapshot(memoryRoot: string): Promise<
   }
 }
 
+function ontologyInputSummarySnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_INPUT_MEMORY_DIR, "summary.json");
+}
+
+async function readOntologyInputSummarySnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalInputs: number;
+        noteCount: number;
+        structuredCount: number;
+        csvCount: number;
+        csvRowCount: number;
+        topScopes: Array<{ scope: string; count: number }>;
+        topTags: Array<{ tag: string; count: number }>;
+      };
+      recentInputs: OntologyInputArtifact[];
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(ontologyInputSummarySnapshotPath(memoryRoot), "utf8");
+    const parsed = OntologyInputSummarySnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: {
+        totalInputs: parsed.summary.totalInputs,
+        noteCount: parsed.summary.noteCount,
+        structuredCount: parsed.summary.structuredCount,
+        csvCount: parsed.summary.csvCount,
+        csvRowCount: parsed.summary.csvRowCount,
+        topScopes: parsed.summary.topScopes,
+        topTags: parsed.summary.topTags
+      },
+      recentInputs: parsed.recentInputs
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readOntologyInputSummarySnapshotFull(memoryRoot: string): Promise<OntologyInputSummarySnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyInputSummarySnapshotPath(memoryRoot), "utf8");
+    return OntologyInputSummarySnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function ontologyReviewSnapshotPath(memoryRoot: string): string {
+  return path.resolve(memoryRoot, ONTOLOGY_REVIEW_MEMORY_DIR, "latest.json");
+}
+
+async function readOntologyReviewSnapshot(memoryRoot: string): Promise<
+  | {
+      generatedAt: string;
+      summary: {
+        totalTargets: number;
+        validatedCount: number;
+        contestedCount: number;
+        deprecatedCount: number;
+        statusCounts: Record<string, number>;
+        topTargets: Array<{
+          targetKind: string;
+          targetId: string;
+          status: string;
+          feedbackCount: number;
+          confidence: number;
+        }>;
+      };
+    }
+  | undefined
+> {
+  try {
+    const raw = await fs.readFile(ontologyReviewSnapshotPath(memoryRoot), "utf8");
+    const parsed = OntologyReviewSnapshotSchema.parse(JSON.parse(raw));
+    return {
+      generatedAt: parsed.generatedAt,
+      summary: {
+        totalTargets: parsed.summary.totalTargets,
+        validatedCount: parsed.summary.validatedCount,
+        contestedCount: parsed.summary.contestedCount,
+        deprecatedCount: parsed.summary.deprecatedCount,
+        statusCounts: parsed.summary.statusCounts,
+        topTargets: parsed.summary.topTargets
+      }
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function readOntologyReviewSnapshotFull(memoryRoot: string): Promise<OntologyReviewSnapshot | undefined> {
+  try {
+    const raw = await fs.readFile(ontologyReviewSnapshotPath(memoryRoot), "utf8");
+    return OntologyReviewSnapshotSchema.parse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
 function frontBackGraphSnapshotPath(memoryRoot: string): string {
   return path.resolve(memoryRoot, FRONT_BACK_GRAPH_MEMORY_DIR, "latest.json");
 }
@@ -3085,6 +3424,85 @@ async function readOntologyProjectionSnapshot(memoryRoot: string): Promise<Ontol
   } catch {
     return undefined;
   }
+}
+
+async function rebuildOntologyArtifactsFromMemory(options: {
+  memoryRoot: string;
+  workspaceDir: string;
+  generatedAt: string;
+}): Promise<string[]> {
+  const knowledgeSchema = await readKnowledgeSchemaSnapshot(options.memoryRoot);
+  if (!knowledgeSchema) {
+    return [];
+  }
+  const retrievalUnits = await readRetrievalUnitSnapshot(options.memoryRoot);
+  const ontologyInputs = await readOntologyInputSummarySnapshotFull(options.memoryRoot);
+  const feedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
+    memoryRoot: options.memoryRoot,
+    groupDir: USER_FEEDBACK_MEMORY_DIR,
+    limit: 160,
+    parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
+  });
+  const ontologyReview = buildOntologyReviewSnapshot({
+    generatedAt: options.generatedAt,
+    feedbackArtifacts
+  });
+  const replaySnapshot = await readEvaluationReplaySnapshotFull(options.memoryRoot);
+  const promotionSnapshot = await readEvaluationPromotionSnapshotFull(options.memoryRoot);
+  const ontologyGraph = buildOntologyGraphSnapshot({
+    generatedAt: options.generatedAt,
+    workspaceDir: options.workspaceDir,
+    knowledgeSchema,
+    retrievalUnits,
+    ontologyInputs,
+    ontologyReview,
+    feedbackArtifacts,
+    evaluationReplay: replaySnapshot,
+    evaluationPromotions: promotionSnapshot
+  });
+  const ontologyProjections = buildOntologyProjectionSnapshot({
+    ontologyGraph
+  });
+  const ontologyGraphDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildOntologyGraphMarkdown(ontologyGraph)
+  });
+  const ontologyGraphJson = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: ontologyGraph
+  });
+  const ontologyProjectionDocs = await writeMemoryDocs({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+    latestFileName: "latest.md",
+    content: buildOntologyProjectionMarkdown(ontologyProjections)
+  });
+  const ontologyProjectionJson = await writeMemoryJson({
+    memoryRoot: options.memoryRoot,
+    groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
+    fileName: "latest.json",
+    payload: ontologyProjections
+  });
+  const ontologyReviewArtifacts = await writeOntologyReviewArtifacts({
+    memoryRoot: options.memoryRoot,
+    snapshot: ontologyReview
+  });
+
+  return [
+    ontologyGraphDocs.latestPath,
+    ontologyGraphDocs.snapshotPath,
+    ontologyGraphJson,
+    ontologyProjectionDocs.latestPath,
+    ontologyProjectionDocs.snapshotPath,
+    ontologyProjectionJson,
+    ontologyReviewArtifacts.latestPath,
+    ontologyReviewArtifacts.snapshotPath,
+    ontologyReviewArtifacts.jsonPath
+  ];
 }
 
 function buildFrontCatalogMarkdown(options: {
@@ -3246,7 +3664,82 @@ function buildOntologyProjectionSummary(
     totalRepresentativePathCount: snapshot.summary.totalRepresentativePathCount,
     largestProjectionType: snapshot.summary.largestProjectionType,
     lifecycleProjectionPathCount: snapshot.summary.lifecycleProjectionPathCount,
-    topProjectionTypes: snapshot.projections.map((projection) => projection.type).slice(0, 8)
+    topProjectionTypes: snapshot.projections.map((projection) => projection.type).slice(0, 8),
+    projections: snapshot.projections.slice(0, 12).map((projection) => ({
+      id: projection.id,
+      type: projection.type,
+      title: projection.title,
+      nodeCount: projection.nodeIds.length,
+      edgeCount: projection.edgeIds.length,
+      pathCount: projection.representativePaths.length,
+      samplePaths: projection.representativePaths.slice(0, 3).map((item) => item.label)
+    }))
+  };
+}
+
+function buildOntologyInputSummary(
+  snapshot:
+    | {
+        generatedAt: string;
+        summary: {
+          totalInputs: number;
+          noteCount: number;
+          structuredCount: number;
+          csvCount: number;
+          csvRowCount: number;
+          topScopes: Array<{ scope: string; count: number }>;
+          topTags: Array<{ tag: string; count: number }>;
+        };
+      }
+    | undefined
+): ProjectAnalysisResult["ontologyInputs"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    totalInputs: snapshot.summary.totalInputs,
+    noteCount: snapshot.summary.noteCount,
+    structuredCount: snapshot.summary.structuredCount,
+    csvCount: snapshot.summary.csvCount,
+    csvRowCount: snapshot.summary.csvRowCount,
+    topScopes: snapshot.summary.topScopes,
+    topTags: snapshot.summary.topTags
+  };
+}
+
+function buildOntologyReviewSummary(
+  snapshot:
+    | {
+        generatedAt: string;
+        summary: {
+          totalTargets: number;
+          validatedCount: number;
+          contestedCount: number;
+          deprecatedCount: number;
+          statusCounts: Record<string, number>;
+          topTargets: Array<{
+            targetKind: string;
+            targetId: string;
+            status: string;
+            feedbackCount: number;
+            confidence: number;
+          }>;
+        };
+      }
+    | undefined
+): ProjectAnalysisResult["ontologyReview"] {
+  if (!snapshot) {
+    return undefined;
+  }
+  return {
+    generatedAt: snapshot.generatedAt,
+    totalTargets: snapshot.summary.totalTargets,
+    validatedCount: snapshot.summary.validatedCount,
+    contestedCount: snapshot.summary.contestedCount,
+    deprecatedCount: snapshot.summary.deprecatedCount,
+    statusCounts: snapshot.summary.statusCounts,
+    topTargets: snapshot.summary.topTargets.slice(0, 12)
   };
 }
 
@@ -5144,6 +5637,11 @@ export async function analyzeServerProject(options: {
       limit: 160,
       parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
     });
+    const ontologyInputSummary = await readOntologyInputSummarySnapshotFull(memoryRoot);
+    const ontologyReview = buildOntologyReviewSnapshot({
+      generatedAt,
+      feedbackArtifacts: historicalFeedbackArtifacts
+    });
     const existingEvaluationReplay = await readEvaluationReplaySnapshotFull(memoryRoot);
     const existingEvaluationPromotions = await readEvaluationPromotionSnapshotFull(memoryRoot);
     const ontologyGraph = buildOntologyGraphSnapshot({
@@ -5151,6 +5649,8 @@ export async function analyzeServerProject(options: {
       workspaceDir: project.workspaceDir,
       knowledgeSchema,
       retrievalUnits,
+      ontologyInputs: ontologyInputSummary,
+      ontologyReview,
       feedbackArtifacts: historicalFeedbackArtifacts,
       evaluationReplay: existingEvaluationReplay,
       evaluationPromotions: existingEvaluationPromotions
@@ -5281,6 +5781,22 @@ export async function analyzeServerProject(options: {
       ontologyProjectionDocs.snapshotPath,
       ontologyProjectionJsonPath
     ];
+    const ontologyReviewArtifacts = await writeOntologyReviewArtifacts({
+      memoryRoot,
+      snapshot: ontologyReview
+    });
+    const ontologyReviewMemoryFiles = [
+      ontologyReviewArtifacts.latestPath,
+      ontologyReviewArtifacts.snapshotPath,
+      ontologyReviewArtifacts.jsonPath
+    ];
+    const ontologyInputMemoryFiles = ontologyInputSummary
+      ? [
+          path.resolve(memoryRoot, ONTOLOGY_INPUT_MEMORY_DIR, "latest.md"),
+          path.resolve(memoryRoot, ONTOLOGY_INPUT_MEMORY_DIR, "summary.md"),
+          path.resolve(memoryRoot, ONTOLOGY_INPUT_MEMORY_DIR, "summary.json")
+        ]
+      : [];
 
     await appendProjectDebugEvent({
       timestamp: nowIso(),
@@ -5577,7 +6093,9 @@ export async function analyzeServerProject(options: {
         ...knowledgeSchemaMemoryFiles,
         ...retrievalUnitMemoryFiles,
         ...ontologyGraphMemoryFiles,
-        ...ontologyProjectionMemoryFiles
+        ...ontologyProjectionMemoryFiles,
+        ...ontologyInputMemoryFiles,
+        ...ontologyReviewMemoryFiles
       ].map((entry) => toForwardSlash(path.relative(project.workspaceDir, entry)));
       await inspectContext({
         cwd: project.workspaceDir,
@@ -5594,6 +6112,8 @@ export async function analyzeServerProject(options: {
     const evaluationReplay = await readEvaluationReplaySnapshot(memoryRoot);
     const evaluationPromotions = await readEvaluationPromotionSnapshot(memoryRoot);
     const userFeedback = await readUserFeedbackSummarySnapshot(memoryRoot);
+    const ontologyInputs = await readOntologyInputSummarySnapshot(memoryRoot);
+    const ontologyReviewSummary = await readOntologyReviewSnapshot(memoryRoot);
 
     const result: ProjectAnalysisResult = {
       project: warmup.project,
@@ -5611,7 +6131,9 @@ export async function analyzeServerProject(options: {
         ...knowledgeSchemaMemoryFiles,
         ...retrievalUnitMemoryFiles,
         ...ontologyGraphMemoryFiles,
-        ...ontologyProjectionMemoryFiles
+        ...ontologyProjectionMemoryFiles,
+        ...ontologyInputMemoryFiles,
+        ...ontologyReviewMemoryFiles
       ]),
       projectPreset: projectPreset
         ? {
@@ -5657,6 +6179,8 @@ export async function analyzeServerProject(options: {
       },
       ontologyGraph: buildOntologyGraphSummary(ontologyGraph),
       ontologyProjections: buildOntologyProjectionSummary(ontologyProjections),
+      ontologyInputs: buildOntologyInputSummary(ontologyInputs),
+      ontologyReview: buildOntologyReviewSummary(ontologyReviewSummary),
       evaluationTrends: evaluationTrends
         ? {
             generatedAt: evaluationTrends.generatedAt,
@@ -6458,6 +6982,10 @@ export async function askServerProject(options: {
     }
     let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
     const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
+    const ontologyGraphSnapshot = await readOntologyGraphSnapshot(memoryRoot);
+    const ontologyProjectionSnapshot = await readOntologyProjectionSnapshot(memoryRoot);
+    const ontologyInputSummary = await readOntologyInputSummarySnapshot(memoryRoot);
+    const ontologyReviewSnapshot = await readOntologyReviewSnapshot(memoryRoot);
     if (retrievalUnitSnapshot) {
       await appendProjectDebugEvent({
         timestamp: nowIso(),
@@ -6553,6 +7081,28 @@ export async function askServerProject(options: {
       const retrievalUnitTerms = unique(
         rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 4))
       ).slice(0, 12);
+      const rankedOntologyNodes = ontologyGraphSnapshot
+        ? rankOntologyNodesForQuestion({
+            snapshot: ontologyGraphSnapshot,
+            question,
+            questionType: questionType.type,
+            questionTags,
+            moduleCandidates: strategyDecision.moduleCandidates,
+            matchedKnowledgeIds: matchedKnowledge.map((item) => item.id),
+            matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+            limit: 8
+          })
+        : [];
+      const rankedOntologyProjections = ontologyProjectionSnapshot
+        ? rankOntologyProjectionsForQuestion({
+            snapshot: ontologyProjectionSnapshot,
+            question,
+            questionType: questionType.type,
+            matchedNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+            limit: 4
+          })
+        : [];
+      const ontologyTerms = collectOntologyQueryTerms(rankedOntologyNodes, 10);
       await appendProjectDebugEvent({
         timestamp: nowIso(),
         projectId: options.projectId,
@@ -6567,6 +7117,8 @@ export async function askServerProject(options: {
           matchedLearnedKnowledgeIds: matchedKnowledge.map((item) => item.id),
           matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
           matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+          matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+          matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
           lockedDomainIds: domainSelection.lockedDomainIds,
           effectiveDomainIds: effectiveDomainPacks.map((item) => item.id),
           questionCapabilityTags: questionTags,
@@ -6583,7 +7135,8 @@ export async function askServerProject(options: {
         domainPacks: effectiveDomainPacks,
         questionTags,
         learnedMatches: matchedKnowledge,
-        retrievalUnitTerms
+        retrievalUnitTerms,
+        ontologyTerms
       });
       const results: ProjectSearchResult[] = [];
       for (const [index, expandedQuery] of queries.entries()) {
@@ -6798,6 +7351,8 @@ export async function askServerProject(options: {
         linkedEaiEvidence: linkedEai,
         linkedFlowEvidence: linkedFlows,
         downstreamFlowTraces: downstream,
+        rankedOntologyNodes,
+        rankedOntologyProjections,
         bestSearch,
         lowConfidenceMode,
         memoryPreview: await loadAskMemoryPreview()
@@ -6818,6 +7373,8 @@ export async function askServerProject(options: {
       }>;
       linkedEaiEvidence: Array<{ interfaceId: string }>;
       downstreamFlowTraces: Array<{ phase: string; serviceMethod: string }>;
+      rankedOntologyNodes: Array<{ node: { id: string } }>;
+      rankedOntologyProjections: Array<{ projection: { id: string } }>;
     }) =>
       summarizeAskRetryEvidence({
         queryCandidates: bundle.expandedQueries,
@@ -6832,7 +7389,9 @@ export async function askServerProject(options: {
             `${item.screenCode ?? item.routePath ?? "-"}|${item.apiUrl}|${item.backendControllerMethod}`
         ),
         linkedEaiIds: bundle.linkedEaiEvidence.map((item) => item.interfaceId),
-        downstreamKeys: bundle.downstreamFlowTraces.map((item) => `${item.phase}|${item.serviceMethod}`)
+        downstreamKeys: bundle.downstreamFlowTraces.map((item) => `${item.phase}|${item.serviceMethod}`),
+        ontologyNodeIds: bundle.rankedOntologyNodes.map((item) => item.node.id),
+        ontologyProjectionIds: bundle.rankedOntologyProjections.map((item) => item.projection.id)
       });
 
     let {
@@ -6848,6 +7407,8 @@ export async function askServerProject(options: {
       linkedEaiEvidence,
       linkedFlowEvidence,
       downstreamFlowTraces,
+      rankedOntologyNodes,
+      rankedOntologyProjections,
       bestSearch,
       lowConfidenceMode,
       memoryPreview
@@ -7043,6 +7604,22 @@ export async function askServerProject(options: {
               score: Number(item.score.toFixed(3)),
               reasons: item.reasons.slice(0, 5)
             })),
+            ontologyMatches: rankedOntologyNodes.map((item) => ({
+              id: item.node.id,
+              type: item.node.type,
+              label: item.node.label,
+              status: item.node.metadata.validatedStatus,
+              score: Number(item.score.toFixed(3)),
+              reasons: item.reasons.slice(0, 5)
+            })),
+            ontologyProjections: rankedOntologyProjections.map((item) => ({
+              id: item.projection.id,
+              type: item.projection.type,
+              title: item.projection.title,
+              score: Number(item.score.toFixed(3)),
+              reasons: item.reasons.slice(0, 5),
+              representativePaths: item.projection.representativePaths.slice(0, 4).map((path) => path.label)
+            })),
             learnedKnowledgeMatches: matchedLearnedKnowledge,
             memory: memoryPreview,
             instruction:
@@ -7149,7 +7726,9 @@ export async function askServerProject(options: {
           hydratedEvidence,
           linkedFlowEvidence,
           linkedEaiEvidence,
-          downstreamFlowTraces
+          downstreamFlowTraces,
+          rankedOntologyNodes,
+          rankedOntologyProjections
         });
 
         const nextBundle =
@@ -7225,6 +7804,8 @@ export async function askServerProject(options: {
             linkedEaiEvidence,
             linkedFlowEvidence,
             downstreamFlowTraces,
+            rankedOntologyNodes,
+            rankedOntologyProjections,
             bestSearch,
             lowConfidenceMode,
             memoryPreview
@@ -7259,6 +7840,9 @@ export async function askServerProject(options: {
       `- matchedRetrievalUnitStatuses: ${
         matchedRetrievalUnits.map((item) => item.unit.validatedStatus).join(", ") || "(none)"
       }`,
+      `- matchedOntologyNodes: ${rankedOntologyNodes.map((item) => item.node.id).join(", ") || "(none)"}`,
+      `- matchedOntologyNodeStatuses: ${rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus).join(", ") || "(none)"}`,
+      `- matchedOntologyProjections: ${rankedOntologyProjections.map((item) => item.projection.id).join(", ") || "(none)"}`,
       `- lockedDomains: ${domainSelection.lockedDomainIds.join(", ") || "(none)"}`,
       `- effectiveDomains: ${effectiveDomainPacks.map((item) => item.id).join(", ") || "(none)"}`,
       `- moduleCandidates: ${
@@ -7371,13 +7955,21 @@ export async function askServerProject(options: {
         frontBackEvidenceUsedCount: linkedFlowEvidence.length,
         retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
         retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+        ontologyGraphLoaded: Boolean(ontologyGraphSnapshot),
+        ontologyProjectionLoaded: Boolean(ontologyProjectionSnapshot),
+        ontologyInputLoaded: Boolean(ontologyInputSummary),
+        ontologyReviewLoaded: Boolean(ontologyReviewSnapshot),
+        matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+        matchedOntologyNodeStatuses: rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus),
+        matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
         retryStopReason,
-        memoryFiles: [
+        memoryFiles: unique([
           analysis.memoryFiles[0],
           analysis.memoryFiles[1],
           queryReportFiles.latestPath,
-          queryReportFiles.snapshotPath
-        ]
+          queryReportFiles.snapshotPath,
+          ...memoryPreview.map((entry) => entry.path)
+        ])
       }
     };
     const askEvaluationFiles = await persistAskEvaluationArtifact({
@@ -7457,6 +8049,68 @@ export async function askServerProject(options: {
     });
     throw error;
   }
+}
+
+export async function recordServerProjectOntologyInput(options: {
+  projectId: string;
+  kind: "note" | "structured" | "csv";
+  scope: z.infer<typeof OntologyInputScopeSchema>;
+  title: string;
+  message?: string;
+  tags?: string[];
+  positiveExamples?: string[];
+  negativeExamples?: string[];
+  boundaryNotes?: string[];
+  relatedNodeIds?: string[];
+  relatedEdgeIds?: string[];
+  relatedPathIds?: string[];
+  relatedKnowledgeIds?: string[];
+  csvText?: string;
+  notes?: string;
+}): Promise<ProjectOntologyInputResult> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+  const title = String(options.title || "").trim();
+  if (!title) {
+    throw new Error("title is required");
+  }
+  const memoryRoot = resolveServerProjectMemoryHome(project.workspaceDir);
+  const artifact = buildOntologyInputArtifact({
+    generatedAt: nowIso(),
+    projectId: project.id,
+    projectName: project.name,
+    kind: options.kind,
+    scope: options.scope,
+    title,
+    message: options.message,
+    tags: options.tags,
+    positiveExamples: options.positiveExamples,
+    negativeExamples: options.negativeExamples,
+    boundaryNotes: options.boundaryNotes,
+    relatedNodeIds: options.relatedNodeIds,
+    relatedEdgeIds: options.relatedEdgeIds,
+    relatedPathIds: options.relatedPathIds,
+    relatedKnowledgeIds: options.relatedKnowledgeIds,
+    csvText: options.csvText,
+    notes: options.notes
+  });
+  const inputArtifacts = await writeOntologyInputArtifacts({
+    memoryRoot,
+    artifact
+  });
+  const ontologyFiles = await rebuildOntologyArtifactsFromMemory({
+    memoryRoot,
+    workspaceDir: project.workspaceDir,
+    generatedAt: artifact.generatedAt
+  });
+  return {
+    project,
+    artifact,
+    summary: buildOntologyInputSummary(inputArtifacts.summarySnapshot)!,
+    memoryFiles: unique([...inputArtifacts.relativePaths, ...ontologyFiles.map((file) => toForwardSlash(path.relative(memoryRoot, file)))])
+  };
 }
 
 export async function recordServerProjectFeedback(options: {
@@ -7547,62 +8201,11 @@ export async function recordServerProjectFeedback(options: {
     }
   }
 
-  const knowledgeSchema = await readKnowledgeSchemaSnapshot(memoryRoot);
-  const retrievalUnits = await readRetrievalUnitSnapshot(memoryRoot);
-  if (knowledgeSchema) {
-    const feedbackArtifacts = await readRecentMemoryJsonSnapshots<ProjectFeedbackArtifact>({
-      memoryRoot,
-      groupDir: USER_FEEDBACK_MEMORY_DIR,
-      limit: 160,
-      parse: (value) => ProjectFeedbackArtifactSchema.parse(value)
-    });
-    const replaySnapshot = await readEvaluationReplaySnapshotFull(memoryRoot);
-    const promotionSnapshot = await readEvaluationPromotionSnapshotFull(memoryRoot);
-    const ontologyGraph = buildOntologyGraphSnapshot({
-      generatedAt: artifact.generatedAt,
-      workspaceDir: project.workspaceDir,
-      knowledgeSchema,
-      retrievalUnits,
-      feedbackArtifacts,
-      evaluationReplay: replaySnapshot,
-      evaluationPromotions: promotionSnapshot
-    });
-    const ontologyProjections = buildOntologyProjectionSnapshot({
-      ontologyGraph
-    });
-    const ontologyGraphDocs = await writeMemoryDocs({
-      memoryRoot,
-      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
-      latestFileName: "latest.md",
-      content: buildOntologyGraphMarkdown(ontologyGraph)
-    });
-    const ontologyGraphJson = await writeMemoryJson({
-      memoryRoot,
-      groupDir: ONTOLOGY_GRAPH_MEMORY_DIR,
-      fileName: "latest.json",
-      payload: ontologyGraph
-    });
-    const ontologyProjectionDocs = await writeMemoryDocs({
-      memoryRoot,
-      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
-      latestFileName: "latest.md",
-      content: buildOntologyProjectionMarkdown(ontologyProjections)
-    });
-    const ontologyProjectionJson = await writeMemoryJson({
-      memoryRoot,
-      groupDir: ONTOLOGY_PROJECTION_MEMORY_DIR,
-      fileName: "latest.json",
-      payload: ontologyProjections
-    });
-    ontologyFiles = [
-      ontologyGraphDocs.latestPath,
-      ontologyGraphDocs.snapshotPath,
-      ontologyGraphJson,
-      ontologyProjectionDocs.latestPath,
-      ontologyProjectionDocs.snapshotPath,
-      ontologyProjectionJson
-    ];
-  }
+  ontologyFiles = await rebuildOntologyArtifactsFromMemory({
+    memoryRoot,
+    workspaceDir: project.workspaceDir,
+    generatedAt: artifact.generatedAt
+  });
 
   return {
     artifact,
@@ -7737,6 +8340,10 @@ export async function searchServerProject(options: {
     const activeDomainPacks = await resolveProjectDomainPacks(projectPreset);
     let learnedKnowledgeSnapshot = await readLearnedKnowledgeSnapshot(memoryRoot);
     const retrievalUnitSnapshot = await readRetrievalUnitSnapshot(memoryRoot);
+    const ontologyGraphSnapshot = await readOntologyGraphSnapshot(memoryRoot);
+    const ontologyProjectionSnapshot = await readOntologyProjectionSnapshot(memoryRoot);
+    const ontologyInputSummary = await readOntologyInputSummarySnapshot(memoryRoot);
+    const ontologyReviewSnapshot = await readOntologyReviewSnapshot(memoryRoot);
     const moduleCandidates = extractModuleCandidates(query);
     const strategyDecision = classifyQuestionIntentFallback(query);
     const matchedLearnedKnowledge = matchLearnedKnowledge(query, learnedKnowledgeSnapshot, 6);
@@ -7761,10 +8368,33 @@ export async function searchServerProject(options: {
           limit: 6
         })
       : [];
+    const rankedOntologyNodes = ontologyGraphSnapshot
+      ? rankOntologyNodesForQuestion({
+          snapshot: ontologyGraphSnapshot,
+          question: query,
+          questionType: questionTypeDecision.type,
+          questionTags,
+          moduleCandidates,
+          matchedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+          matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+          limit: 8
+        })
+      : [];
+    const rankedOntologyProjections = ontologyProjectionSnapshot
+      ? rankOntologyProjectionsForQuestion({
+          snapshot: ontologyProjectionSnapshot,
+          question: query,
+          questionType: questionTypeDecision.type,
+          matchedNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+          limit: 4
+        })
+      : [];
+    const ontologyTerms = collectOntologyQueryTerms(rankedOntologyNodes, 10);
     const plannedQuery = buildSearchPlannedQuery({
       query,
       questionType: questionTypeDecision.type,
-      retrievalUnitTerms: rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 3))
+      retrievalUnitTerms: rankedRetrievalUnits.flatMap((item) => item.unit.searchText.slice(0, 3)),
+      ontologyTerms
     });
     const persistSearchEvaluationArtifact = async (response: ProjectSearchResult) => {
       const artifact = buildProjectSearchEvaluationArtifact({
@@ -7810,6 +8440,39 @@ export async function searchServerProject(options: {
         learnedKnowledgeFiles
       };
     };
+    const finalizeSearchHits = (hits: ProjectSearchHit[], source: "qmd" | "lexical") =>
+      rerankProjectSearchHitsWithRetrievalUnits({
+        hits: mergeOntologySupportHits({
+          hits: mergeRetrievalUnitSupportHits({
+            hits,
+            rankedUnits: rankedRetrievalUnits,
+            source,
+            limit
+          }),
+          rankedNodes: rankedOntologyNodes,
+          source,
+          limit
+        }),
+        rankedUnits: rankedRetrievalUnits
+      });
+    const searchDiagnosticsBase = {
+      questionType: questionTypeDecision.type,
+      questionTypeConfidence: questionTypeDecision.confidence,
+      questionTypeReason: questionTypeDecision.reason,
+      retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
+      retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
+      matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
+      matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
+      matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
+      ontologyGraphLoaded: Boolean(ontologyGraphSnapshot),
+      ontologyProjectionLoaded: Boolean(ontologyProjectionSnapshot),
+      ontologyInputLoaded: Boolean(ontologyInputSummary),
+      ontologyReviewLoaded: Boolean(ontologyReviewSnapshot),
+      matchedOntologyNodeIds: rankedOntologyNodes.map((item) => item.node.id),
+      matchedOntologyNodeStatuses: rankedOntologyNodes.map((item) => item.node.metadata.validatedStatus),
+      matchedOntologyProjectionIds: rankedOntologyProjections.map((item) => item.projection.id),
+      plannedQuery
+    } satisfies Omit<ProjectSearchResult["diagnostics"], "qmdStatus" | "qmdErrors" | "qmdIndexMethod" | "qmdQueryMode" | "qmdQuery" | "qmdQueriesTried" | "qmdCommand" | "qmdCorporaTried" | "qmdCorpusResults" | "fileCount">;
     const files = await collectProjectFiles(project.workspaceDir, options.maxFiles ?? DEFAULT_PROJECT_MAX_FILES);
 
     if (retrievalConfig.qmd.enabled) {
@@ -7869,16 +8532,9 @@ export async function searchServerProject(options: {
               query,
               provider: "lexical",
               fallbackUsed: true,
-              hits: rerankProjectSearchHitsWithRetrievalUnits({
-                hits: mergeRetrievalUnitSupportHits({
-                  hits: lexicalHits,
-                  rankedUnits: rankedRetrievalUnits,
-                  source: "lexical",
-                  limit
-                }),
-                rankedUnits: rankedRetrievalUnits
-              }),
+              hits: finalizeSearchHits(lexicalHits, "lexical"),
               diagnostics: {
+                ...searchDiagnosticsBase,
                 qmdStatus: "empty",
                 qmdErrors: [
                   `qmd hits were stale and missing on disk: ${missingQmdPaths.slice(0, 5).join(", ")}`
@@ -7891,15 +8547,6 @@ export async function searchServerProject(options: {
                 qmdCorporaTried: qmdResult.corporaTried,
                 qmdCorpusResults: qmdResult.corpusResults,
                 fileCount: files.length,
-                questionType: questionTypeDecision.type,
-                questionTypeConfidence: questionTypeDecision.confidence,
-                questionTypeReason: questionTypeDecision.reason,
-                retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
-                retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
-                matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-                matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-                matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
-                plannedQuery
               }
             };
             await appendProjectDebugEvent({
@@ -7924,16 +8571,9 @@ export async function searchServerProject(options: {
             provider: "qmd",
             fallbackUsed: false,
             modeUsed: qmdResult.mode,
-            hits: rerankProjectSearchHitsWithRetrievalUnits({
-              hits: mergeRetrievalUnitSupportHits({
-                hits: existingQmdHits,
-                rankedUnits: rankedRetrievalUnits,
-                source: "qmd",
-                limit
-              }),
-              rankedUnits: rankedRetrievalUnits
-            }),
+            hits: finalizeSearchHits(existingQmdHits, "qmd"),
             diagnostics: {
+              ...searchDiagnosticsBase,
               qmdStatus: qmdResult.status,
               qmdErrors: unique([
                 ...qmdResult.errors,
@@ -7949,15 +8589,6 @@ export async function searchServerProject(options: {
               qmdCorporaTried: qmdResult.corporaTried,
               qmdCorpusResults: qmdResult.corpusResults,
               fileCount: files.length,
-              questionType: questionTypeDecision.type,
-              questionTypeConfidence: questionTypeDecision.confidence,
-              questionTypeReason: questionTypeDecision.reason,
-              retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
-              retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
-              matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-              matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-              matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
-              plannedQuery
             }
           };
           await appendProjectDebugEvent({
@@ -7990,16 +8621,9 @@ export async function searchServerProject(options: {
           query,
           provider: "lexical",
           fallbackUsed: true,
-          hits: rerankProjectSearchHitsWithRetrievalUnits({
-            hits: mergeRetrievalUnitSupportHits({
-              hits: lexicalHits,
-              rankedUnits: rankedRetrievalUnits,
-              source: "lexical",
-              limit
-            }),
-            rankedUnits: rankedRetrievalUnits
-          }),
+          hits: finalizeSearchHits(lexicalHits, "lexical"),
           diagnostics: {
+            ...searchDiagnosticsBase,
             qmdStatus: qmdResult.status,
             qmdErrors: qmdResult.errors,
             qmdIndexMethod: qmdIndexMethods[0] as "add" | "update" | "cached" | undefined,
@@ -8010,15 +8634,6 @@ export async function searchServerProject(options: {
             qmdCorporaTried: qmdResult.corporaTried,
             qmdCorpusResults: qmdResult.corpusResults,
             fileCount: files.length,
-            questionType: questionTypeDecision.type,
-            questionTypeConfidence: questionTypeDecision.confidence,
-            questionTypeReason: questionTypeDecision.reason,
-            retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
-            retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
-            matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-            matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-            matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
-            plannedQuery
           }
         };
         await appendProjectDebugEvent({
@@ -8050,30 +8665,14 @@ export async function searchServerProject(options: {
           query,
           provider: "lexical",
           fallbackUsed: true,
-          hits: rerankProjectSearchHitsWithRetrievalUnits({
-            hits: mergeRetrievalUnitSupportHits({
-              hits: lexicalHits,
-              rankedUnits: rankedRetrievalUnits,
-              source: "lexical",
-              limit
-            }),
-            rankedUnits: rankedRetrievalUnits
-          }),
+          hits: finalizeSearchHits(lexicalHits, "lexical"),
           diagnostics: {
+            ...searchDiagnosticsBase,
             qmdStatus: "failed",
             qmdErrors: [error instanceof Error ? error.message : String(error)],
             qmdQueriesTried: [],
             qmdCommand: retrievalConfig.qmd.command,
             fileCount: files.length,
-            questionType: questionTypeDecision.type,
-            questionTypeConfidence: questionTypeDecision.confidence,
-            questionTypeReason: questionTypeDecision.reason,
-            retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
-            retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
-            matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-            matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-            matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
-            plannedQuery
           }
         };
         await appendProjectDebugEvent({
@@ -8103,27 +8702,11 @@ export async function searchServerProject(options: {
       query,
       provider: "lexical",
       fallbackUsed: false,
-      hits: rerankProjectSearchHitsWithRetrievalUnits({
-        hits: mergeRetrievalUnitSupportHits({
-          hits: lexicalHits,
-          rankedUnits: rankedRetrievalUnits,
-          source: "lexical",
-          limit
-        }),
-        rankedUnits: rankedRetrievalUnits
-      }),
+      hits: finalizeSearchHits(lexicalHits, "lexical"),
       diagnostics: {
+        ...searchDiagnosticsBase,
         qmdStatus: "skipped",
         fileCount: files.length,
-        questionType: questionTypeDecision.type,
-        questionTypeConfidence: questionTypeDecision.confidence,
-        questionTypeReason: questionTypeDecision.reason,
-        retrievalUnitLoaded: Boolean(retrievalUnitSnapshot),
-        retrievalUnitCount: retrievalUnitSnapshot?.summary.unitCount ?? 0,
-        matchedLearnedKnowledgeIds: matchedLearnedKnowledge.map((item) => item.id),
-        matchedRetrievalUnitIds: rankedRetrievalUnits.map((item) => item.unit.id),
-        matchedRetrievalUnitStatuses: rankedRetrievalUnits.map((item) => item.unit.validatedStatus),
-        plannedQuery
       }
     };
     await appendProjectDebugEvent({

@@ -528,6 +528,22 @@ export default function HomePage() {
   const [askResult, setAskResult] = useState(null);
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [ontologyInputKind, setOntologyInputKind] = useState("note");
+  const [ontologyInputScope, setOntologyInputScope] = useState("general");
+  const [ontologyInputTitle, setOntologyInputTitle] = useState("");
+  const [ontologyInputMessage, setOntologyInputMessage] = useState("");
+  const [ontologyInputTagsText, setOntologyInputTagsText] = useState("");
+  const [ontologyInputPositiveText, setOntologyInputPositiveText] = useState("");
+  const [ontologyInputNegativeText, setOntologyInputNegativeText] = useState("");
+  const [ontologyInputBoundaryText, setOntologyInputBoundaryText] = useState("");
+  const [ontologyInputNodeIdsText, setOntologyInputNodeIdsText] = useState("");
+  const [ontologyInputEdgeIdsText, setOntologyInputEdgeIdsText] = useState("");
+  const [ontologyInputPathIdsText, setOntologyInputPathIdsText] = useState("");
+  const [ontologyInputKnowledgeIdsText, setOntologyInputKnowledgeIdsText] = useState("");
+  const [ontologyInputCsvText, setOntologyInputCsvText] = useState("");
+  const [ontologyInputNotes, setOntologyInputNotes] = useState("");
+  const [ontologyInputLoading, setOntologyInputLoading] = useState(false);
+  const [ontologyInputMessageText, setOntologyInputMessageText] = useState("");
   const [replayLoading, setReplayLoading] = useState(false);
   const [replayResult, setReplayResult] = useState(null);
   const [debugEvents, setDebugEvents] = useState([]);
@@ -1333,6 +1349,56 @@ export default function HomePage() {
       setProjectError(e instanceof Error ? e.message : String(e));
     } finally {
       setFeedbackLoading(false);
+    }
+  }
+
+  async function onSubmitOntologyInput() {
+    if (!selectedProjectId) {
+      setProjectError("먼저 프로젝트를 선택해주세요.");
+      return;
+    }
+    if (!ontologyInputTitle.trim()) {
+      setProjectError("온톨로지 입력 제목을 입력해주세요.");
+      return;
+    }
+    const splitLines = (value) =>
+      String(value || "")
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+    setOntologyInputLoading(true);
+    setOntologyInputMessageText("");
+    setProjectError("");
+    try {
+      const response = await getJson(`/api/projects/${selectedProjectId}/ontology-inputs`, {
+        method: "POST",
+        body: JSON.stringify({
+          kind: ontologyInputKind,
+          scope: ontologyInputScope,
+          title: ontologyInputTitle.trim(),
+          message: ontologyInputMessage.trim(),
+          tags: splitLines(ontologyInputTagsText),
+          positiveExamples: splitLines(ontologyInputPositiveText),
+          negativeExamples: splitLines(ontologyInputNegativeText),
+          boundaryNotes: splitLines(ontologyInputBoundaryText),
+          relatedNodeIds: splitLines(ontologyInputNodeIdsText),
+          relatedEdgeIds: splitLines(ontologyInputEdgeIdsText),
+          relatedPathIds: splitLines(ontologyInputPathIdsText),
+          relatedKnowledgeIds: splitLines(ontologyInputKnowledgeIdsText),
+          csvText: ontologyInputKind === "csv" ? ontologyInputCsvText : "",
+          notes: ontologyInputNotes.trim()
+        })
+      });
+      setOntologyInputMessageText(
+        `온톨로지 입력 저장 완료: total=${response.summary?.totalInputs || 0}, csvRows=${response.summary?.csvRowCount || 0}`
+      );
+      await refreshAnalysisSummary();
+      await loadDebugEvents();
+    } catch (e) {
+      setProjectError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOntologyInputLoading(false);
     }
   }
 
@@ -2255,8 +2321,112 @@ export default function HomePage() {
                         </li>
                       ))}
                     </ul>
+                    {(analysisResult.ontologyProjections.projections || []).length > 0 ? (
+                      <ul className="artifacts" style={{ maxHeight: 180, marginTop: 8 }}>
+                        {analysisResult.ontologyProjections.projections.slice(0, 12).map((projection) => (
+                          <li key={projection.id} title={(projection.samplePaths || []).join(", ") || projection.id}>
+                            <span>
+                              {shortText(projection.title, 24)} · {projection.type} · nodes={projection.nodeCount} · edges={projection.edgeCount}
+                            </span>
+                            <span>{projection.pathCount}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </>
                 ) : null}
+
+                {analysisResult.ontologyInputs ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Ontology Inputs
+                      {` · total=${analysisResult.ontologyInputs.totalInputs} · csvRows=${analysisResult.ontologyInputs.csvRowCount}`}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 120 }}>
+                      {(analysisResult.ontologyInputs.topScopes || []).slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.scope}-${index}`}>
+                          <span>{entry.scope}</span>
+                          <span>{entry.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                {analysisResult.ontologyReview ? (
+                  <>
+                    <div className="label" style={{ marginTop: 8 }}>
+                      Ontology Review
+                      {` · validated=${analysisResult.ontologyReview.validatedCount} · contested=${analysisResult.ontologyReview.contestedCount} · deprecated=${analysisResult.ontologyReview.deprecatedCount}`}
+                    </div>
+                    <ul className="artifacts" style={{ maxHeight: 140 }}>
+                      {(analysisResult.ontologyReview.topTargets || []).slice(0, 8).map((entry, index) => (
+                        <li key={`${entry.targetKind}:${entry.targetId}:${index}`}>
+                          <span title={`${entry.targetKind}:${entry.targetId}`}>
+                            {shortText(entry.targetId, 36)} · {entry.status}
+                          </span>
+                          <span>{entry.feedbackCount}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+
+                <div className="label" style={{ marginTop: 8 }}>Ontology Input</div>
+                <div className="report-box" style={{ marginTop: 8 }}>
+                  <div className="report-row">
+                    <span>Kind</span>
+                    <span>
+                      <select value={ontologyInputKind} onChange={(e) => setOntologyInputKind(e.target.value)}>
+                        <option value="note">note</option>
+                        <option value="structured">structured</option>
+                        <option value="csv">csv</option>
+                      </select>
+                    </span>
+                  </div>
+                  <div className="report-row">
+                    <span>Scope</span>
+                    <span>
+                      <select value={ontologyInputScope} onChange={(e) => setOntologyInputScope(e.target.value)}>
+                        {["general", "domain", "subdomain", "channel", "action", "module-role", "process-role", "boundary", "path"].map((scope) => (
+                          <option key={scope} value={scope}>{scope}</option>
+                        ))}
+                      </select>
+                    </span>
+                  </div>
+                  <div className="label" style={{ marginTop: 8 }}>Title</div>
+                  <input value={ontologyInputTitle} onChange={(e) => setOntologyInputTitle(e.target.value)} placeholder="예: 모니모 회원인증" />
+                  <div className="label" style={{ marginTop: 8 }}>Message</div>
+                  <textarea rows={3} value={ontologyInputMessage} onChange={(e) => setOntologyInputMessage(e.target.value)} placeholder="자유 메모 / 설명" />
+                  <div className="label" style={{ marginTop: 8 }}>Tags (one per line)</div>
+                  <textarea rows={3} value={ontologyInputTagsText} onChange={(e) => setOntologyInputTagsText(e.target.value)} placeholder={"channel:monimo\ndomain:member-auth\naction:register"} />
+                  <div className="label" style={{ marginTop: 8 }}>Positive Examples</div>
+                  <textarea rows={2} value={ontologyInputPositiveText} onChange={(e) => setOntologyInputPositiveText(e.target.value)} placeholder={"/monimo/registe\nEmbededMemberLoginController"} />
+                  <div className="label" style={{ marginTop: 8 }}>Negative Examples / Boundary Notes</div>
+                  <textarea rows={2} value={ontologyInputNegativeText} onChange={(e) => setOntologyInputNegativeText(e.target.value)} placeholder="관련 없는 예시" />
+                  <textarea rows={2} value={ontologyInputBoundaryText} onChange={(e) => setOntologyInputBoundaryText(e.target.value)} placeholder="경계/제외 규칙" style={{ marginTop: 8 }} />
+                  <div className="label" style={{ marginTop: 8 }}>Related Node IDs</div>
+                  <textarea rows={2} value={ontologyInputNodeIdsText} onChange={(e) => setOntologyInputNodeIdsText(e.target.value)} placeholder="controller:RegisteUseDcpChnelController.registe" />
+                  <div className="label" style={{ marginTop: 8 }}>Related Edge IDs</div>
+                  <textarea rows={2} value={ontologyInputEdgeIdsText} onChange={(e) => setOntologyInputEdgeIdsText(e.target.value)} placeholder="edge:route-api" />
+                  <div className="label" style={{ marginTop: 8 }}>Related Path IDs / Knowledge IDs</div>
+                  <textarea rows={2} value={ontologyInputPathIdsText} onChange={(e) => setOntologyInputPathIdsText(e.target.value)} placeholder="path ids" />
+                  <textarea rows={2} value={ontologyInputKnowledgeIdsText} onChange={(e) => setOntologyInputKnowledgeIdsText(e.target.value)} placeholder="knowledge ids" style={{ marginTop: 8 }} />
+                  {ontologyInputKind === "csv" ? (
+                    <>
+                      <div className="label" style={{ marginTop: 8 }}>CSV Text</div>
+                      <textarea rows={6} value={ontologyInputCsvText} onChange={(e) => setOntologyInputCsvText(e.target.value)} placeholder={"screen,api\nMDP-MYCER999999M,/monimo/registe"} />
+                    </>
+                  ) : null}
+                  <div className="label" style={{ marginTop: 8 }}>Notes</div>
+                  <textarea rows={2} value={ontologyInputNotes} onChange={(e) => setOntologyInputNotes(e.target.value)} placeholder="추가 메모" />
+                  <div className="toolbar" style={{ marginTop: 8 }}>
+                    <button type="button" className="secondary" onClick={onSubmitOntologyInput} disabled={!selectedProjectId || ontologyInputLoading}>
+                      {ontologyInputLoading ? "저장 중" : "온톨로지 입력 저장"}
+                    </button>
+                  </div>
+                  {ontologyInputMessageText ? <div className="hint" style={{ marginTop: 8 }}>{ontologyInputMessageText}</div> : null}
+                </div>
 
                 {(analysisResult.evaluationTrends?.topQuestionTypes || []).length > 0 ? (
                   <>

@@ -16,6 +16,7 @@ import {
   removeServerDomainPack,
   readServerProjectFile,
   recordServerProjectFeedback,
+  recordServerProjectOntologyInput,
   removeServerProject,
   removeServerProjectPreset,
   searchServerProject,
@@ -69,7 +70,7 @@ function matchRunPath(urlPath: string, suffix: "" | "events" | "artifacts"): str
 
 function matchProjectPath(
   urlPath: string,
-  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback" | "replay"
+  suffix: "" | "index" | "search" | "runs" | "file" | "analyze" | "ask" | "debug" | "feedback" | "ontology-inputs" | "replay"
 ): string | undefined {
   const pattern = suffix
     ? new RegExp(`^/api/projects/([^/]+)/${suffix}$`)
@@ -722,6 +723,62 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
     } catch (error) {
       routeTrace("project/feedback:failure", {
         projectId: projectFeedbackId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectOntologyInputId = matchProjectPath(pathname, "ontology-inputs");
+  if (projectOntologyInputId && method === "POST") {
+    routeTrace("project/ontology-inputs:start", { projectId: projectOntologyInputId });
+    try {
+      const payload = (await readJsonBody(req)) as {
+        kind?: "note" | "structured" | "csv";
+        scope?: "general" | "domain" | "subdomain" | "channel" | "action" | "module-role" | "process-role" | "boundary" | "path";
+        title?: string;
+        message?: string;
+        tags?: string[];
+        positiveExamples?: string[];
+        negativeExamples?: string[];
+        boundaryNotes?: string[];
+        relatedNodeIds?: string[];
+        relatedEdgeIds?: string[];
+        relatedPathIds?: string[];
+        relatedKnowledgeIds?: string[];
+        csvText?: string;
+        notes?: string;
+      };
+      const result = await recordServerProjectOntologyInput({
+        projectId: projectOntologyInputId,
+        kind: payload.kind ?? "note",
+        scope: payload.scope ?? "general",
+        title: payload.title ?? "",
+        message: payload.message,
+        tags: payload.tags ?? [],
+        positiveExamples: payload.positiveExamples ?? [],
+        negativeExamples: payload.negativeExamples ?? [],
+        boundaryNotes: payload.boundaryNotes ?? [],
+        relatedNodeIds: payload.relatedNodeIds ?? [],
+        relatedEdgeIds: payload.relatedEdgeIds ?? [],
+        relatedPathIds: payload.relatedPathIds ?? [],
+        relatedKnowledgeIds: payload.relatedKnowledgeIds ?? [],
+        csvText: payload.csvText,
+        notes: payload.notes
+      });
+      routeTrace("project/ontology-inputs:success", {
+        projectId: projectOntologyInputId,
+        totalInputs: result.summary.totalInputs,
+        csvRows: result.summary.csvRowCount
+      });
+      json(res, 201, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology-inputs:failure", {
+        projectId: projectOntologyInputId,
         error: error instanceof Error ? error.message : String(error)
       });
       json(res, 400, {

@@ -81,14 +81,14 @@ describe("question types", () => {
 
   it("returns retrieval preferences per question type", () => {
     const moduleRole = getAskQuestionTypeRetrievalContract("module_role_explanation");
-    expect(moduleRole.preferredMemoryFiles[0]).toBe("retrieval-units/latest.md");
+    expect(moduleRole.preferredMemoryFiles[0]).toBe("ontology-projections/latest.md");
     expect(moduleRole.preferredUnitTypes).toContain("module-overview");
     expect(moduleRole.queryHints).toContain("role");
 
     const channel = getAskQuestionTypeRetrievalContract("channel_or_partner_integration");
     expect(channel.preferredMemoryFiles.slice(0, 2)).toEqual([
-      "front-back-graph/latest.md",
-      "front-catalog/latest.md"
+      "ontology-projections/latest.md",
+      "ontology-graph/latest.md"
     ]);
     expect(channel.preferredUnitTypes).toContain("flow");
     expect(channel.queryHints).toContain("callback");

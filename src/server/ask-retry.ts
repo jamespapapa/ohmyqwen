@@ -6,6 +6,8 @@ export interface AskRetryEvidenceState {
   linkedFlowKeys: string[];
   linkedEaiIds: string[];
   downstreamKeys: string[];
+  ontologyNodeIds: string[];
+  ontologyProjectionIds: string[];
 }
 
 export interface AskRetryEvidenceDelta {
@@ -28,13 +30,15 @@ function diffList(prefix: string, previous: string[], next: string[]): string[] 
 
 export function summarizeAskRetryEvidence(input: AskRetryEvidenceState): AskRetryEvidenceState {
   return {
-    queryCandidates: unique(input.queryCandidates),
-    matchedKnowledgeIds: unique(input.matchedKnowledgeIds),
-    mergedHitPaths: unique(input.mergedHitPaths),
-    hydratedPaths: unique(input.hydratedPaths),
-    linkedFlowKeys: unique(input.linkedFlowKeys),
-    linkedEaiIds: unique(input.linkedEaiIds),
-    downstreamKeys: unique(input.downstreamKeys)
+    queryCandidates: unique(input.queryCandidates ?? []),
+    matchedKnowledgeIds: unique(input.matchedKnowledgeIds ?? []),
+    mergedHitPaths: unique(input.mergedHitPaths ?? []),
+    hydratedPaths: unique(input.hydratedPaths ?? []),
+    linkedFlowKeys: unique(input.linkedFlowKeys ?? []),
+    linkedEaiIds: unique(input.linkedEaiIds ?? []),
+    downstreamKeys: unique(input.downstreamKeys ?? []),
+    ontologyNodeIds: unique(input.ontologyNodeIds ?? []),
+    ontologyProjectionIds: unique(input.ontologyProjectionIds ?? [])
   };
 }
 
@@ -49,7 +53,9 @@ export function compareAskRetryEvidence(
     ...diffList("hydrated", previous.hydratedPaths, next.hydratedPaths),
     ...diffList("flow", previous.linkedFlowKeys, next.linkedFlowKeys),
     ...diffList("eai", previous.linkedEaiIds, next.linkedEaiIds),
-    ...diffList("downstream", previous.downstreamKeys, next.downstreamKeys)
+    ...diffList("downstream", previous.downstreamKeys, next.downstreamKeys),
+    ...diffList("ontology-node", previous.ontologyNodeIds, next.ontologyNodeIds),
+    ...diffList("ontology-projection", previous.ontologyProjectionIds, next.ontologyProjectionIds)
   ]);
   return {
     changed: reasons.length > 0,

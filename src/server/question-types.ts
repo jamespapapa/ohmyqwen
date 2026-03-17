@@ -263,6 +263,9 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "cross_layer_flow":
       return {
         preferredMemoryFiles: [
+          "ontology-projections/latest.md",
+          "ontology-graph/latest.md",
+          "ontology-inputs/latest.md",
           "front-back-graph/latest.md",
           "front-catalog/latest.md",
           "retrieval-units/latest.md",
@@ -276,6 +279,8 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "symbol_deep_trace":
       return {
         preferredMemoryFiles: [
+          "ontology-graph/latest.md",
+          "ontology-review/latest.md",
           "structure-index/latest.md",
           "retrieval-units/latest.md",
           "learned-knowledge/latest.md",
@@ -288,6 +293,9 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "module_role_explanation":
       return {
         preferredMemoryFiles: [
+          "ontology-projections/latest.md",
+          "ontology-graph/latest.md",
+          "ontology-inputs/latest.md",
           "retrieval-units/latest.md",
           "learned-knowledge/latest.md",
           "project-analysis/latest.md",
@@ -299,6 +307,9 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "process_or_batch_trace":
       return {
         preferredMemoryFiles: [
+          "ontology-projections/latest.md",
+          "ontology-graph/latest.md",
+          "ontology-review/latest.md",
           "retrieval-units/latest.md",
           "structure-index/latest.md",
           "learned-knowledge/latest.md",
@@ -310,6 +321,9 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "channel_or_partner_integration":
       return {
         preferredMemoryFiles: [
+          "ontology-projections/latest.md",
+          "ontology-graph/latest.md",
+          "ontology-inputs/latest.md",
           "front-back-graph/latest.md",
           "front-catalog/latest.md",
           "retrieval-units/latest.md",
@@ -322,6 +336,8 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "business_capability_trace":
       return {
         preferredMemoryFiles: [
+          "ontology-graph/latest.md",
+          "ontology-review/latest.md",
           "retrieval-units/latest.md",
           "learned-knowledge/latest.md",
           "structure-index/latest.md",
@@ -334,6 +350,8 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "config_or_resource_explanation":
       return {
         preferredMemoryFiles: [
+          "ontology-inputs/latest.md",
+          "ontology-graph/latest.md",
           "project-profile/latest.md",
           "retrieval-units/latest.md",
           "eai-dictionary/latest.md",
@@ -345,6 +363,9 @@ export function getAskQuestionTypeRetrievalContract(type: AskQuestionType): AskQ
     case "domain_capability_overview":
       return {
         preferredMemoryFiles: [
+          "ontology-projections/latest.md",
+          "ontology-graph/latest.md",
+          "ontology-inputs/latest.md",
           "project-analysis/latest.md",
           "retrieval-units/latest.md",
           "project-profile/latest.md",

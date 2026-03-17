@@ -10,6 +10,16 @@ import { RetrievalUnitSnapshotSchema, type RetrievalUnitSnapshot } from "./retri
 import { ProjectFeedbackArtifactSchema, type ProjectFeedbackArtifact } from "./project-feedback.js";
 import { EvaluationReplaySnapshotSchema, type EvaluationReplaySnapshot } from "./evaluation-replay.js";
 import { EvaluationPromotionSnapshotSchema, type EvaluationPromotionSnapshot } from "./evaluation-promotions.js";
+import {
+  OntologyInputSummarySnapshotSchema,
+  type OntologyInputSummarySnapshot,
+  deriveOntologyInputMetadata
+} from "./ontology-inputs.js";
+import {
+  OntologyReviewSnapshotSchema,
+  type OntologyReviewSnapshot,
+  canonicalOntologyPathTargetId
+} from "./ontology-review.js";
 
 const OntologyNodeTypeSchema = z.enum([
   "module",
@@ -22,6 +32,8 @@ const OntologyNodeTypeSchema = z.enum([
   "eai-interface",
   "knowledge-cluster",
   "retrieval-unit",
+  "knowledge-input",
+  "review-target",
   "feedback-record",
   "replay-candidate",
   "path"
@@ -58,6 +70,8 @@ const OntologyValidatedStatusSchema = z.enum([
 const OntologySourceTypeSchema = z.enum([
   "knowledge-schema",
   "retrieval-unit",
+  "ontology-input",
+  "ontology-review",
   "feedback",
   "evaluation-replay",
   "evaluation-promotion",
@@ -107,6 +121,8 @@ const OntologyGraphSummarySchema = z.object({
   validatedNodeCount: z.number().int().min(0),
   candidateNodeCount: z.number().int().min(0),
   staleNodeCount: z.number().int().min(0),
+  contestedNodeCount: z.number().int().min(0),
+  deprecatedNodeCount: z.number().int().min(0),
   topDomains: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) })),
   topChannels: z.array(z.object({ id: z.string().min(1), count: z.number().int().min(0) }))
 });
@@ -196,10 +212,6 @@ function replayNodeId(candidate: EvaluationReplaySnapshot["replayCandidates"][nu
   return `replay:${candidate.kind}:${digest}`;
 }
 
-function pathNodeId(feedbackId: string, targetIndex: number): string {
-  return `path:${feedbackId}:${targetIndex}`;
-}
-
 function feedbackConfidence(verdict: ProjectFeedbackArtifact["verdict"]): number {
   if (verdict === "correct") return 0.98;
   if (verdict === "incorrect") return 0.97;
@@ -232,12 +244,20 @@ export function buildOntologyGraphSnapshot(options: {
   workspaceDir?: string;
   knowledgeSchema: KnowledgeSchemaSnapshot;
   retrievalUnits?: RetrievalUnitSnapshot;
+  ontologyInputs?: OntologyInputSummarySnapshot;
+  ontologyReview?: OntologyReviewSnapshot;
   feedbackArtifacts?: ProjectFeedbackArtifact[];
   evaluationReplay?: EvaluationReplaySnapshot;
   evaluationPromotions?: EvaluationPromotionSnapshot;
 }): OntologyGraphSnapshot {
   const knowledgeSchema = KnowledgeSchemaSnapshotSchema.parse(options.knowledgeSchema);
   const retrievalUnits = options.retrievalUnits ? RetrievalUnitSnapshotSchema.parse(options.retrievalUnits) : undefined;
+  const ontologyInputs = options.ontologyInputs
+    ? OntologyInputSummarySnapshotSchema.parse(options.ontologyInputs)
+    : undefined;
+  const ontologyReview = options.ontologyReview
+    ? OntologyReviewSnapshotSchema.parse(options.ontologyReview)
+    : undefined;
   const feedbackArtifacts = (options.feedbackArtifacts ?? []).map((artifact) => ProjectFeedbackArtifactSchema.parse(artifact));
   const evaluationReplay = options.evaluationReplay
     ? EvaluationReplaySnapshotSchema.parse(options.evaluationReplay)
@@ -383,6 +403,143 @@ export function buildOntologyGraphSnapshot(options: {
     }
   }
 
+  if (ontologyInputs) {
+    for (const artifact of ontologyInputs.recentInputs) {
+      const semantic = deriveOntologyInputMetadata(artifact);
+      const inputNodeId = artifact.id;
+      upsertNode({
+        id: inputNodeId,
+        type: "knowledge-input",
+        label: artifact.title,
+        summary: artifact.message || artifact.notes || `${artifact.kind}/${artifact.scope}`,
+        metadata: makeMetadata({
+          ...semantic,
+          confidence: artifact.kind === "csv" ? 0.68 : artifact.kind === "structured" ? 0.72 : 0.6,
+          evidencePaths: unique([
+            ...artifact.relatedNodeIds,
+            ...artifact.relatedEdgeIds,
+            ...artifact.relatedPathIds
+          ]),
+          sourceType: "ontology-input",
+          validatedStatus: "candidate"
+        }),
+        attributes: {
+          inputId: artifact.id,
+          inputKind: artifact.kind,
+          scope: artifact.scope,
+          tags: artifact.tags,
+          positiveExamples: artifact.positiveExamples,
+          negativeExamples: artifact.negativeExamples,
+          boundaryNotes: artifact.boundaryNotes,
+          normalizedTerms: artifact.normalizedTerms,
+          csvHeaders: artifact.csvHeaders,
+          csvRowCount: artifact.csvRows.length
+        }
+      });
+
+      for (const relatedNodeId of artifact.relatedNodeIds) {
+        if (!nodes.has(relatedNodeId)) continue;
+        upsertEdge({
+          id: `edge:references-entity:${inputNodeId}:${relatedNodeId}`,
+          type: "references-entity",
+          fromId: inputNodeId,
+          toId: relatedNodeId,
+          label: "ontology input references entity",
+          metadata: makeMetadata({
+            ...semantic,
+            confidence: 0.72,
+            sourceType: "ontology-input",
+            validatedStatus: "candidate"
+          }),
+          attributes: {
+            scope: artifact.scope
+          }
+        });
+      }
+
+      for (const relatedEdgeId of artifact.relatedEdgeIds) {
+        const reviewTargetNodeId = `review-target:edge:${relatedEdgeId}`;
+        upsertNode({
+          id: reviewTargetNodeId,
+          type: "review-target",
+          label: relatedEdgeId,
+          summary: "ontology input references edge",
+          metadata: makeMetadata({
+            ...semantic,
+            confidence: 0.66,
+            sourceType: "ontology-input",
+            validatedStatus: "candidate"
+          }),
+          attributes: {
+            targetKind: "edge",
+            targetId: relatedEdgeId
+          }
+        });
+        upsertEdge({
+          id: `edge:references-edge:${inputNodeId}:${reviewTargetNodeId}`,
+          type: "references-edge",
+          fromId: inputNodeId,
+          toId: reviewTargetNodeId,
+          label: "ontology input references edge",
+          metadata: makeMetadata({
+            ...semantic,
+            confidence: 0.66,
+            sourceType: "ontology-input",
+            validatedStatus: "candidate"
+          }),
+          attributes: {
+            scope: artifact.scope
+          }
+        });
+      }
+
+      artifact.csvRows.slice(0, 48).forEach((row, index) => {
+        const rowNodeId = `${artifact.id}:row:${index + 1}`;
+        const label =
+          Object.values(row).find((value) => String(value).trim().length > 0) ||
+          `${artifact.title} row ${index + 1}`;
+        upsertNode({
+          id: rowNodeId,
+          type: "knowledge-input",
+          label,
+          summary: Object.entries(row)
+            .filter(([, value]) => value)
+            .slice(0, 4)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(", "),
+          metadata: makeMetadata({
+            ...semantic,
+            confidence: 0.64,
+            sourceType: "ontology-input",
+            validatedStatus: "candidate"
+          }),
+          attributes: {
+            inputId: artifact.id,
+            inputKind: "csv-row",
+            rowIndex: index + 1,
+            row
+          }
+        });
+        upsertEdge({
+          id: `edge:contains:${inputNodeId}:${rowNodeId}`,
+          type: "contains",
+          fromId: inputNodeId,
+          toId: rowNodeId,
+          label: "ontology input contains row",
+          metadata: makeMetadata({
+            ...semantic,
+            confidence: 0.7,
+            sourceType: "ontology-input",
+            validatedStatus: "candidate"
+          }),
+          attributes: {
+            scope: artifact.scope
+          }
+        });
+      });
+    }
+  }
+
   const nodeIds = new Set(nodes.keys());
   const clusterNodes = Array.from(nodes.values()).filter((node) => node.type === "knowledge-cluster");
 
@@ -456,7 +613,7 @@ export function buildOntologyGraphSnapshot(options: {
 
     artifact.targets.forEach((target, index) => {
       if (target.kind === "path") {
-        const targetId = pathNodeId(feedbackId, index);
+        const targetId = canonicalOntologyPathTargetId(target);
         upsertNode({
           id: targetId,
           type: "path",
@@ -591,6 +748,59 @@ export function buildOntologyGraphSnapshot(options: {
     }
   }
 
+  if (ontologyReview) {
+    for (const record of ontologyReview.records) {
+      if (record.targetKind === "node") {
+        const direct = nodes.get(record.targetId);
+        const knowledgeAlias = record.targetId.startsWith("knowledge:")
+          ? Array.from(nodes.values()).find(
+              (node) =>
+                node.type === "knowledge-cluster" &&
+                (String(node.attributes.candidateId ?? "") === record.targetId.slice("knowledge:".length) ||
+                  String(node.attributes.packId ?? "") === record.targetId.slice("knowledge:".length))
+            )
+          : undefined;
+        const targetNode = direct ?? knowledgeAlias;
+        if (targetNode) {
+          targetNode.metadata = makeMetadata({
+            ...targetNode.metadata,
+            confidence: Math.max(targetNode.metadata.confidence, record.confidence),
+            sourceType: "ontology-review",
+            validatedStatus: record.status
+          });
+          targetNode.attributes = {
+            ...targetNode.attributes,
+            reviewStatus: record.status,
+            reviewFeedbackCount: record.feedbackCount,
+            reviewScopes: record.scopes
+          };
+          nodes.set(targetNode.id, targetNode);
+          continue;
+        }
+      }
+
+      const reviewTargetNodeId = `review-target:${record.targetKind}:${record.targetId}`;
+      upsertNode({
+        id: reviewTargetNodeId,
+        type: "review-target",
+        label: record.label || record.targetId,
+        summary: `${record.targetKind} review target`,
+        metadata: makeMetadata({
+          confidence: record.confidence,
+          sourceType: "ontology-review",
+          validatedStatus: record.status
+        }),
+        attributes: {
+          targetKind: record.targetKind,
+          targetId: record.targetId,
+          feedbackCount: record.feedbackCount,
+          questionTypes: record.questionTypes,
+          scopes: record.scopes
+        }
+      });
+    }
+  }
+
   const orderedNodes = Array.from(nodes.values()).sort((a, b) => a.id.localeCompare(b.id));
   const orderedEdges = Array.from(edges.values()).sort((a, b) => a.id.localeCompare(b.id));
 
@@ -611,6 +821,8 @@ export function buildOntologyGraphSnapshot(options: {
       validatedNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "validated").length,
       candidateNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "candidate").length,
       staleNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "stale").length,
+      contestedNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "contested").length,
+      deprecatedNodeCount: orderedNodes.filter((node) => node.metadata.validatedStatus === "deprecated").length,
       topDomains: countTop(orderedNodes.flatMap((node) => node.metadata.domains)),
       topChannels: countTop(orderedNodes.flatMap((node) => node.metadata.channels))
     }
@@ -628,6 +840,8 @@ export function buildOntologyGraphMarkdown(snapshot: OntologyGraphSnapshot): str
   lines.push(`- feedbackNodeCount: ${snapshot.summary.feedbackNodeCount}`);
   lines.push(`- replayNodeCount: ${snapshot.summary.replayNodeCount}`);
   lines.push(`- pathNodeCount: ${snapshot.summary.pathNodeCount}`);
+  lines.push(`- contestedNodeCount: ${snapshot.summary.contestedNodeCount}`);
+  lines.push(`- deprecatedNodeCount: ${snapshot.summary.deprecatedNodeCount}`);
   lines.push("");
   lines.push("## Node Types");
   for (const [type, count] of Object.entries(snapshot.summary.nodeTypeCounts)) {
