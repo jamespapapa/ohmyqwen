@@ -43,6 +43,7 @@ import {
   type EaiDictionaryEntry
 } from "./eai-dictionary.js";
 import { buildLinkedEaiEvidence } from "./eai-links.js";
+import type { EaiLinkedEvidence } from "./eai-links.js";
 import {
   buildFrontBackGraph,
   type FrontBackGraphSnapshot
@@ -1664,6 +1665,70 @@ export function scoreHitAgainstOntologyRerankContext(
   }
 
   return delta;
+}
+
+function scoreEvidencePathsAgainstOntologyRerankContext(paths: string[], rerankContext?: QmdRerankContext): number {
+  return paths.reduce((maxScore, candidatePath) => {
+    const score = scoreHitAgainstOntologyRerankContext({ path: candidatePath }, rerankContext);
+    return score > maxScore ? score : maxScore;
+  }, Number.NEGATIVE_INFINITY);
+}
+
+export function filterPathItemsForOntologyPrompt<T extends { path: string; snippet?: string }>(options: {
+  items: T[];
+  rerankContext?: QmdRerankContext;
+  limit: number;
+  minimumAlignedKeep?: number;
+}): T[] {
+  if (options.items.length <= options.limit) {
+    return options.items.slice(0, options.limit);
+  }
+  const ranked = options.items
+    .map((item, index) => ({
+      item,
+      index,
+      alignment: scoreHitAgainstOntologyRerankContext(
+        {
+          path: item.path,
+          snippet: item.snippet
+        },
+        options.rerankContext
+      )
+    }))
+    .sort((a, b) =>
+      b.alignment !== a.alignment ? b.alignment - a.alignment : a.index - b.index
+    );
+  const minimumAlignedKeep = Math.max(1, options.minimumAlignedKeep ?? Math.min(4, options.limit));
+  const aligned = ranked.filter((item) => item.alignment >= -0.05);
+  const selected = (aligned.length >= minimumAlignedKeep ? aligned : ranked).slice(0, options.limit);
+  return selected.map((item) => item.item);
+}
+
+export function filterLinkedEaiEvidenceForOntologyPrompt(options: {
+  items: EaiLinkedEvidence[];
+  rerankContext?: QmdRerankContext;
+  limit: number;
+  minimumAlignedKeep?: number;
+}): EaiLinkedEvidence[] {
+  if (options.items.length <= options.limit) {
+    return options.items.slice(0, options.limit);
+  }
+  const ranked = options.items
+    .map((item, index) => ({
+      item,
+      index,
+      alignment: scoreEvidencePathsAgainstOntologyRerankContext(
+        [item.sourcePath, ...item.moduleUsagePaths],
+        options.rerankContext
+      )
+    }))
+    .sort((a, b) =>
+      b.alignment !== a.alignment ? b.alignment - a.alignment : a.index - b.index
+    );
+  const minimumAlignedKeep = Math.max(1, options.minimumAlignedKeep ?? Math.min(3, options.limit));
+  const aligned = ranked.filter((item) => item.alignment >= -0.05);
+  const selected = (aligned.length >= minimumAlignedKeep ? aligned : ranked).slice(0, options.limit);
+  return selected.map((item) => item.item);
 }
 
 function rerankProjectSearchHitsWithRetrievalUnits(options: {
@@ -8011,15 +8076,17 @@ export async function askServerProject(options: {
             question,
             strategy: strategyDecision.strategy,
             moduleCandidates: strategyDecision.moduleCandidates,
-            focusTokens: askFocusTokens
-          }) + scoreHitAgainstOntologyRerankContext(a, ontologyRerankContext);
+            focusTokens: askFocusTokens,
+            rerankContext: ontologyRerankContext
+          });
           const bScore = scoreAskHitRelevance({
             hit: b,
             question,
             strategy: strategyDecision.strategy,
             moduleCandidates: strategyDecision.moduleCandidates,
-            focusTokens: askFocusTokens
-          }) + scoreHitAgainstOntologyRerankContext(b, ontologyRerankContext);
+            focusTokens: askFocusTokens,
+            rerankContext: ontologyRerankContext
+          });
           return bScore !== aScore ? bScore - aScore : a.path.localeCompare(b.path);
         })
         .slice(0, options.limit ?? 14);
@@ -8156,6 +8223,7 @@ export async function askServerProject(options: {
         downstreamFlowTraces: downstream,
         rankedOntologyNodes,
         rankedOntologyProjections,
+        ontologyRerankContext,
         bestSearch,
         lowConfidenceMode,
         memoryPreview: await loadAskMemoryPreview()
@@ -8212,6 +8280,7 @@ export async function askServerProject(options: {
       downstreamFlowTraces,
       rankedOntologyNodes,
       rankedOntologyProjections,
+      ontologyRerankContext,
       bestSearch,
       lowConfidenceMode,
       memoryPreview
@@ -8324,11 +8393,41 @@ export async function askServerProject(options: {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         attempts = attempt;
         const priorFailures = qualityFailures.slice(-8);
+        const canonicalPromptQuestion =
+          questionTypeDecision.type === "cross_layer_flow" || questionTypeDecision.type === "channel_or_partner_integration";
         const sourceHits =
           (intent.methodFocused || intent.moduleFlowFocused) && mergedCodeHits.length > 0
             ? [...mergedCodeHits, ...mergedHits.filter((hit) => !mergedCodeHits.includes(hit)).slice(0, 2)]
             : mergedHits;
-        const llmMergedHits = sourceHits.map((hit) => ({
+        const promptHits = canonicalPromptQuestion
+          ? filterPathItemsForOntologyPrompt({
+              items: sourceHits,
+              rerankContext: ontologyRerankContext,
+              limit: Math.min(sourceHits.length, 10),
+              minimumAlignedKeep: 4
+            })
+          : sourceHits;
+        const promptHydratedEvidence = canonicalPromptQuestion
+          ? filterPathItemsForOntologyPrompt({
+              items: hydratedEvidence,
+              rerankContext: ontologyRerankContext,
+              limit: Math.min(hydratedEvidence.length, 8),
+              minimumAlignedKeep: 4
+            })
+          : hydratedEvidence;
+        const promptLinkedEaiEvidence = canonicalPromptQuestion
+          ? filterLinkedEaiEvidenceForOntologyPrompt({
+              items: linkedEaiEvidence,
+              rerankContext: ontologyRerankContext,
+              limit: Math.min(linkedEaiEvidence.length, 6),
+              minimumAlignedKeep: 2
+            })
+          : linkedEaiEvidence;
+        const promptLinkedFlowEvidence =
+          canonicalPromptQuestion && canonicalCrossLayerPlan
+            ? canonicalCrossLayerPlan.canonicalFlows.slice(0, 6)
+            : linkedFlowEvidence;
+        const llmMergedHits = promptHits.map((hit) => ({
           path: hit.path,
           score: hit.score,
           confidence: normalizeHitConfidence(hit),
@@ -8346,9 +8445,9 @@ export async function askServerProject(options: {
             memoryChars: memoryPreview.reduce((sum, item) => sum + item.content.length, 0),
             retrievalHits: llmMergedHits.length,
             retrievalChars: JSON.stringify(llmMergedHits).length,
-            hydratedEvidenceCount: hydratedEvidence.length,
-            linkedEaiEvidenceCount: linkedEaiEvidence.length,
-            linkedFlowEvidenceCount: linkedFlowEvidence.length,
+            hydratedEvidenceCount: promptHydratedEvidence.length,
+            linkedEaiEvidenceCount: promptLinkedEaiEvidence.length,
+            linkedFlowEvidenceCount: promptLinkedFlowEvidence.length,
             downstreamTraceCount: downstreamFlowTraces.length
           }
         });
@@ -8415,9 +8514,9 @@ export async function askServerProject(options: {
               fallbackUsed: bestSearch.fallbackUsed,
               mergedHits: llmMergedHits
             },
-            hydratedEvidence,
-            linkedEaiEvidence,
-            linkedFlowEvidence,
+            hydratedEvidence: promptHydratedEvidence,
+            linkedEaiEvidence: promptLinkedEaiEvidence,
+            linkedFlowEvidence: promptLinkedFlowEvidence,
             canonicalLinkedFlowPlan: canonicalCrossLayerPlan
               ? {
                   primary: canonicalCrossLayerPlan.primary
@@ -8706,6 +8805,7 @@ export async function askServerProject(options: {
             downstreamFlowTraces,
             rankedOntologyNodes,
             rankedOntologyProjections,
+            ontologyRerankContext,
             bestSearch,
             lowConfidenceMode,
             memoryPreview

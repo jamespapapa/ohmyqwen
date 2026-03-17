@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterLinkedEaiEvidenceForOntologyPrompt,
+  filterPathItemsForOntologyPrompt,
   findStructureEntryByClassName,
   scoreAskHitRelevance,
   type ProjectSearchHit
@@ -99,5 +101,88 @@ describe("server evidence ranking", () => {
     });
 
     expect(selected?.path).toBe("dcp-insurance/src/main/java/com/acme/SessionService.java");
+  });
+
+  it("filters prompt path evidence toward ontology-aligned items when enough aligned evidence exists", () => {
+    const filtered = filterPathItemsForOntologyPrompt({
+      items: [
+        {
+          path: "dcp-loan/src/main/java/com/acme/LoanNoiseService.java",
+          snippet: "loan collateral request flow"
+        },
+        {
+          path: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+          snippet: "benefit claim controller"
+        },
+        {
+          path: "dcp-insurance/src/main/java/com/acme/BenefitClaimService.java",
+          snippet: "benefit claim save flow"
+        },
+        {
+          path: "dcp-insurance/src/main/java/com/acme/BenefitClaimDocumentService.java",
+          snippet: "benefit claim document generation"
+        }
+      ],
+      rerankContext: {
+        preferredPathPrefixes: ["dcp-insurance/"],
+        preferredPathTokens: ["insurance", "benefit", "claim"],
+        preferredTextTokens: ["benefit claim"]
+      },
+      limit: 3,
+      minimumAlignedKeep: 3
+    });
+
+    expect(filtered).toHaveLength(3);
+    expect(filtered.every((item) => item.path.startsWith("dcp-insurance/"))).toBe(true);
+  });
+
+  it("filters linked eai evidence toward ontology-aligned usage paths", () => {
+    const filtered = filterLinkedEaiEvidenceForOntologyPrompt({
+      items: [
+        {
+          interfaceId: "F1CLN0130",
+          interfaceName: "loan",
+          purpose: "loan flow",
+          sourcePath: "resources/eai/loan/F1CLN0130.xml",
+          envPaths: [],
+          moduleUsagePaths: ["dcp-loan/src/main/java/com/acme/LoanService.java"],
+          javaCallSiteMethods: ["LoanService.callF1CLN0130"],
+          reasons: ["match"],
+          score: 100
+        },
+        {
+          interfaceId: "F1FCZ0045",
+          interfaceName: "claim",
+          purpose: "benefit claim flow",
+          sourcePath: "resources/eai/insurance/F1FCZ0045.xml",
+          envPaths: [],
+          moduleUsagePaths: ["dcp-insurance/src/main/java/com/acme/BenefitClaimService.java"],
+          javaCallSiteMethods: ["BenefitClaimService.callF1FCZ0045"],
+          reasons: ["match"],
+          score: 90
+        },
+        {
+          interfaceId: "F13630020",
+          interfaceName: "claim-document",
+          purpose: "benefit claim document flow",
+          sourcePath: "resources/eai/insurance/F13630020.xml",
+          envPaths: [],
+          moduleUsagePaths: ["dcp-insurance/src/main/java/com/acme/BenefitClaimDocumentService.java"],
+          javaCallSiteMethods: ["BenefitClaimDocumentService.callF13630020"],
+          reasons: ["match"],
+          score: 80
+        }
+      ],
+      rerankContext: {
+        preferredPathPrefixes: ["dcp-insurance/", "resources/eai/insurance/"],
+        preferredPathTokens: ["insurance", "benefit", "claim"],
+        preferredTextTokens: ["benefit claim"]
+      },
+      limit: 2,
+      minimumAlignedKeep: 2
+    });
+
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((item) => item.interfaceId)).toEqual(["F1FCZ0045", "F13630020"]);
   });
 });
