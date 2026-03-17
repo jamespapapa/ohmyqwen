@@ -374,7 +374,9 @@ describe("knowledge schema foundation", () => {
 
     expect(snapshot.entities.some((entity) => entity.id === "module:dcp-member")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "route:/mo/login/monimo/MDP-MYCER999999M:src/views/login/MDP-MYCER999999M.vue")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "api:/member/monimo/registe")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.id === "gateway-handler:RouteController.route")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "controller:RegisteUseDcpChnelController.registe")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "service:EmbededMemberLoginService.authenticate")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "eai:F14090150")).toBe(true);
@@ -392,9 +394,41 @@ describe("knowledge schema foundation", () => {
     expect(
       snapshot.edges.some(
         (edge) =>
+          edge.type === "declares" &&
+          edge.fromId === "file:frontend:src/views/login/MDP-MYCER999999M.vue" &&
+          edge.toId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "calls" &&
+          edge.fromId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
+          edge.toId === "api:/member/monimo/registe"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
           edge.type === "routes-to" &&
           edge.fromId === "route:/mo/login/monimo/MDP-MYCER999999M:src/views/login/MDP-MYCER999999M.vue" &&
           edge.toId === "api:/member/monimo/registe"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "routes-to" &&
+          edge.fromId === "api:/member/monimo/registe" &&
+          edge.toId === "gateway-handler:RouteController.route"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "proxies-to" &&
+          edge.fromId === "gateway-handler:RouteController.route" &&
+          edge.toId === "controller:RegisteUseDcpChnelController.registe"
       )
     ).toBe(true);
     expect(

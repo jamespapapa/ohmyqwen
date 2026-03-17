@@ -9,8 +9,10 @@ const KnowledgeEntityTypeSchema = z.enum([
   "module",
   "file",
   "symbol",
+  "ui-action",
   "route",
   "api",
+  "gateway-handler",
   "controller",
   "service",
   "eai-interface",
@@ -27,6 +29,7 @@ const KnowledgeEdgeTypeSchema = z.enum([
   "contains",
   "declares",
   "calls",
+  "proxies-to",
   "routes-to",
   "maps-to",
   "uses-eai",
@@ -238,6 +241,20 @@ function inferModuleRoles(moduleName: string): string[] {
   if (normalized.includes("display")) return ["display-content"];
   if (normalized.includes("upload")) return ["upload-support"];
   return [];
+}
+
+function inferFrontendActionRoles(functionName?: string): string[] {
+  const normalized = normalizeComparable(functionName);
+  if (!normalized) {
+    return [];
+  }
+
+  const roles: string[] = [];
+  if (/submit|save|insert|apply|request|send|regist|register/.test(normalized)) roles.push("ui-submit");
+  if (/load|fetch|get|inq|select|search|find/.test(normalized)) roles.push("ui-load");
+  if (/check|verify|valid|confirm/.test(normalized)) roles.push("ui-validate");
+  if (/callback|return|result|complete/.test(normalized)) roles.push("ui-callback");
+  return unique(roles);
 }
 
 function inferProcessRoles(moduleName: string): string[] {
@@ -1209,6 +1226,73 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         attributes: {}
       });
     }
+
+    for (const httpCall of screen.httpCalls) {
+      if (!httpCall.functionName) {
+        continue;
+      }
+      const actionTags = classifyCapabilityTags(screen.capabilityTags ?? [], options.domainPacks);
+      const actionHints = inferActionsFromTexts(
+        httpCall.functionName,
+        httpCall.rawUrl,
+        httpCall.normalizedUrl,
+        screen.screenCode,
+        screen.filePath
+      );
+      const actionChannels = inferChannels([
+        screen.filePath,
+        screen.screenCode,
+        httpCall.functionName,
+        httpCall.rawUrl,
+        httpCall.normalizedUrl
+      ]);
+      const uiActionId = `ui-action:${screen.filePath}:${slugify(httpCall.functionName)}`;
+      upsertEntity({
+        id: uiActionId,
+        type: "ui-action",
+        label: httpCall.functionName,
+        summary: `${httpCall.functionName} UI action in ${screen.screenCode || basenameLabel(screen.filePath)}`,
+        metadata: makeMetadata({
+          ...actionTags,
+          channels: actionChannels,
+          actions: unique([...actionTags.actions, ...actionHints]),
+          moduleRoles: inferFrontendActionRoles(httpCall.functionName),
+          confidence: 0.76,
+          evidencePaths: [screen.filePath],
+          sourceType: "front-back-graph",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          functionName: httpCall.functionName,
+          screenPath: screen.filePath,
+          screenCode: screen.screenCode ?? null,
+          rawUrl: httpCall.rawUrl,
+          normalizedUrl: httpCall.normalizedUrl,
+          method: httpCall.method ?? null
+        }
+      });
+      upsertEdge({
+        id: `edge:declares:${fileId}:${uiActionId}`,
+        type: "declares",
+        fromId: fileId,
+        toId: uiActionId,
+        label: "screen declares UI action",
+        metadata: makeMetadata({
+          ...actionTags,
+          channels: actionChannels,
+          actions: unique([...actionTags.actions, ...actionHints]),
+          moduleRoles: inferFrontendActionRoles(httpCall.functionName),
+          confidence: 0.8,
+          evidencePaths: [screen.filePath],
+          sourceType: "front-back-graph",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          rawUrl: httpCall.rawUrl,
+          normalizedUrl: httpCall.normalizedUrl
+        }
+      });
+    }
   }
 
   for (const route of options.frontBackGraph?.frontend.routes ?? []) {
@@ -1267,6 +1351,10 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     ]);
     const frontendFileId = `file:frontend:${link.frontend.screenPath}`;
     const routeId = link.frontend.routePath ? `route:${link.frontend.routePath}:${link.frontend.screenPath}` : undefined;
+    const uiActionId = link.api.functionName
+      ? `ui-action:${link.frontend.screenPath}:${slugify(link.api.functionName)}`
+      : undefined;
+    const backendPath = toForwardSlash(link.backend.filePath);
     const apiId = `api:${link.api.normalizedUrl}`;
     upsertEntity({
       id: apiId,
@@ -1328,8 +1416,164 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         }
       });
     }
+    if (uiActionId && entities.has(uiActionId)) {
+      upsertEdge({
+        id: `edge:calls:${uiActionId}:${apiId}`,
+        type: "calls",
+        fromId: uiActionId,
+        toId: apiId,
+        label: "UI action calls API",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          moduleRoles: inferFrontendActionRoles(link.api.functionName),
+          confidence: link.confidence,
+          evidencePaths: [link.frontend.screenPath],
+          sourceType: "front-back-graph",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          source: link.api.source,
+          method: link.api.method ?? null
+        }
+      });
+    }
 
-    const backendPath = toForwardSlash(link.backend.filePath);
+    let gatewayHandlerId: string | undefined;
+    const gatewayControllerMethod = link.gateway.controllerMethod?.trim();
+    if (gatewayControllerMethod) {
+      const gatewayRoute = (options.frontBackGraph?.backend.gatewayRoutes ?? []).find(
+        (entry) =>
+          `${entry.controllerClass}.${entry.controllerMethod}` === gatewayControllerMethod &&
+          (!link.gateway.path || entry.path === link.gateway.path)
+      );
+      gatewayHandlerId = `gateway-handler:${gatewayControllerMethod}`;
+      const gatewayFilePath = gatewayRoute ? toForwardSlash(gatewayRoute.filePath) : undefined;
+      const gatewayModuleName = extractModuleName(gatewayFilePath ?? "dcp-gateway", backendWorkspaceBase);
+      const gatewayModuleId = ensureModule(gatewayModuleName, "front-back-graph", gatewayFilePath ?? "dcp-gateway");
+      if (gatewayFilePath) {
+        const gatewayFileId = `file:backend:${gatewayFilePath}`;
+        upsertEntity({
+          id: gatewayFileId,
+          type: "file",
+          label: basenameLabel(gatewayFilePath),
+          summary: `gateway file ${gatewayFilePath}`,
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            moduleRoles: inferModuleRoles(gatewayModuleName),
+            processRoles: inferProcessRoles(gatewayModuleName),
+            confidence: Math.max(0.74, link.confidence),
+            evidencePaths: [gatewayFilePath],
+            sourceType: "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            path: gatewayFilePath,
+            moduleName: gatewayModuleName
+          }
+        });
+        upsertEdge({
+          id: `edge:contains:${gatewayModuleId}:${gatewayFileId}`,
+          type: "contains",
+          fromId: gatewayModuleId,
+          toId: gatewayFileId,
+          label: "module contains gateway file",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            confidence: Math.max(0.78, link.confidence),
+            evidencePaths: [gatewayFilePath],
+            sourceType: "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+        upsertEntity({
+          id: gatewayHandlerId,
+          type: "gateway-handler",
+          label: gatewayControllerMethod,
+          summary: `${link.gateway.path ?? "/api/**"} gateway handler`,
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            moduleRoles: ["gateway-routing", ...inferModuleRoles(gatewayModuleName)],
+            processRoles: inferProcessRoles(gatewayModuleName),
+            confidence: Math.max(0.78, link.confidence),
+            evidencePaths: [gatewayFilePath],
+            sourceType: "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            path: link.gateway.path ?? null,
+            filePath: gatewayFilePath,
+            controllerMethod: gatewayControllerMethod,
+            controllerClass: gatewayControllerMethod.split(".")[0] ?? gatewayControllerMethod,
+            moduleName: gatewayModuleName
+          }
+        });
+        upsertEdge({
+          id: `edge:declares:${gatewayFileId}:${gatewayHandlerId}`,
+          type: "declares",
+          fromId: gatewayFileId,
+          toId: gatewayHandlerId,
+          label: "gateway file declares gateway handler",
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            confidence: Math.max(0.8, link.confidence),
+            evidencePaths: [gatewayFilePath],
+            sourceType: "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {}
+        });
+      } else {
+        upsertEntity({
+          id: gatewayHandlerId,
+          type: "gateway-handler",
+          label: gatewayControllerMethod,
+          summary: `${link.gateway.path ?? "/api/**"} gateway handler`,
+          metadata: makeMetadata({
+            ...tags,
+            channels,
+            moduleRoles: ["gateway-routing"],
+            confidence: Math.max(0.72, link.confidence),
+            evidencePaths: [],
+            sourceType: "front-back-graph",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            path: link.gateway.path ?? null,
+            filePath: null,
+            controllerMethod: gatewayControllerMethod,
+            controllerClass: gatewayControllerMethod.split(".")[0] ?? gatewayControllerMethod,
+            moduleName: "dcp-gateway"
+          }
+        });
+      }
+
+      upsertEdge({
+        id: `edge:routes-to:${apiId}:${gatewayHandlerId}`,
+        type: "routes-to",
+        fromId: apiId,
+        toId: gatewayHandlerId,
+        label: "API routed through gateway handler",
+        metadata: makeMetadata({
+          ...tags,
+          channels,
+          confidence: link.confidence,
+          evidencePaths: unique([(options.frontBackGraph?.backend.gatewayRoutes ?? [])
+            .find((entry) => `${entry.controllerClass}.${entry.controllerMethod}` === gatewayControllerMethod)?.filePath ?? "", backendPath]),
+          sourceType: "front-back-graph",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          gatewayPath: link.gateway.path ?? null
+        }
+      });
+    }
+
     const backendModuleName = extractModuleName(backendPath, backendWorkspaceBase);
     const backendModuleId = ensureModule(backendModuleName, "front-back-graph", backendPath);
     const backendFileId = `file:backend:${backendPath}`;
@@ -1411,11 +1655,13 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       attributes: {}
     });
     upsertEdge({
-      id: `edge:routes-to:${apiId}:${controllerId}`,
-      type: "routes-to",
-      fromId: apiId,
+      id: gatewayHandlerId
+        ? `edge:proxies-to:${gatewayHandlerId}:${controllerId}`
+        : `edge:routes-to:${apiId}:${controllerId}`,
+      type: gatewayHandlerId ? "proxies-to" : "routes-to",
+      fromId: gatewayHandlerId ?? apiId,
       toId: controllerId,
-      label: "API routed to backend controller",
+      label: gatewayHandlerId ? "gateway handler proxies to backend controller" : "API routed to backend controller",
       metadata: makeMetadata({
         ...tags,
         channels,

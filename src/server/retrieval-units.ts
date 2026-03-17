@@ -302,63 +302,87 @@ export function buildRetrievalUnitSnapshot(options: {
     });
   }
 
-  const routeEdges = knowledgeSchema.edges.filter((edge) => edge.type === "routes-to");
-  for (const routeEdge of routeEdges) {
+  const apiEntryEdges = knowledgeSchema.edges.filter(
+    (edge) => ["routes-to", "calls"].includes(edge.type)
+  );
+  for (const routeEdge of apiEntryEdges) {
     const fromEntity = entitiesById.get(routeEdge.fromId);
     const apiEntity = entitiesById.get(routeEdge.toId);
-    if (!fromEntity || !apiEntity || apiEntity.type !== "api" || !["route", "file"].includes(fromEntity.type)) {
+    if (!fromEntity || !apiEntity || apiEntity.type !== "api" || !["route", "file", "ui-action"].includes(fromEntity.type)) {
       continue;
     }
-    const apiToController = (outgoing.get(apiEntity.id) ?? []).filter((edge) => edge.type === "routes-to");
-    for (const mappingEdge of apiToController) {
-      const controller = entitiesById.get(mappingEdge.toId);
-      if (!controller || controller.type !== "controller") {
+    const apiToGatewayOrController = (outgoing.get(apiEntity.id) ?? []).filter((edge) =>
+      edge.type === "routes-to"
+    );
+    for (const mappingEdge of apiToGatewayOrController) {
+      const mappedNode = entitiesById.get(mappingEdge.toId);
+      if (!mappedNode) {
         continue;
       }
-      const controllerCalls = (outgoing.get(controller.id) ?? []).filter((edge) => edge.type === "calls");
-      const services = controllerCalls.map((edge) => entitiesById.get(edge.toId)).filter(Boolean) as KnowledgeEntity[];
-      const merged = mergeMetadata([
-        fromEntity.metadata,
-        apiEntity.metadata,
-        mappingEdge.metadata,
-        controller.metadata,
-        ...services.map((item) => item.metadata)
-      ]);
-      pushUnit({
-        id: `unit:flow:${fromEntity.id}:${apiEntity.id}:${controller.id}`,
-        type: "flow",
-        title: `${labelForEntity(fromEntity)} -> ${controller.label}`,
-        summary:
-          services.length > 0
-            ? `${labelForEntity(fromEntity)} -> ${apiEntity.label} -> ${controller.label} -> ${services.map((service) => service.label).join(", ")}`
-            : `${labelForEntity(fromEntity)} -> ${apiEntity.label} -> ${controller.label}`,
-        ...merged,
-        confidence: Math.max(merged.confidence, 0.74),
-        validatedStatus: mergeValidatedStatus([
+
+      const gatewayNode = mappedNode.type === "gateway-handler" ? mappedNode : undefined;
+      const proxyEdges = gatewayNode
+        ? (outgoing.get(gatewayNode.id) ?? []).filter((edge) => edge.type === "proxies-to")
+        : [];
+      const controllerEdges =
+        mappedNode.type === "controller"
+          ? [mappingEdge]
+          : proxyEdges;
+
+      for (const controllerEdge of controllerEdges) {
+        const controller = entitiesById.get(controllerEdge.toId);
+        if (!controller || controller.type !== "controller") {
+          continue;
+        }
+        const controllerCalls = (outgoing.get(controller.id) ?? []).filter((edge) => edge.type === "calls");
+        const services = controllerCalls.map((edge) => entitiesById.get(edge.toId)).filter(Boolean) as KnowledgeEntity[];
+        const merged = mergeMetadata([
           fromEntity.metadata,
           apiEntity.metadata,
           mappingEdge.metadata,
+          gatewayNode?.metadata,
           controller.metadata,
           ...services.map((item) => item.metadata)
-        ]),
-        entityIds: ids([fromEntity, apiEntity, controller, ...services]),
-        edgeIds: ids([routeEdge, mappingEdge, ...controllerCalls]),
-        searchText: makeSearchText([
-          fromEntity.label,
-          fromEntity.summary,
-          apiEntity.label,
-          apiEntity.summary,
-          controller.label,
-          ...services.map((service) => service.label),
-          String(fromEntity.attributes.routePath ?? ""),
-          String(apiEntity.attributes.normalizedUrl ?? apiEntity.attributes.rawUrl ?? ""),
-          String(controller.attributes.path ?? ""),
-          ...merged.domains,
-          ...merged.subdomains,
-          ...merged.channels,
-          ...merged.actions
-        ])
-      });
+        ].filter(Boolean) as KnowledgeMetadata[]);
+        pushUnit({
+          id: `unit:flow:${fromEntity.id}:${apiEntity.id}:${controller.id}`,
+          type: "flow",
+          title: `${labelForEntity(fromEntity)} -> ${controller.label}`,
+          summary:
+            services.length > 0
+              ? `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label} -> ${services.map((service) => service.label).join(", ")}`
+              : `${labelForEntity(fromEntity)} -> ${apiEntity.label}${gatewayNode ? ` -> ${gatewayNode.label}` : ""} -> ${controller.label}`,
+          ...merged,
+          confidence: Math.max(merged.confidence, 0.74),
+          validatedStatus: mergeValidatedStatus([
+            fromEntity.metadata,
+            apiEntity.metadata,
+            mappingEdge.metadata,
+            gatewayNode?.metadata,
+            controller.metadata,
+            ...services.map((item) => item.metadata)
+          ].filter(Boolean) as KnowledgeMetadata[]),
+          entityIds: ids([fromEntity, apiEntity, gatewayNode, controller, ...services]),
+          edgeIds: ids([routeEdge, mappingEdge, ...proxyEdges, ...controllerCalls]),
+          searchText: makeSearchText([
+            fromEntity.label,
+            fromEntity.summary,
+            apiEntity.label,
+            apiEntity.summary,
+            gatewayNode?.label,
+            controller.label,
+            ...services.map((service) => service.label),
+            String(fromEntity.attributes.routePath ?? fromEntity.attributes.functionName ?? ""),
+            String(apiEntity.attributes.normalizedUrl ?? apiEntity.attributes.rawUrl ?? ""),
+            String(gatewayNode?.attributes.path ?? ""),
+            String(controller.attributes.path ?? ""),
+            ...merged.domains,
+            ...merged.subdomains,
+            ...merged.channels,
+            ...merged.actions
+          ])
+        });
+      }
     }
   }
 

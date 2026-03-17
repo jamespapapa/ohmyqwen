@@ -278,4 +278,129 @@ describe("ontology projections", () => {
     const markdown = buildOntologyProjectionMarkdown(snapshot);
     expect(markdown).toContain("truncated: yes");
   });
+
+  it("includes ui-action and gateway-handler nodes in front-back projections", () => {
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      knowledgeSchema: {
+        ...knowledgeSchema,
+        entities: [
+          ...knowledgeSchema.entities,
+          {
+            id: "ui-action:src/views/login/MonimoLogin.vue:submitauth",
+            type: "ui-action",
+            label: "submitAuth",
+            summary: "submitAuth UI action",
+            metadata: {
+              domains: ["member-auth"],
+              subdomains: ["embedded-login"],
+              channels: ["monimo"],
+              actions: ["action-auth", "action-register"],
+              moduleRoles: ["ui-submit"],
+              processRoles: [],
+              confidence: 0.84,
+              evidencePaths: ["src/views/login/MonimoLogin.vue"],
+              sourceType: "front-back-graph",
+              validatedStatus: "derived"
+            },
+            attributes: { functionName: "submitAuth" }
+          },
+          {
+            id: "gateway-handler:RouteController.route",
+            type: "gateway-handler",
+            label: "RouteController.route",
+            summary: "/api/** gateway handler",
+            metadata: {
+              domains: ["member-auth"],
+              subdomains: ["embedded-login"],
+              channels: ["monimo"],
+              actions: ["action-auth", "action-register"],
+              moduleRoles: ["gateway-routing"],
+              processRoles: [],
+              confidence: 0.86,
+              evidencePaths: ["dcp-gateway/src/main/java/com/example/RouteController.java"],
+              sourceType: "front-back-graph",
+              validatedStatus: "derived"
+            },
+            attributes: { path: "/api/**" }
+          }
+        ],
+        edges: [
+          ...knowledgeSchema.edges,
+          {
+            id: "edge:ui-action-api",
+            type: "calls",
+            fromId: "ui-action:src/views/login/MonimoLogin.vue:submitauth",
+            toId: "api:/monimo/jellyPayRes",
+            label: "ui action calls api",
+            metadata: {
+              domains: ["member-auth"],
+              subdomains: ["embedded-login"],
+              channels: ["monimo"],
+              actions: ["action-auth", "action-register"],
+              moduleRoles: ["ui-submit"],
+              processRoles: [],
+              confidence: 0.84,
+              evidencePaths: ["src/views/login/MonimoLogin.vue"],
+              sourceType: "front-back-graph",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          },
+          {
+            id: "edge:api-gateway",
+            type: "routes-to",
+            fromId: "api:/monimo/jellyPayRes",
+            toId: "gateway-handler:RouteController.route",
+            label: "api routed to gateway",
+            metadata: {
+              domains: ["member-auth"],
+              subdomains: ["embedded-login"],
+              channels: ["monimo"],
+              actions: ["action-auth", "action-register"],
+              moduleRoles: ["gateway-routing"],
+              processRoles: [],
+              confidence: 0.85,
+              evidencePaths: ["dcp-gateway/src/main/java/com/example/RouteController.java"],
+              sourceType: "front-back-graph",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          },
+          {
+            id: "edge:gateway-controller",
+            type: "proxies-to",
+            fromId: "gateway-handler:RouteController.route",
+            toId: "controller:MonimoAsyncController.jellyPayRes",
+            label: "gateway proxies to controller",
+            metadata: {
+              domains: ["member-auth"],
+              subdomains: ["embedded-login"],
+              channels: ["monimo"],
+              actions: ["action-auth", "action-register"],
+              moduleRoles: ["gateway-routing"],
+              processRoles: [],
+              confidence: 0.85,
+              evidencePaths: ["dcp-gateway/src/main/java/com/example/RouteController.java"],
+              sourceType: "front-back-graph",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          }
+        ]
+      },
+      retrievalUnits
+    });
+    const snapshot = buildOntologyProjectionSnapshot({ ontologyGraph });
+    const frontBack = snapshot.projections.find((projection) => projection.type === "front-back-flow");
+
+    expect(frontBack?.nodeIds).toEqual(
+      expect.arrayContaining([
+        "ui-action:src/views/login/MonimoLogin.vue:submitauth",
+        "gateway-handler:RouteController.route"
+      ])
+    );
+    expect(frontBack?.edgeIds).toEqual(
+      expect.arrayContaining(["edge:ui-action-api", "edge:api-gateway", "edge:gateway-controller"])
+    );
+  });
 });

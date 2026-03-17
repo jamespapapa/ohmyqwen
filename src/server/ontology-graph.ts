@@ -25,8 +25,10 @@ const OntologyNodeTypeSchema = z.enum([
   "module",
   "file",
   "symbol",
+  "ui-action",
   "route",
   "api",
+  "gateway-handler",
   "controller",
   "service",
   "eai-interface",
@@ -49,6 +51,7 @@ const OntologyEdgeTypeSchema = z.enum([
   "contains",
   "declares",
   "calls",
+  "proxies-to",
   "routes-to",
   "maps-to",
   "uses-eai",
@@ -256,7 +259,9 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
     case "module":
       return 120;
     case "route":
+    case "ui-action":
     case "api":
+    case "gateway-handler":
     case "controller":
     case "service":
     case "eai-interface":
@@ -281,6 +286,7 @@ function knowledgeEntityPriority(entity: KnowledgeEntity): number {
 function knowledgeEdgePriority(edge: KnowledgeEdge): number {
   switch (edge.type) {
     case "routes-to":
+    case "proxies-to":
     case "calls":
     case "uses-eai":
     case "uses-store":

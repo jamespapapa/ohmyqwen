@@ -71,6 +71,28 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { routePath: "/mo/login/monimo/MDP-MYCER999999M" }
     },
     {
+      id: "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+      type: "ui-action",
+      label: "requestMonimoAuth",
+      summary: "requestMonimoAuth UI action in MDP-MYCER999999M",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["ui-submit"],
+        processRoles: [],
+        confidence: 0.82,
+        evidencePaths: ["src/views/login/MDP-MYCER999999M.vue"],
+        sourceType: "front-back-graph",
+        validatedStatus: "derived"
+      },
+      attributes: {
+        functionName: "requestMonimoAuth",
+        screenPath: "src/views/login/MDP-MYCER999999M.vue"
+      }
+    },
+    {
       id: "api:/member/monimo/registe",
       type: "api",
       label: "/gw/api/member/monimo/registe",
@@ -88,6 +110,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
         validatedStatus: "derived"
       },
       attributes: { normalizedUrl: "/member/monimo/registe", rawUrl: "/gw/api/member/monimo/registe" }
+    },
+    {
+      id: "gateway-handler:RouteController.route",
+      type: "gateway-handler",
+      label: "RouteController.route",
+      summary: "/api/** gateway handler",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["gateway-routing"],
+        processRoles: [],
+        confidence: 0.86,
+        evidencePaths: ["dcp-gateway/src/main/java/com/example/RouteController.java"],
+        sourceType: "front-back-graph",
+        validatedStatus: "derived"
+      },
+      attributes: { path: "/api/**", controllerMethod: "RouteController.route" }
     },
     {
       id: "controller:RegisteUseDcpChnelController.registe",
@@ -322,6 +363,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:declares:file:frontend:src/views/login/MDP-MYCER999999M.vue:ui-action",
+      type: "declares",
+      fromId: "file:frontend:src/views/login/MDP-MYCER999999M.vue",
+      toId: "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+      label: "screen declares ui action",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["ui-submit"],
+        processRoles: [],
+        confidence: 0.84,
+        evidencePaths: ["src/views/login/MDP-MYCER999999M.vue"],
+        sourceType: "front-back-graph",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:routes-to:route:api",
       type: "routes-to",
       fromId: "route:/mo/login/monimo/MDP-MYCER999999M:src/views/login/MDP-MYCER999999M.vue",
@@ -342,20 +403,63 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
-      id: "edge:routes-to:api:controller",
-      type: "routes-to",
-      fromId: "api:/member/monimo/registe",
-      toId: "controller:RegisteUseDcpChnelController.registe",
-      label: "api routed to controller",
+      id: "edge:calls:ui-action:api",
+      type: "calls",
+      fromId: "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+      toId: "api:/member/monimo/registe",
+      label: "ui action calls api",
       metadata: {
         domains: ["member-auth"],
         subdomains: ["embedded-login"],
         channels: ["monimo"],
-        actions: ["action-check"],
-        moduleRoles: [],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["ui-submit"],
         processRoles: [],
         confidence: 0.9,
-        evidencePaths: ["dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"],
+        evidencePaths: ["src/views/login/MDP-MYCER999999M.vue"],
+        sourceType: "front-back-graph",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:routes-to:api:gateway",
+      type: "routes-to",
+      fromId: "api:/member/monimo/registe",
+      toId: "gateway-handler:RouteController.route",
+      label: "api routed through gateway",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["gateway-routing"],
+        processRoles: [],
+        confidence: 0.88,
+        evidencePaths: ["dcp-gateway/src/main/java/com/example/RouteController.java"],
+        sourceType: "front-back-graph",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
+      id: "edge:routes-to:api:controller",
+      type: "proxies-to",
+      fromId: "gateway-handler:RouteController.route",
+      toId: "controller:RegisteUseDcpChnelController.registe",
+      label: "gateway proxies to controller",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-register"],
+        moduleRoles: ["gateway-routing"],
+        processRoles: [],
+        confidence: 0.9,
+        evidencePaths: [
+          "dcp-gateway/src/main/java/com/example/RouteController.java",
+          "dcp-member/src/main/java/com/example/RegisteUseDcpChnelController.java"
+        ],
         sourceType: "front-back-graph",
         validatedStatus: "derived"
       },
@@ -597,6 +701,19 @@ describe("retrieval unit standardization", () => {
     const flowUnit = units.units.find((unit) => unit.type === "flow");
     expect(flowUnit?.title).toContain("MDP-MYCER999999M");
     expect(flowUnit?.searchText).toContain("/member/monimo/registe");
+    const uiActionFlowUnit = units.units.find(
+      (unit) =>
+        unit.type === "flow" &&
+        unit.entityIds.includes("ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth")
+    );
+    expect(uiActionFlowUnit?.searchText).toContain("requestMonimoAuth");
+    expect(uiActionFlowUnit?.searchText).toContain("RouteController.route");
+    expect(uiActionFlowUnit?.entityIds).toEqual(
+      expect.arrayContaining([
+        "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
+        "gateway-handler:RouteController.route"
+      ])
+    );
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");
