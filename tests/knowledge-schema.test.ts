@@ -1096,7 +1096,7 @@ describe("knowledge schema foundation", () => {
             packageName: "demo",
             summary: "loan controller",
             classes: [{ name: "LoanController", line: 1 }],
-            methods: [{ name: "apply", line: 10, className: "LoanController" }],
+            methods: [{ name: "apply", line: 10, className: "LoanController", calls: ["LoanService.apply"] }],
             functions: [],
             calls: ["LoanService.apply"],
             imports: ["demo.BaseController", "demo.ClaimFlow", "demo.LoanService"],
@@ -1188,6 +1188,14 @@ describe("knowledge schema foundation", () => {
         (edge) =>
           edge.type === "calls" &&
           edge.fromId === "file:backend:dcp-loan/src/main/java/demo/LoanController.java" &&
+          edge.toId === "symbol:method:LoanService.apply:dcp-core/src/main/java/demo/LoanService.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "calls" &&
+          edge.fromId === "symbol:method:LoanController.apply:dcp-loan/src/main/java/demo/LoanController.java" &&
           edge.toId === "symbol:method:LoanService.apply:dcp-core/src/main/java/demo/LoanService.java"
       )
     ).toBe(true);

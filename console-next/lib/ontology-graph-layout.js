@@ -191,9 +191,101 @@ function buildPathLayout(nodes, edges, representativePaths, selectedPathId) {
   };
 }
 
+function buildComponentLayout(nodes, edges) {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    return { width: 1280, height: 720, positions: {}, lanes: [], mode: "component", spineNodeIds: [], pathNodeIds: new Set() };
+  }
+
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const adjacency = new Map();
+  const degree = new Map();
+  for (const node of nodes) {
+    adjacency.set(node.id, []);
+    degree.set(node.id, 0);
+  }
+  for (const edge of edges || []) {
+    if (!nodeById.has(edge.fromId) || !nodeById.has(edge.toId)) continue;
+    adjacency.get(edge.fromId).push(edge.toId);
+    adjacency.get(edge.toId).push(edge.fromId);
+    degree.set(edge.fromId, (degree.get(edge.fromId) || 0) + 1);
+    degree.set(edge.toId, (degree.get(edge.toId) || 0) + 1);
+  }
+
+  const root = [...nodes].sort((a, b) => {
+    const aScore = Number(a?.isHighlighted ? 100 : 0) + (degree.get(a.id) || 0) * 4 + Number(a?.confidence || 0) * 10;
+    const bScore = Number(b?.isHighlighted ? 100 : 0) + (degree.get(b.id) || 0) * 4 + Number(b?.confidence || 0) * 10;
+    if (bScore !== aScore) return bScore - aScore;
+    return String(a?.label || "").localeCompare(String(b?.label || ""));
+  })[0];
+
+  const levels = new Map();
+  const queue = root ? [root.id] : [];
+  if (root) levels.set(root.id, 0);
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    const currentLevel = levels.get(currentId) || 0;
+    for (const nextId of adjacency.get(currentId) || []) {
+      if (levels.has(nextId)) continue;
+      levels.set(nextId, currentLevel + 1);
+      queue.push(nextId);
+    }
+  }
+  for (const node of nodes) {
+    if (!levels.has(node.id)) {
+      levels.set(node.id, Math.max(...Array.from(levels.values()), 0) + 1);
+    }
+  }
+
+  const levelBuckets = new Map();
+  for (const node of nodes) {
+    const level = levels.get(node.id) || 0;
+    if (!levelBuckets.has(level)) levelBuckets.set(level, []);
+    levelBuckets.get(level).push(node);
+  }
+  for (const bucket of levelBuckets.values()) {
+    bucket.sort((a, b) => {
+      const laneDiff = ontologyLaneKey(a.type).localeCompare(ontologyLaneKey(b.type));
+      if (laneDiff !== 0) return laneDiff;
+      const degreeDiff = (degree.get(b.id) || 0) - (degree.get(a.id) || 0);
+      if (degreeDiff !== 0) return degreeDiff;
+      return compareNodePriority(a, b);
+    });
+  }
+
+  const orderedLevels = Array.from(levelBuckets.keys()).sort((a, b) => a - b);
+  const maxLevelSize = Math.max(...orderedLevels.map((level) => (levelBuckets.get(level) || []).length), 1);
+  const horizontalGap = 260;
+  const verticalGap = 104;
+  const width = Math.max(1440, 240 + orderedLevels.length * horizontalGap);
+  const height = Math.max(920, 200 + maxLevelSize * verticalGap);
+  const positions = {};
+  orderedLevels.forEach((level) => {
+    const bucket = levelBuckets.get(level) || [];
+    const x = 140 + level * horizontalGap;
+    const contentHeight = Math.max(0, (bucket.length - 1) * verticalGap);
+    const startY = 120 + Math.max(0, Math.floor((height - 240 - contentHeight) / 2));
+    bucket.forEach((node, index) => {
+      positions[node.id] = { x, y: startY + index * verticalGap, lane: ontologyLaneKey(node.type) };
+    });
+  });
+
+  return {
+    width,
+    height,
+    positions,
+    lanes: [],
+    mode: "component",
+    spineNodeIds: root ? [root.id] : [],
+    pathNodeIds: new Set(root ? [root.id] : [])
+  };
+}
+
 export function buildOntologySvgLayout({ nodes, edges, representativePaths, selectedPathId, focusMode }) {
   if (focusMode === "path") {
     return buildPathLayout(nodes || [], edges || [], representativePaths || [], selectedPathId || "");
+  }
+  if (focusMode === "component") {
+    return buildComponentLayout(nodes || [], edges || []);
   }
   return buildProjectionLayout(nodes || []);
 }
@@ -202,6 +294,14 @@ export function buildOntologyEdgePath(edge, layout) {
   const from = layout?.positions?.[edge?.fromId];
   const to = layout?.positions?.[edge?.toId];
   if (!from || !to) return "";
+
+  if (layout?.mode === "component") {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const midX = from.x + dx / 2;
+    const ctrlY = from.y + dy / 2 + (dy >= 0 ? -32 : 32);
+    return `M ${from.x} ${from.y} Q ${midX} ${ctrlY} ${to.x} ${to.y}`;
+  }
 
   if (layout?.mode !== "path") {
     return `M ${from.x} ${from.y} L ${to.x} ${to.y}`;

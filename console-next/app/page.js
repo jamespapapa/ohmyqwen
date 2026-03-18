@@ -577,6 +577,7 @@ export default function HomePage() {
   const [ontologySearchInput, setOntologySearchInput] = useState("");
   const [ontologyAppliedSearch, setOntologyAppliedSearch] = useState("");
   const [ontologySelectedPathId, setOntologySelectedPathId] = useState("");
+  const [ontologySelectedComponentId, setOntologySelectedComponentId] = useState("");
   const [ontologySelectedNodeId, setOntologySelectedNodeId] = useState("");
   const [askQuestion, setAskQuestion] = useState("");
   const [askMaxAttempts, setAskMaxAttempts] = useState(3);
@@ -1315,11 +1316,13 @@ export default function HomePage() {
       const nodeType = options.nodeType ?? ontologyNodeTypeFilter;
       const focusMode = options.focusMode ?? ontologyFocusMode;
       const selectedPathId = options.selectedPathId ?? ontologySelectedPathId;
+      const selectedComponentId = options.selectedComponentId ?? ontologySelectedComponentId;
       const search = options.search ?? ontologyAppliedSearch;
       if (projectionId) query.set("projectionId", projectionId);
       if (nodeType && nodeType !== "all") query.set("nodeType", nodeType);
       if (focusMode) query.set("focusMode", focusMode);
       if (selectedPathId) query.set("selectedPathId", selectedPathId);
+      if (selectedComponentId) query.set("selectedComponentId", selectedComponentId);
       if (search && String(search).trim()) query.set("search", String(search).trim());
       query.set("nodeLimit", String(options.nodeLimit ?? 72));
       query.set("edgeLimit", String(options.edgeLimit ?? 160));
@@ -1329,6 +1332,7 @@ export default function HomePage() {
       setOntologyProjectionId(response?.ontology?.filters?.selectedProjectionId || projectionId || "projection:front-back-flow");
       setOntologyFocusMode(response?.ontology?.filters?.focusMode || focusMode || "path");
       setOntologySelectedPathId(response?.ontology?.filters?.selectedPathId || "");
+      setOntologySelectedComponentId(response?.ontology?.filters?.selectedComponentId || "");
       setOntologySelectedNodeId((current) => {
         const nodes = response?.ontology?.selectedProjection?.nodes || [];
         if (current && nodes.some((node) => node.id === current)) {
@@ -2009,12 +2013,14 @@ export default function HomePage() {
               const value = e.target.value;
               setOntologyProjectionId(value);
               setOntologySelectedPathId("");
+              setOntologySelectedComponentId("");
               setOntologySelectedNodeId("");
               void loadOntologyView(selectedProjectId, {
                 projectionId: value,
                 nodeType: ontologyNodeTypeFilter,
                 focusMode: ontologyFocusMode,
                 selectedPathId: "",
+                selectedComponentId: "",
                 search: ontologyAppliedSearch
               });
             }}
@@ -2040,6 +2046,7 @@ export default function HomePage() {
                 nodeType: value,
                 focusMode: ontologyFocusMode,
                 selectedPathId: ontologySelectedPathId,
+                selectedComponentId: ontologySelectedComponentId,
                 search: ontologyAppliedSearch
               });
             }}
@@ -2060,11 +2067,15 @@ export default function HomePage() {
               if (value !== "path") {
                 setOntologySelectedPathId("");
               }
+              if (value !== "component") {
+                setOntologySelectedComponentId("");
+              }
               void loadOntologyView(selectedProjectId, {
                 projectionId: ontologyProjectionId,
                 nodeType: ontologyNodeTypeFilter,
                 focusMode: value,
                 selectedPathId: value === "path" ? ontologySelectedPathId : "",
+                selectedComponentId: value === "component" ? ontologySelectedComponentId : "",
                 search: ontologyAppliedSearch
               });
             }}
@@ -2072,6 +2083,7 @@ export default function HomePage() {
             style={{ minWidth: 170 }}
           >
             <option value="path">대표 path 중심</option>
+            <option value="component">구조 컴포넌트 중심</option>
             <option value="projection">전체 projection</option>
           </select>
           <input
@@ -2091,6 +2103,7 @@ export default function HomePage() {
                 nodeType: ontologyNodeTypeFilter,
                 focusMode: ontologyFocusMode,
                 selectedPathId: ontologySelectedPathId,
+                selectedComponentId: ontologySelectedComponentId,
                 search: ontologySearchInput.trim()
               });
             }}
@@ -2111,6 +2124,7 @@ export default function HomePage() {
                 nodeType: "all",
                 focusMode: ontologyFocusMode,
                 selectedPathId: ontologyFocusMode === "path" ? ontologySelectedPathId : "",
+                selectedComponentId: ontologyFocusMode === "component" ? ontologySelectedComponentId : "",
                 search: ""
               });
             }}
@@ -2126,6 +2140,7 @@ export default function HomePage() {
               nodeType: ontologyNodeTypeFilter,
               focusMode: ontologyFocusMode,
               selectedPathId: ontologySelectedPathId,
+              selectedComponentId: ontologySelectedComponentId,
               search: ontologyAppliedSearch
             })}
             disabled={!selectedProjectId || ontologyViewLoading}
@@ -2309,12 +2324,14 @@ export default function HomePage() {
                           onClick={() => {
                             setOntologyFocusMode("path");
                             setOntologySelectedPathId(path.id);
+                            setOntologySelectedComponentId("");
                             setOntologySelectedNodeId(path.nodeIds[0] || "");
                             void loadOntologyView(selectedProjectId, {
                               projectionId: ontologyProjectionId,
                               nodeType: ontologyNodeTypeFilter,
                               focusMode: "path",
                               selectedPathId: path.id,
+                              selectedComponentId: "",
                               search: ontologyAppliedSearch
                             });
                           }}
@@ -2330,6 +2347,49 @@ export default function HomePage() {
                         >
                           <span>{shortText(path.label, 48)}</span>
                           <span>{path.nodeIds.length}</span>
+                        </button>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+
+              <div className="status-box" style={{ minHeight: 220 }}>
+                <div className="k">Components</div>
+                <ul className="artifacts" style={{ maxHeight: 210, marginTop: 8 }}>
+                  {(ontologySelectedProjection?.components || []).length === 0 ? (
+                    <li><span>component 없음</span><span>-</span></li>
+                  ) : (
+                    ontologySelectedProjection.components.map((component) => (
+                      <li key={component.id} title={component.label}>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => {
+                            setOntologyFocusMode("component");
+                            setOntologySelectedComponentId(component.id);
+                            setOntologySelectedNodeId("");
+                            void loadOntologyView(selectedProjectId, {
+                              projectionId: ontologyProjectionId,
+                              nodeType: ontologyNodeTypeFilter,
+                              focusMode: "component",
+                              selectedPathId: "",
+                              selectedComponentId: component.id,
+                              search: ontologyAppliedSearch
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            justifyContent: "space-between",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            textAlign: "left",
+                            background: ontologySelectedComponentId === component.id ? "rgba(14,165,233,0.12)" : undefined,
+                            borderColor: ontologySelectedComponentId === component.id ? "#0ea5e9" : undefined
+                          }}
+                        >
+                          <span>{shortText(component.label, 48)}</span>
+                          <span>{component.nodeCount}/{component.edgeCount}</span>
                         </button>
                       </li>
                     ))

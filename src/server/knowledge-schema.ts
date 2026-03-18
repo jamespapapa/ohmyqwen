@@ -136,6 +136,7 @@ interface StructureSymbolLike {
   name: string;
   line: number;
   className?: string;
+  calls?: string[];
 }
 
 interface StructureFileEntryLike {
@@ -1085,6 +1086,11 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     filePath: string;
     moduleId: string;
     moduleName: string;
+    callNames: string[];
+  }> = [];
+  const pendingMethodCallRelations: Array<{
+    symbolId: string;
+    filePath: string;
     callNames: string[];
   }> = [];
 
@@ -2122,6 +2128,14 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         });
       }
 
+      if ((methodRef.calls ?? []).length > 0) {
+        pendingMethodCallRelations.push({
+          symbolId,
+          filePath: normalizedPath,
+          callNames: unique(methodRef.calls ?? [])
+        });
+      }
+
       if ((resourceHints.redisOps ?? []).length > 0 && /(redis|getredis|setredis|session)/i.test(methodRef.name)) {
         const redisStoreId = ensureDataStore("redis", normalizedPath);
         upsertEdge({
@@ -2499,6 +2513,70 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
               actions: inferActionsFromTexts(callName, relation.filePath, targetPath, "structural call dependency"),
               moduleRoles: ["code-structure"],
               confidence: 0.7,
+              evidencePaths: unique([relation.filePath, targetPath].filter(Boolean) as string[]),
+              sourceType: "derived",
+              validatedStatus: "derived"
+            }),
+            attributes: {
+              callName,
+              dependencyKind: "call"
+            }
+          });
+        }
+      }
+    }
+  }
+
+  for (const relation of pendingMethodCallRelations) {
+    for (const callName of relation.callNames.slice(0, 48)) {
+      const targets = resolveStructureCallTargets({
+        callValue: callName,
+        sourcePath: relation.filePath,
+        methodSymbolMap,
+        methodSymbolIdsByName,
+        classSymbolIdsByName,
+        classFilePathsByName,
+        fileIdByPath
+      });
+      for (const target of targets) {
+        if (!target.targetId || target.targetId === relation.symbolId) {
+          continue;
+        }
+        const targetPath =
+          target.targetKind === "file"
+            ? target.targetPath
+            : symbolPathById.get(target.targetId);
+        const targetFileId = targetPath ? fileIdByPath.get(targetPath) : undefined;
+        upsertEdge({
+          id: `edge:calls:${relation.symbolId}:${target.targetId}:call:${slugify(callName)}`,
+          type: "calls",
+          fromId: relation.symbolId,
+          toId: target.targetId,
+          label: target.targetKind === "symbol" ? "symbol calls symbol" : "symbol depends on called file",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(callName, relation.filePath, targetPath, "method call"),
+            moduleRoles: ["code-structure"],
+            confidence: target.targetKind === "symbol" ? 0.76 : 0.68,
+            evidencePaths: unique([relation.filePath, targetPath].filter(Boolean) as string[]),
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            callName,
+            targetKind: target.targetKind
+          }
+        });
+        if (targetFileId && targetFileId !== relation.symbolId) {
+          upsertEdge({
+            id: `edge:depends-on:${relation.symbolId}:${targetFileId}:call:${slugify(callName)}`,
+            type: "depends-on",
+            fromId: relation.symbolId,
+            toId: targetFileId,
+            label: "symbol depends on called file",
+            metadata: makeMetadata({
+              actions: inferActionsFromTexts(callName, relation.filePath, targetPath, "method call dependency"),
+              moduleRoles: ["code-structure"],
+              confidence: 0.72,
               evidencePaths: unique([relation.filePath, targetPath].filter(Boolean) as string[]),
               sourceType: "derived",
               validatedStatus: "derived"

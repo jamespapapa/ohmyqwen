@@ -759,6 +759,7 @@ interface StructureSymbolRef {
   name: string;
   line: number;
   className?: string;
+  calls?: string[];
 }
 
 interface StructureResourceHints {
@@ -2005,6 +2006,43 @@ function uniqueStructureHints(items: string[]): string[] {
 
 function normalizeInjectedType(raw: string): string {
   return raw.replace(/<[^>]+>/g, "").replace(/\[\]/g, "").trim();
+}
+
+function collectCallTargets(line: string, calls: Set<string>, excludeNames: Iterable<string> = []): void {
+  const excluded = new Set(
+    Array.from(excludeNames)
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  );
+
+  for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const owner = match[1]?.trim();
+    const target = match[2]?.trim();
+    if (!target || CALL_KEYWORDS.has(target) || excluded.has(target)) {
+      continue;
+    }
+    calls.add(target);
+    if (owner) {
+      calls.add(`${owner}.${target}`);
+    }
+  }
+
+  for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const target = match[1]?.trim();
+    if (!target || CALL_KEYWORDS.has(target) || excluded.has(target)) {
+      continue;
+    }
+    calls.add(target);
+  }
+}
+
+function braceDelta(line: string): number {
+  let delta = 0;
+  for (const ch of line) {
+    if (ch === "{") delta += 1;
+    else if (ch === "}") delta -= 1;
+  }
+  return delta;
 }
 
 function extractTypeNameCandidates(raw: string): string[] {
@@ -4842,6 +4880,12 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
   const implementsNames = new Set<string>();
   let packageName: string | undefined;
   let primaryClass: string | undefined;
+  let activeMethod:
+    | {
+        ref: StructureSymbolRef;
+        braceDepth: number;
+      }
+    | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
@@ -4889,31 +4933,37 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
       /^\s*(?:public|protected|private|static|final|native|synchronized|abstract|default|\s)+(?:<[^>]+>\s*)?(?:[A-Za-z_][A-Za-z0-9_<>\[\],.?& ]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}()]*\)\s*(?:throws [^{]+)?\{/
     );
     if (methodMatch?.[1] && !CALL_KEYWORDS.has(methodMatch[1])) {
-      methods.push({
+      const methodRef: StructureSymbolRef = {
         name: methodMatch[1].trim(),
         line: index + 1,
-        className: primaryClass
-      });
+        className: primaryClass,
+        calls: []
+      };
+      methods.push(methodRef);
+      activeMethod = {
+        ref: methodRef,
+        braceDepth: Math.max(0, braceDelta(line))
+      };
+      collectCallTargets(line, calls, [methodRef.name]);
+      const methodCalls = new Set<string>();
+      collectCallTargets(line, methodCalls, [methodRef.name]);
+      methodRef.calls = Array.from(methodCalls).slice(0, 80);
+      if ((activeMethod.braceDepth ?? 0) <= 0) {
+        activeMethod = undefined;
+      }
+      continue;
     }
 
-    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      const target = match[2]?.trim();
-      const owner = match[1]?.trim();
-      if (!target || CALL_KEYWORDS.has(target)) {
-        continue;
-      }
-      calls.add(target);
-      if (owner) {
-        calls.add(`${owner}.${target}`);
-      }
-    }
+    collectCallTargets(line, calls);
 
-    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      const target = match[1]?.trim();
-      if (!target || CALL_KEYWORDS.has(target)) {
-        continue;
+    if (activeMethod) {
+      const methodCalls = new Set(activeMethod.ref.calls ?? []);
+      collectCallTargets(line, methodCalls);
+      activeMethod.ref.calls = Array.from(methodCalls).slice(0, 80);
+      activeMethod.braceDepth += braceDelta(line);
+      if (activeMethod.braceDepth <= 0) {
+        activeMethod = undefined;
       }
-      calls.add(target);
     }
   }
 
@@ -4939,6 +4989,12 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
   const imports = new Set<string>();
   const extendsNames = new Set<string>();
   let primaryClass: string | undefined;
+  let activeSymbol:
+    | {
+        ref: StructureSymbolRef;
+        braceDepth: number;
+      }
+    | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
@@ -4976,61 +5032,109 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
       /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/
     );
     if (functionMatch?.[1] && !CALL_KEYWORDS.has(functionMatch[1])) {
-      functions.push({
+      const functionRef: StructureSymbolRef = {
         name: functionMatch[1].trim(),
-        line: index + 1
-      });
+        line: index + 1,
+        calls: []
+      };
+      functions.push(functionRef);
+      activeSymbol = {
+        ref: functionRef,
+        braceDepth: Math.max(0, braceDelta(line))
+      };
+      collectCallTargets(line, calls, [functionRef.name]);
+      const functionCalls = new Set<string>();
+      collectCallTargets(line, functionCalls, [functionRef.name]);
+      functionRef.calls = Array.from(functionCalls).slice(0, 80);
+      if ((activeSymbol.braceDepth ?? 0) <= 0) {
+        activeSymbol = undefined;
+      }
+      continue;
     }
 
     const prototypeMethodMatch = line.match(
       /^\s*[A-Za-z_$][A-Za-z0-9_$.]*\.prototype\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*function\b/
     );
     if (prototypeMethodMatch?.[1] && !CALL_KEYWORDS.has(prototypeMethodMatch[1])) {
-      methods.push({
+      const methodRef: StructureSymbolRef = {
         name: prototypeMethodMatch[1].trim(),
         line: index + 1,
-        className: primaryClass
-      });
+        className: primaryClass,
+        calls: []
+      };
+      methods.push(methodRef);
+      activeSymbol = {
+        ref: methodRef,
+        braceDepth: Math.max(0, braceDelta(line))
+      };
+      collectCallTargets(line, calls, [methodRef.name]);
+      const methodCalls = new Set<string>();
+      collectCallTargets(line, methodCalls, [methodRef.name]);
+      methodRef.calls = Array.from(methodCalls).slice(0, 80);
+      if ((activeSymbol.braceDepth ?? 0) <= 0) {
+        activeSymbol = undefined;
+      }
+      continue;
     }
 
     const assignedFunctionMatch = line.match(
       /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?function\b/
     );
     if (assignedFunctionMatch?.[1] && !CALL_KEYWORDS.has(assignedFunctionMatch[1])) {
-      functions.push({
+      const functionRef: StructureSymbolRef = {
         name: assignedFunctionMatch[1].trim(),
-        line: index + 1
-      });
+        line: index + 1,
+        calls: []
+      };
+      functions.push(functionRef);
+      activeSymbol = {
+        ref: functionRef,
+        braceDepth: Math.max(0, braceDelta(line))
+      };
+      collectCallTargets(line, calls, [functionRef.name]);
+      const functionCalls = new Set<string>();
+      collectCallTargets(line, functionCalls, [functionRef.name]);
+      functionRef.calls = Array.from(functionCalls).slice(0, 80);
+      if ((activeSymbol.braceDepth ?? 0) <= 0) {
+        activeSymbol = undefined;
+      }
+      continue;
     }
 
     const arrowFunctionMatch = line.match(
       /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z_][A-Za-z0-9_]*)\s*=>/
     );
     if (arrowFunctionMatch?.[1] && !CALL_KEYWORDS.has(arrowFunctionMatch[1])) {
-      functions.push({
+      const functionRef: StructureSymbolRef = {
         name: arrowFunctionMatch[1].trim(),
-        line: index + 1
-      });
+        line: index + 1,
+        calls: []
+      };
+      functions.push(functionRef);
+      activeSymbol = {
+        ref: functionRef,
+        braceDepth: Math.max(0, braceDelta(line))
+      };
+      collectCallTargets(line, calls, [functionRef.name]);
+      const functionCalls = new Set<string>();
+      collectCallTargets(line, functionCalls, [functionRef.name]);
+      functionRef.calls = Array.from(functionCalls).slice(0, 80);
+      if ((activeSymbol.braceDepth ?? 0) <= 0) {
+        activeSymbol = undefined;
+      }
+      continue;
     }
 
-    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      const target = match[2]?.trim();
-      const owner = match[1]?.trim();
-      if (!target || CALL_KEYWORDS.has(target)) {
-        continue;
-      }
-      calls.add(target);
-      if (owner) {
-        calls.add(`${owner}.${target}`);
-      }
-    }
+    collectCallTargets(line, calls);
 
-    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      const target = match[1]?.trim();
-      if (!target || CALL_KEYWORDS.has(target)) {
-        continue;
+    if (activeSymbol) {
+      const symbolCalls = new Set(activeSymbol.ref.calls ?? []);
+      collectCallTargets(line, symbolCalls);
+      activeSymbol.ref.calls = Array.from(symbolCalls).slice(0, 80);
+      activeSymbol.braceDepth += braceDelta(line);
+      if (activeSymbol.braceDepth <= 0) {
+        activeSymbol = undefined;
       }
-      calls.add(target);
     }
   }
 
@@ -5052,6 +5156,12 @@ function parseStructureFromGenericCodeFile(content: string): Omit<StructureFileE
   const functions: StructureSymbolRef[] = [];
   const calls = new Set<string>();
   const imports = new Set<string>();
+  let activeFunction:
+    | {
+        ref: StructureSymbolRef;
+        indent: number;
+      }
+    | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
@@ -5080,18 +5190,37 @@ function parseStructureFromGenericCodeFile(content: string): Omit<StructureFileE
 
     const functionMatch = line.match(/^\s*(?:def|fn)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[\(<]/);
     if (functionMatch?.[1] && !CALL_KEYWORDS.has(functionMatch[1])) {
-      functions.push({
+      const functionRef: StructureSymbolRef = {
         name: functionMatch[1].trim(),
-        line: index + 1
-      });
+        line: index + 1,
+        calls: []
+      };
+      functions.push(functionRef);
+      activeFunction = {
+        ref: functionRef,
+        indent: line.search(/\S|$/)
+      };
+      collectCallTargets(line, calls, [functionRef.name]);
+      const functionCalls = new Set<string>();
+      collectCallTargets(line, functionCalls, [functionRef.name]);
+      functionRef.calls = Array.from(functionCalls).slice(0, 80);
+      continue;
     }
 
-    for (const match of line.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
-      const target = match[1]?.trim();
-      if (!target || CALL_KEYWORDS.has(target)) {
+    collectCallTargets(line, calls);
+    if (activeFunction) {
+      const currentIndent = line.search(/\S|$/);
+      if (line.trim() && currentIndent <= activeFunction.indent) {
+        activeFunction = undefined;
+      }
+    }
+    if (activeFunction) {
+      const functionCalls = new Set(activeFunction.ref.calls ?? []);
+      collectCallTargets(line, functionCalls);
+      activeFunction.ref.calls = Array.from(functionCalls).slice(0, 80);
+      if (!line.trim()) {
         continue;
       }
-      calls.add(target);
     }
   }
 
@@ -9592,8 +9721,9 @@ export async function getServerProjectOntologyView(options: {
   projectionId?: string;
   nodeType?: string;
   search?: string;
-  focusMode?: "projection" | "path";
+  focusMode?: "projection" | "path" | "component";
   selectedPathId?: string;
+  selectedComponentId?: string;
   nodeLimit?: number;
   edgeLimit?: number;
 }): Promise<{
@@ -9626,6 +9756,7 @@ export async function getServerProjectOntologyView(options: {
       search: options.search,
       focusMode: options.focusMode,
       selectedPathId: options.selectedPathId,
+      selectedComponentId: options.selectedComponentId,
       nodeLimit: options.nodeLimit,
       edgeLimit: options.edgeLimit
     })

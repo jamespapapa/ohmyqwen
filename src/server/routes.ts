@@ -753,6 +753,7 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
       const search = url.searchParams.get("search") ?? undefined;
       const focusModeRaw = url.searchParams.get("focusMode") ?? undefined;
       const selectedPathId = url.searchParams.get("selectedPathId") ?? undefined;
+      const selectedComponentId = url.searchParams.get("selectedComponentId") ?? undefined;
       const nodeLimitRaw = url.searchParams.get("nodeLimit");
       const edgeLimitRaw = url.searchParams.get("edgeLimit");
       const result = await getServerProjectOntologyView({
@@ -760,8 +761,16 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
         projectionId,
         nodeType,
         search,
-        focusMode: focusModeRaw === "projection" ? "projection" : focusModeRaw === "path" ? "path" : undefined,
+        focusMode:
+          focusModeRaw === "projection"
+            ? "projection"
+            : focusModeRaw === "path"
+              ? "path"
+              : focusModeRaw === "component"
+                ? "component"
+                : undefined,
         selectedPathId,
+        selectedComponentId,
         nodeLimit: nodeLimitRaw ? Number(nodeLimitRaw) : undefined,
         edgeLimit: edgeLimitRaw ? Number(edgeLimitRaw) : undefined
       });

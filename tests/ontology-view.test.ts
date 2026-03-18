@@ -473,7 +473,7 @@ describe("buildOntologyViewerPayload", () => {
     expect(payload.selectedProjection.nodes.some((node) => node.id === "api:/gw/api/insurance/claim/spotSave")).toBe(true);
   });
 
-  it("defaults code-structure projections to path focus when representative structures exist", () => {
+  it("defaults code-structure projections to component focus when structural components exist", () => {
     const graph = buildOntologyGraphSnapshot({
       knowledgeSchema: {
         ...knowledgeSchema,
@@ -607,7 +607,9 @@ describe("buildOntologyViewerPayload", () => {
       edgeLimit: 8
     });
 
-    expect(payload.filters.focusMode).toBe("path");
+    expect(payload.filters.focusMode).toBe("component");
+    expect(payload.selectedProjection.components.length).toBeGreaterThan(0);
+    expect(payload.filters.selectedComponentId).toBeTruthy();
     expect(payload.selectedProjection.representativePaths.length).toBeGreaterThan(0);
     expect(payload.selectedProjection.nodes.map((node) => node.id)).toEqual(
       expect.arrayContaining([
