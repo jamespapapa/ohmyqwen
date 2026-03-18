@@ -631,6 +631,26 @@ describe("knowledge schema foundation", () => {
       snapshot.edges.some(
         (edge) =>
           edge.type === "propagates-contract" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId === "store:redis" &&
+          edge.attributes.direction === "request" &&
+          edge.attributes.contractId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId === "eai:F14090150" &&
+          edge.attributes.direction === "request" &&
+          edge.attributes.contractId === "data-contract:monimoauthrequest"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "propagates-contract" &&
           edge.fromId === "api:/member/monimo/registe" &&
           edge.toId === "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth" &&
           edge.attributes.direction === "response" &&

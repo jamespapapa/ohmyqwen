@@ -2908,6 +2908,104 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
+  const fileSupportEdgeTypes: KnowledgeEdgeType[] = [
+    "uses-store",
+    "dispatches-to",
+    "consumes-from",
+    "uses-eai",
+    "uses-cache-key",
+    "stores-model",
+    "maps-to-table",
+    "queries-table",
+    "validates",
+    "branches-to"
+  ];
+  for (const declaresEdge of Array.from(edges.values()).filter((edge) => edge.type === "declares")) {
+    const sourceEntity = entities.get(declaresEdge.fromId);
+    const declaredEntity = entities.get(declaresEdge.toId);
+    if (!sourceEntity || sourceEntity.type !== "file" || !declaredEntity) {
+      continue;
+    }
+    const fileSupportEdges = (outgoingEdgesById.get(sourceEntity.id) ?? []).filter((edge) =>
+      fileSupportEdgeTypes.includes(edge.type)
+    );
+    for (const supportEdge of fileSupportEdges) {
+      if (hasEdge(supportEdge.type, declaredEntity.id, supportEdge.toId)) {
+        continue;
+      }
+      upsertEdge({
+        id: `edge:${supportEdge.type}:${declaredEntity.id}:${supportEdge.toId}:declared-file`,
+        type: supportEdge.type,
+        fromId: declaredEntity.id,
+        toId: supportEdge.toId,
+        label: `${declaredEntity.type} inherits file ${supportEdge.type}`,
+        metadata: makeMetadata({
+          domains: [
+            ...sourceEntity.metadata.domains,
+            ...declaredEntity.metadata.domains,
+            ...declaresEdge.metadata.domains,
+            ...supportEdge.metadata.domains
+          ],
+          subdomains: [
+            ...sourceEntity.metadata.subdomains,
+            ...declaredEntity.metadata.subdomains,
+            ...declaresEdge.metadata.subdomains,
+            ...supportEdge.metadata.subdomains
+          ],
+          channels: [
+            ...sourceEntity.metadata.channels,
+            ...declaredEntity.metadata.channels,
+            ...declaresEdge.metadata.channels,
+            ...supportEdge.metadata.channels
+          ],
+          actions: [
+            ...sourceEntity.metadata.actions,
+            ...declaredEntity.metadata.actions,
+            ...declaresEdge.metadata.actions,
+            ...supportEdge.metadata.actions
+          ],
+          moduleRoles: [
+            ...sourceEntity.metadata.moduleRoles,
+            ...declaredEntity.metadata.moduleRoles,
+            ...declaresEdge.metadata.moduleRoles,
+            ...supportEdge.metadata.moduleRoles
+          ],
+          processRoles: [
+            ...sourceEntity.metadata.processRoles,
+            ...declaredEntity.metadata.processRoles,
+            ...declaresEdge.metadata.processRoles,
+            ...supportEdge.metadata.processRoles
+          ],
+          confidence: Math.max(
+            0.68,
+            Math.min(
+              0.9,
+              Math.max(
+                sourceEntity.metadata.confidence,
+                declaredEntity.metadata.confidence,
+                declaresEdge.metadata.confidence,
+                supportEdge.metadata.confidence
+              ) - 0.05
+            )
+          ),
+          evidencePaths: [
+            ...sourceEntity.metadata.evidencePaths,
+            ...declaredEntity.metadata.evidencePaths,
+            ...declaresEdge.metadata.evidencePaths,
+            ...supportEdge.metadata.evidencePaths
+          ],
+          sourceType: "derived",
+          validatedStatus: "derived"
+        }),
+        attributes: {
+          propagatedFrom: sourceEntity.id,
+          viaEdgeId: supportEdge.id,
+          viaType: "declares"
+        }
+      });
+    }
+  }
+
   const requestSourceContractsByNode = new Map<string, Set<string>>();
   const requestTargetContractsByNode = new Map<string, Set<string>>();
   const responseSourceContractsByNode = new Map<string, Set<string>>();
@@ -3069,6 +3167,59 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
         direction: "request",
         flowEdge: asyncEdge
       });
+    }
+  }
+
+  const requestCarrierContractsByNode = new Map<string, Set<string>>();
+  const seedRequestCarrierContracts = (bucket: Map<string, Set<string>>) => {
+    for (const [nodeId, contracts] of bucket.entries()) {
+      for (const contractId of contracts) {
+        addContractForNode(requestCarrierContractsByNode, nodeId, contractId);
+      }
+    }
+  };
+  seedRequestCarrierContracts(requestSourceContractsByNode);
+  seedRequestCarrierContracts(requestTargetContractsByNode);
+  seedRequestCarrierContracts(asyncRequestContractsByChannel);
+
+  const supportPropagationRules: Array<{
+    edgeType: KnowledgeEdgeType;
+    direction: "forward" | "reverse";
+  }> = [
+    { edgeType: "uses-store", direction: "forward" },
+    { edgeType: "uses-cache-key", direction: "forward" },
+    { edgeType: "stores-model", direction: "forward" },
+    { edgeType: "maps-to-table", direction: "forward" },
+    { edgeType: "queries-table", direction: "forward" },
+    { edgeType: "uses-eai", direction: "forward" },
+    { edgeType: "validates", direction: "forward" },
+    { edgeType: "branches-to", direction: "forward" },
+    { edgeType: "dispatches-to", direction: "forward" },
+    { edgeType: "consumes-from", direction: "reverse" }
+  ];
+  let supportPropagationChanged = true;
+  while (supportPropagationChanged) {
+    supportPropagationChanged = false;
+    for (const rule of supportPropagationRules) {
+      for (const supportEdge of Array.from(edges.values()).filter((edge) => edge.type === rule.edgeType)) {
+        const fromId = rule.direction === "forward" ? supportEdge.fromId : supportEdge.toId;
+        const toId = rule.direction === "forward" ? supportEdge.toId : supportEdge.fromId;
+        const contracts = requestCarrierContractsByNode.get(fromId) ?? new Set<string>();
+        for (const contractId of contracts) {
+          const knownContracts = requestCarrierContractsByNode.get(toId) ?? new Set<string>();
+          if (!knownContracts.has(contractId)) {
+            addContractForNode(requestCarrierContractsByNode, toId, contractId);
+            supportPropagationChanged = true;
+          }
+          addContractPropagationEdge({
+            fromId,
+            toId,
+            contractId,
+            direction: "request",
+            flowEdge: supportEdge
+          });
+        }
+      }
     }
   }
 

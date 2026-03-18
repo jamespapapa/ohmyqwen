@@ -672,6 +672,31 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { edgeKind: "uses-store" }
     },
     {
+      id: "edge:propagates-contract:service:store:request",
+      type: "propagates-contract",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "store:redis",
+      label: "request contract propagation",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: ["embedded-login"],
+        channels: ["monimo"],
+        actions: ["action-auth", "action-state-store"],
+        moduleRoles: ["data-contract"],
+        processRoles: ["contract-propagation"],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {
+        contractId: "data-contract:monimoauthrequest",
+        direction: "request",
+        viaEdgeId: "edge:uses-store:service:redis",
+        viaType: "uses-store"
+      }
+    },
+    {
       id: "edge:uses-eai:service:eai",
       type: "uses-eai",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -997,6 +1022,7 @@ describe("retrieval unit standardization", () => {
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:ui-action:api:request");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:controller:service:request");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:service:store");
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:service:store:request");
 
     const eaiUnit = units.units.find((unit) => unit.type === "eai-link");
     expect(eaiUnit?.title).toContain("F14090150");
