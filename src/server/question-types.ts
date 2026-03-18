@@ -130,7 +130,7 @@ function looksLikeProcessQuestion(question: string, signals: string[]): boolean 
 
 function looksLikeChannelQuestion(question: string, signals: string[]): boolean {
   return (
-    /(monimo|모니모|partner|제휴|channel|채널|bridge|브릿지|callback|콜백|webhook|임베디드|embedded|embeded|외부연계|외부 채널)/i.test(
+    /(partner|제휴|channel|채널|bridge|브릿지|callback|콜백|webhook|임베디드|embedded|embeded|외부연계|외부 채널)/i.test(
       question
     ) || signals.some((signal) => signal.startsWith("channel:"))
   );

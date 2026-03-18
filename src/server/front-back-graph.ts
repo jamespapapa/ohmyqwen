@@ -42,6 +42,7 @@ export interface FrontendCatalogSnapshot {
 export interface BackendRouteEntry {
   path: string;
   internalPath?: string;
+  namespacePrefix?: string;
   controllerClass: string;
   controllerMethod: string;
   filePath: string;
@@ -422,8 +423,57 @@ function extractModulePrefix(relativePath: string): string | undefined {
   return match?.[1]?.toLowerCase();
 }
 
-function buildPublicRoutePath(modulePrefix: string | undefined, routePath: string): string {
-  const normalized = normalizeSlashPath(routePath);
+const GENERIC_ROUTE_NAMESPACE_STOPWORDS = new Set([
+  "api",
+  "gw",
+  "gateway",
+  "controller",
+  "service",
+  "member",
+  "insurance",
+  "loan",
+  "pension",
+  "fund",
+  "batch",
+  "core",
+  "common",
+  "display",
+  "upload",
+  "async",
+  "group",
+  "corporation",
+  "contract",
+  "product",
+  "user",
+  "auth",
+  "admin",
+  "main",
+  "proc",
+  "process",
+  "callback",
+  "webhook"
+]);
+
+function extractRouteNamespacePrefix(classPath: string, modulePrefix: string | undefined): string | undefined {
+  if (!modulePrefix || modulePrefix === "gateway") {
+    return undefined;
+  }
+  const segments = normalizeSlashPath(classPath)
+    .split("/")
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+  if (segments.length !== 1) {
+    return undefined;
+  }
+  const [candidate] = segments;
+  if (!candidate || candidate === modulePrefix || GENERIC_ROUTE_NAMESPACE_STOPWORDS.has(candidate)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function buildPublicRoutePath(modulePrefix: string | undefined, classPath: string, methodPath: string): string {
+  const normalized = normalizeSlashPath(classPath === "/" ? methodPath : joinUrlPath(classPath, methodPath));
   if (!modulePrefix || modulePrefix === "gateway" || normalized === "/api/**") {
     return normalized;
   }
@@ -433,9 +483,19 @@ function buildPublicRoutePath(modulePrefix: string | undefined, routePath: strin
   if (normalized.startsWith(`/${modulePrefix}/`) || normalized === `/${modulePrefix}`) {
     return normalized;
   }
-  if (normalized.startsWith("/monimo/")) {
-    const tail = normalized.slice("/monimo".length);
-    return joinUrlPath(`/monimo/${modulePrefix}`, tail);
+  const namespacePrefix = extractRouteNamespacePrefix(classPath, modulePrefix);
+  if (namespacePrefix) {
+    const normalizedMethodPath = normalizeSlashPath(methodPath);
+    if (normalizedMethodPath === "/" || normalizedMethodPath === "") {
+      return `/${namespacePrefix}/${modulePrefix}`;
+    }
+    if (
+      normalizedMethodPath.startsWith(`/${modulePrefix}/`) ||
+      normalizedMethodPath === `/${modulePrefix}`
+    ) {
+      return joinUrlPath(`/${namespacePrefix}`, normalizedMethodPath);
+    }
+    return joinUrlPath(`/${namespacePrefix}/${modulePrefix}`, normalizedMethodPath);
   }
   return joinUrlPath(`/${modulePrefix}`, normalized);
 }
@@ -504,10 +564,12 @@ export async function extractBackendRouteEntries(
       for (const classPath of classPaths) {
         for (const methodPath of methodPaths) {
           const combined = classPath === "/" ? normalizeSlashPath(methodPath) : joinUrlPath(classPath, methodPath);
-          const publicPath = buildPublicRoutePath(modulePrefix, combined);
+          const namespacePrefix = extractRouteNamespacePrefix(classPath, modulePrefix);
+          const publicPath = buildPublicRoutePath(modulePrefix, classPath, methodPath);
           routes.push({
             path: publicPath,
             internalPath: normalizeSlashPath(combined),
+            namespacePrefix,
             controllerClass: className,
             controllerMethod: methodName,
             filePath: relativePath,
@@ -531,10 +593,13 @@ export async function extractBackendRouteEntries(
   return routes.sort((a, b) => (a.path !== b.path ? a.path.localeCompare(b.path) : a.filePath.localeCompare(b.filePath)));
 }
 
-function normalizeComparableBackendPath(value: string): string {
+function normalizeComparableBackendPath(value: string, namespacePrefix?: string): string {
   const normalized = normalizeSlashPath(value);
-  if (normalized.startsWith("/monimo/")) {
-    return normalized.slice("/monimo".length) || "/";
+  if (namespacePrefix && normalized.startsWith(`/${namespacePrefix}/`)) {
+    return normalized.slice(namespacePrefix.length + 1) || "/";
+  }
+  if (namespacePrefix && normalized === `/${namespacePrefix}`) {
+    return "/";
   }
   return normalized;
 }
@@ -548,11 +613,15 @@ function gatewayRouteForUrl(rawUrl: string, gatewayRoutes: BackendRouteEntry[]):
 
 function chooseBestBackendRoute(normalizedUrl: string, routes: BackendRouteEntry[]): BackendRouteEntry | undefined {
   const comparable = normalizeComparableBackendPath(normalizedUrl);
-  const exact = routes.find((entry) => normalizeComparableBackendPath(entry.path) === comparable);
+  const exact = routes.find((entry) => normalizeComparableBackendPath(entry.path, entry.namespacePrefix) === comparable);
   if (exact) {
     return exact;
   }
-  return routes.find((entry) => normalizeComparableBackendPath(entry.internalPath ?? entry.path) === comparable.replace(/^\/[a-z0-9-]+(?=\/)/i, ""));
+  return routes.find(
+    (entry) =>
+      normalizeComparableBackendPath(entry.internalPath ?? entry.path, entry.namespacePrefix) ===
+      comparable.replace(/^\/[a-z0-9-]+(?=\/)/i, "")
+  );
 }
 
 export async function buildFrontBackGraph(options: {

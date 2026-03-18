@@ -239,13 +239,100 @@ function mergeMetadata(left: KnowledgeMetadata, right: KnowledgeMetadata): Knowl
   });
 }
 
+const GENERIC_CHANNEL_STOPWORDS = new Set([
+  "gw",
+  "api",
+  "mo",
+  "pc",
+  "mysamsunglife",
+  "screen",
+  "route",
+  "frontend",
+  "backend",
+  "controller",
+  "service",
+  "member",
+  "members",
+  "login",
+  "auth",
+  "register",
+  "registe",
+  "signup",
+  "channel",
+  "partner",
+  "bridge",
+  "callback",
+  "webhook",
+  "embedded",
+  "embeded",
+  "insurance",
+  "benefit",
+  "claim",
+  "loan",
+  "pension",
+  "fund",
+  "request",
+  "response",
+  "status",
+  "state",
+  "info",
+  "check",
+  "save",
+  "insert",
+  "update",
+  "delete",
+  "read",
+  "write",
+  "inqury",
+  "inquiry",
+  "progress",
+  "proc",
+  "process",
+  "main",
+  "v1",
+  "v2"
+]);
+
+function tokenizePathSegments(value?: string): string[] {
+  return String(value ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1/$2")
+    .split(/[\\/.:_-]+/g)
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 function inferChannels(values: Array<string | undefined>): string[] {
-  const joined = values.filter(Boolean).join(" ");
-  const channels: string[] = [];
-  if (/monimo/i.test(joined)) {
-    channels.push("monimo");
+  const tokenCounts = new Map<string, number>();
+  const tokenSourceKinds = new Map<string, Set<"frontend" | "backend">>();
+
+  for (const value of values) {
+    const normalized = String(value ?? "");
+    if (!normalized.trim()) {
+      continue;
+    }
+    const bucketTokens = new Set(
+      tokenizePathSegments(normalized).filter(
+        (token) => token.length >= 3 && !GENERIC_CHANNEL_STOPWORDS.has(token) && !/^\d+$/.test(token)
+      )
+    );
+    const sourceKind: "frontend" | "backend" =
+      /src\/views|router\/|\.vue\b|\/mo\/|\/pc\//i.test(normalized) ? "frontend" : "backend";
+    for (const token of bucketTokens) {
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+      const kinds = tokenSourceKinds.get(token) ?? new Set<"frontend" | "backend">();
+      kinds.add(sourceKind);
+      tokenSourceKinds.set(token, kinds);
+    }
   }
-  return unique(channels);
+
+  return Array.from(tokenCounts.entries())
+    .filter(([, count]) => count >= 2)
+    .filter(([token]) => (tokenSourceKinds.get(token)?.size ?? 0) >= 2)
+    .map(([token]) => token)
+    .sort((left, right) => {
+      const countDiff = (tokenCounts.get(right) ?? 0) - (tokenCounts.get(left) ?? 0);
+      return countDiff !== 0 ? countDiff : left.localeCompare(right);
+    });
 }
 
 function inferModuleRoles(moduleName: string): string[] {

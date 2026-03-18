@@ -317,7 +317,7 @@ export function qualityGateForAskOutput(options: {
         .flatMap((item) => [item, item.replace(/^channel:/, "")]),
       ...linkedFlowEvidence.flatMap((item) => [item.routePath ?? "", item.apiUrl, item.backendControllerMethod])
     ]);
-    if (!/(monimo|모니모|partner|제휴|channel|채널|bridge|브릿지|callback|콜백|webhook|embedded|embeded|연계|외부)/i.test(options.output.answer)) {
+    if (!/(partner|제휴|channel|채널|bridge|브릿지|callback|콜백|webhook|embedded|embeded|연계|외부)/i.test(options.output.answer)) {
       failures.push("missing-channel-integration-detail");
     }
     if (channelSignals.length > 0 && !answerMentionsAny(options.output.answer, channelSignals)) {

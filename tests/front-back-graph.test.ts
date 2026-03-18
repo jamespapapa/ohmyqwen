@@ -216,6 +216,41 @@ public class DivisionExpController {
     expect(monimoProc).toBeTruthy();
   });
 
+  it("generalizes external namespace route prefixes without hardcoded channel names", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-backend-namespace-"));
+    tempDirs.push(workspace);
+
+    const controllerDir = path.join(
+      workspace,
+      "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/give/controller"
+    );
+    await mkdir(controllerDir, { recursive: true });
+
+    await writeFile(
+      path.join(controllerDir, "XpayDivisionExpController.java"),
+      `package com.samsunglife.dcp.insurance.give.controller;
+
+@RequestMapping(path = "/xpay")
+public class XpayDivisionExpController {
+  private final DivisionExpService divisionExpService;
+
+  @RequestMapping(value = "/division/appexpiry/inqury", method = {RequestMethod.POST})
+  public JsonResult inqury(InsuranceParameters parameters) throws Exception {
+    return JsonResult.ok(divisionExpService.selectDivisionExpiry(parameters));
+  }
+}
+`,
+      "utf8"
+    );
+
+    const routes = await extractBackendRouteEntries(workspace);
+    const namespaced = routes.find((entry) => entry.path === "/xpay/insurance/division/appexpiry/inqury");
+
+    expect(namespaced).toBeTruthy();
+    expect(namespaced?.namespacePrefix).toBe("xpay");
+    expect(namespaced?.internalPath).toBe("/xpay/division/appexpiry/inqury");
+  });
+
   it("builds high-confidence links from vue screen -> gateway api -> backend controller", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-front-back-graph-"));
     tempDirs.push(root);
@@ -305,5 +340,80 @@ public class DivisionExpController {
     expect(graph.links[0]?.evidence).toEqual(
       expect.arrayContaining(["frontend-route", "frontend-http-call", "backend-request-mapping", "gateway-api-proxy"])
     );
+  });
+
+  it("matches frontend api paths to namespaced backend routes through internal route normalization", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "ohmyqwen-front-back-namespace-"));
+    tempDirs.push(root);
+
+    const front = path.join(root, "dcp-front-develop");
+    const back = path.join(root, "dcp-services-mevelop");
+
+    await mkdir(path.join(front, "src/router/mo/mysamsunglife/insurance/give"), { recursive: true });
+    await mkdir(path.join(front, "src/views/mo/mysamsunglife/insurance/give"), { recursive: true });
+    await mkdir(path.join(back, "dcp-gateway/src/main/java/com/samsunglife/dcp/gateway/controller"), {
+      recursive: true
+    });
+    await mkdir(path.join(back, "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/give/controller"), {
+      recursive: true
+    });
+
+    await writeFile(
+      path.join(front, "src/router/mo/mysamsunglife/insurance/give/route.js"),
+      `export default { children: [{ path: 'MDP-MYINT022999M', name: 'MDP-MYINT022999M', components: { content: () => import('@/views/mo/mysamsunglife/insurance/give/MDP-MYINT022999M.vue') } }] };`,
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(front, "src/views/mo/mysamsunglife/insurance/give/MDP-MYINT022999M.vue"),
+      `<script>
+export default {
+  name: 'MDP-MYINT022999M',
+  methods: {
+    loadAppSbSearch () {
+      return this.$http.post('/gw/api/insurance/division/appexpiry/inqury', { nextKey: null })
+    }
+  }
+}
+</script>
+`,
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(back, "dcp-gateway/src/main/java/com/samsunglife/dcp/gateway/controller/RouteController.java"),
+      `package com.samsunglife.dcp.gateway.controller;
+
+public class RouteController {
+  @RequestMapping(value = "/api/**", method = {RequestMethod.POST, RequestMethod.GET})
+  public Object route() { return null; }
+}
+`,
+      "utf8"
+    );
+
+    await writeFile(
+      path.join(back, "dcp-insurance/src/main/java/com/samsunglife/dcp/insurance/give/controller/XpayDivisionExpController.java"),
+      `package com.samsunglife.dcp.insurance.give.controller;
+
+@RequestMapping(path = "/xpay")
+public class XpayDivisionExpController {
+  private final DivisionExpService divisionExpService;
+
+  @RequestMapping(value = "/division/appexpiry/inqury", method = {RequestMethod.POST})
+  public JsonResult inqury(InsuranceParameters parameters) throws Exception {
+    return JsonResult.ok(divisionExpService.selectDivisionExpiry(parameters));
+  }
+}
+`,
+      "utf8"
+    );
+
+    const graph = await buildFrontBackGraph({
+      backendWorkspaceDir: back,
+      frontendWorkspaceDirs: [front]
+    });
+
+    expect(graph.links.some((link) => link.backend.path === "/xpay/insurance/division/appexpiry/inqury")).toBe(true);
   });
 });

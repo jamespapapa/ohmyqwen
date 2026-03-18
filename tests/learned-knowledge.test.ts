@@ -184,6 +184,80 @@ describe("learned knowledge", () => {
     expect(snapshot.candidates.some((candidate) => candidate.id === "process:dcp-batch")).toBe(true);
   });
 
+  it("extracts generic channel candidates from repeated frontend and api path namespaces", () => {
+    const snapshot = computeLearnedKnowledgeSnapshot({
+      generatedAt: "2026-03-10T00:00:00.000Z",
+      frontBackGraph: {
+        frontend: {
+          routes: [
+            {
+              routePath: "/mo/login/xpay/MDP-MYABC000001M",
+              screenPath: "src/views/login/MDP-MYABC000001M.vue",
+              screenCode: "MDP-MYABC000001M",
+              notes: ["xpay bridge login"]
+            },
+            {
+              routePath: "/mo/login/xpay/MDP-MYABC000002M",
+              screenPath: "src/views/login/MDP-MYABC000002M.vue",
+              screenCode: "MDP-MYABC000002M",
+              notes: ["xpay register"]
+            }
+          ],
+          screens: []
+        },
+        links: [
+          {
+            frontend: {
+              screenCode: "MDP-MYABC000001M",
+              screenPath: "src/views/login/MDP-MYABC000001M.vue",
+              routePath: "/mo/login/xpay/MDP-MYABC000001M"
+            },
+            api: {
+              rawUrl: "/gw/api/member/xpay/registe",
+              normalizedUrl: "/member/xpay/registe"
+            },
+            gateway: {
+              path: "/api/**",
+              controllerMethod: "RouteController.route"
+            },
+            backend: {
+              path: "/member/xpay/registe",
+              controllerMethod: "XpayMemberController.registe",
+              filePath: "dcp-member/src/main/java/com/acme/member/XpayMemberController.java",
+              serviceHints: ["XpayMemberService.registe"]
+            }
+          },
+          {
+            frontend: {
+              screenCode: "MDP-MYABC000002M",
+              screenPath: "src/views/login/MDP-MYABC000002M.vue",
+              routePath: "/mo/login/xpay/MDP-MYABC000002M"
+            },
+            api: {
+              rawUrl: "/gw/api/member/xpay/callback",
+              normalizedUrl: "/member/xpay/callback"
+            },
+            gateway: {
+              path: "/api/**",
+              controllerMethod: "RouteController.route"
+            },
+            backend: {
+              path: "/member/xpay/callback",
+              controllerMethod: "XpayCallbackController.callback",
+              filePath: "dcp-member/src/main/java/com/acme/member/XpayCallbackController.java",
+              serviceHints: ["XpayCallbackService.callback"]
+            }
+          }
+        ]
+      }
+    });
+
+    const candidate = snapshot.candidates.find((item) => item.id === "channel:xpay");
+    expect(candidate).toBeTruthy();
+    expect(candidate?.kind).toBe("channel");
+    expect(candidate?.searchTerms).toEqual(expect.arrayContaining(["xpay", "/member/xpay/registe", "/member/xpay/callback"]));
+  });
+
   it("matches questions and reinforces validated candidates over time", () => {
     const snapshot = computeLearnedKnowledgeSnapshot({
       generatedAt: "2026-03-10T00:00:00.000Z",

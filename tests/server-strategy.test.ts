@@ -29,7 +29,7 @@ describe("server ask strategy normalization", () => {
   });
 
   it("normalizes channel integration questions away from raw method_trace", () => {
-    const question = "모니모 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.";
+    const question = "xpay bridge 회원 인증 로직이 어떻게 구현되는지 면밀히 분석해줘.";
 
     expect(normalizeAskStrategyForQuestion(question, "method_trace")).toBe("module_flow_topdown");
   });

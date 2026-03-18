@@ -228,23 +228,136 @@ function deriveApiCluster(normalizedUrl: string): string | undefined {
   return prefix.join("/");
 }
 
+const GENERIC_CHANNEL_STOPWORDS = new Set([
+  "gw",
+  "api",
+  "mo",
+  "pc",
+  "mysamsunglife",
+  "screen",
+  "route",
+  "frontend",
+  "backend",
+  "controller",
+  "service",
+  "member",
+  "members",
+  "login",
+  "auth",
+  "register",
+  "registe",
+  "signup",
+  "channel",
+  "partner",
+  "bridge",
+  "callback",
+  "webhook",
+  "embedded",
+  "embeded",
+  "insurance",
+  "benefit",
+  "claim",
+  "loan",
+  "pension",
+  "fund",
+  "request",
+  "response",
+  "status",
+  "state",
+  "info",
+  "check",
+  "save",
+  "insert",
+  "update",
+  "delete",
+  "read",
+  "write",
+  "inqury",
+  "inquiry",
+  "progress",
+  "proc",
+  "process",
+  "main",
+  "common",
+  "view",
+  "views",
+  "src",
+  "java",
+  "com",
+  "callbackres",
+  "v1",
+  "v2"
+]);
+
+function tokenizePathSegments(value?: string): string[] {
+  return String(value ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1/$2")
+    .split(/[\\/.:_-]+/g)
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function inferChannelCandidates(
+  values: Array<{ value?: string; source: "frontend" | "api" | "backend" }>
+): string[] {
+  const tokenCounts = new Map<string, number>();
+  const tokenSourceKinds = new Map<string, Set<"frontend" | "api" | "backend">>();
+
+  for (const entry of values) {
+    const normalized = String(entry.value ?? "");
+    if (!normalized.trim()) {
+      continue;
+    }
+    const bucketTokens = new Set(
+      tokenizePathSegments(normalized).filter(
+        (token) => token.length >= 3 && !GENERIC_CHANNEL_STOPWORDS.has(token) && !/^\d+$/.test(token)
+      )
+    );
+    for (const token of bucketTokens) {
+      tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+      const sourceKinds = tokenSourceKinds.get(token) ?? new Set<"frontend" | "api" | "backend">();
+      sourceKinds.add(entry.source);
+      tokenSourceKinds.set(token, sourceKinds);
+    }
+  }
+
+  return Array.from(tokenCounts.entries())
+    .filter(([, count]) => count >= 2)
+    .filter(([token]) => {
+      const sourceKinds = tokenSourceKinds.get(token);
+      return Boolean(sourceKinds?.has("frontend") && ((sourceKinds?.has("api") ?? false) || (sourceKinds?.has("backend") ?? false)));
+    })
+    .map(([token]) => token)
+    .sort((left, right) => {
+      const countDiff = (tokenCounts.get(right) ?? 0) - (tokenCounts.get(left) ?? 0);
+      return countDiff !== 0 ? countDiff : left.localeCompare(right);
+    });
+}
+
 function inferCandidateKind(input: {
   apiCluster?: string;
   pathHints: string[];
   screenPrefixes: string[];
   controllerHints: string[];
 }): LearnedKnowledgeKind {
-  const joined = [
+  const texts = [
     input.apiCluster,
     ...input.pathHints,
     ...input.screenPrefixes,
     ...input.controllerHints
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  if (/monimo|channel/.test(joined)) {
+  ].filter(Boolean);
+  const joined = texts.join(" ").toLowerCase();
+  const signals = extractOntologyTextSignalsFromTexts(texts);
+  if (
+    inferChannelCandidates([
+      ...input.screenPrefixes.map((value) => ({ value, source: "frontend" as const })),
+      ...[input.apiCluster].filter(Boolean).map((value) => ({ value, source: "api" as const })),
+      ...input.pathHints.map((value) => ({ value, source: "backend" as const })),
+      ...input.controllerHints.map((value) => ({ value, source: "backend" as const }))
+    ]).length > 0 ||
+    signals.some((signal) => signal.startsWith("channel:")) ||
+    /(partner|channel|bridge|callback|webhook|embedded|embeded|제휴|채널|브릿지|콜백|외부연계)/.test(joined)
+  ) {
     return "channel";
   }
   if (/batch|job|scheduler|tasklet|step/.test(joined)) {
@@ -597,30 +710,73 @@ export function computeLearnedKnowledgeSnapshot(options: {
     );
   }
 
+  const channelGroups = new Map<string, LearnedKnowledgeFrontBackLinkLike[]>();
   for (const link of graphLinks) {
-    const channelText = [link.frontend.routePath, link.frontend.screenPath, link.frontend.screenCode].filter(Boolean).join(" ");
-    if (!/monimo/i.test(channelText)) {
+    const channels = inferChannelCandidates([
+      { value: link.frontend.routePath, source: "frontend" },
+      { value: link.frontend.screenPath, source: "frontend" },
+      { value: link.frontend.screenCode, source: "frontend" },
+      { value: link.api.normalizedUrl, source: "api" },
+      { value: link.api.rawUrl, source: "api" },
+      { value: link.gateway.path, source: "backend" },
+      { value: link.backend.path, source: "backend" },
+      { value: link.backend.controllerMethod, source: "backend" }
+    ]);
+    for (const channel of channels) {
+      const items = channelGroups.get(channel) ?? [];
+      items.push(link);
+      channelGroups.set(channel, items);
+    }
+  }
+
+  for (const [channel, links] of channelGroups) {
+    if (links.length < 2) {
       continue;
     }
+    const apiPrefixes = takeTop(
+      links.map((link) => deriveApiCluster(link.api.normalizedUrl)).filter((item): item is string => Boolean(item)),
+      4
+    );
+    const screenPrefixes = takeTop(
+      links.map((link) => extractScreenPrefix(link.frontend.screenCode)).filter((item): item is string => Boolean(item)),
+      6
+    );
+    const controllerHints = takeTop(links.map((link) => extractControllerClass(link.backend.controllerMethod)), 6);
+    const serviceHints = takeTop(links.flatMap((link) => link.backend.serviceHints.map(extractServiceClass)), 6);
+    const uniqueScreens = new Set(links.map((link) => link.frontend.screenCode).filter(Boolean));
+    const uniqueBackends = new Set(links.map((link) => link.backend.path).filter(Boolean));
     upsert(
       createCandidate({
-        id: "channel:monimo",
+        id: `channel:${slugify(channel)}`,
         kind: "channel",
-        label: "monimo channel",
-        description: "monimo-related channel learned from frontend routes/screens",
-        tags: ["monimo", "channel"],
-        aliases: ["monimo", "모니모"],
-        apiPrefixes: takeTop([deriveApiCluster(link.api.normalizedUrl) ?? ""].filter(Boolean), 2),
-        screenPrefixes: takeTop([extractScreenPrefix(link.frontend.screenCode) ?? ""].filter(Boolean), 4),
-        controllerHints: takeTop([extractControllerClass(link.backend.controllerMethod)], 4),
-        serviceHints: takeTop(link.backend.serviceHints.map(extractServiceClass), 4),
-        pathHints: takeTop([link.backend.filePath.split("/")[0] ?? link.backend.filePath], 2),
-        searchTerms: ["monimo", "모니모", link.api.normalizedUrl, extractControllerClass(link.backend.controllerMethod)],
-        evidence: [`${link.frontend.screenCode ?? link.frontend.routePath ?? "(unknown)"} -> ${link.api.rawUrl}`],
+        label: `${humanizeIdentifier(channel)} channel`,
+        description: `${channel} related channel learned from frontend routes and backend APIs`,
+        tags: [channel, "channel"],
+        aliases: [humanizeIdentifier(channel), channel],
+        apiPrefixes,
+        screenPrefixes,
+        controllerHints,
+        serviceHints,
+        pathHints: takeTop(links.map((link) => link.backend.filePath.split("/")[0] ?? link.backend.filePath), 4),
+        searchTerms: takeTop(
+          [
+            channel,
+            ...apiPrefixes,
+            ...screenPrefixes,
+            ...controllerHints,
+            ...serviceHints,
+            ...links.map((link) => link.api.normalizedUrl)
+          ],
+          12
+        ),
+        evidence: takeTop(
+          links.map((link) => `${link.frontend.screenCode ?? link.frontend.routePath ?? "(unknown)"} -> ${link.api.rawUrl}`),
+          5
+        ),
         counts: {
-          links: 1,
-          screens: link.frontend.screenCode ? 1 : 0,
-          backend: 1,
+          links: links.length,
+          screens: uniqueScreens.size,
+          backend: uniqueBackends.size,
           eai: 0,
           uses: 0,
           successes: 0,

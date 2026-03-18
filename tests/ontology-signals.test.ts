@@ -51,6 +51,14 @@ describe("ontology signals", () => {
     );
   });
 
+  it("extracts generic channel concepts from explicit bridge or partner cues", () => {
+    const signals = buildQuestionOntologySignals({
+      question: "xpay bridge 회원 인증 흐름을 분석해줘."
+    });
+
+    expect(signals).toEqual(expect.arrayContaining(["channel:xpay", "bridge", "회원", "인증", "action-auth"]));
+  });
+
   it("keeps pure question signals separate from retrieval grounding signals", () => {
     const questionSignals = buildQuestionOntologySignals({
       question: "보험금 청구 로직을 분석해줘."

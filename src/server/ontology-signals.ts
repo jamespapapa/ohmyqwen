@@ -92,7 +92,14 @@ export function extractOntologyTextSignalsFromTexts(
   if (/(validator|valid|guard|check|verify|throwif|assert)/.test(text)) add("control-guard");
   if (/(eai|interfaceid|interface|전문|연계)/.test(text)) add("external-integration");
 
-  if (/monimo/.test(text)) add("channel:monimo");
+  for (const match of text.matchAll(
+    /(?:channel|partner|제휴|채널|브릿지|bridge|embedded|embeded)\s*[:/-]?\s*([a-z0-9가-힣]{2,})|([a-z0-9가-힣]{2,})\s*(?:channel|partner|제휴|채널|브릿지|bridge)/gi
+  )) {
+    const candidate = (match[1] ?? match[2] ?? "").trim().toLowerCase();
+    if (candidate) {
+      add(`channel:${candidate}`);
+    }
+  }
 
   const tokens = tokenizeOntologyText(text);
   for (const token of tokens) {
