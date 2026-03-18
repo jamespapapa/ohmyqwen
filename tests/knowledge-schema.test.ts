@@ -1007,6 +1007,15 @@ describe("knowledge schema foundation", () => {
           edge.attributes.edgeKind === "flow-family"
       )
     ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "service:AccBenefitClaimService.checkApply" &&
+          edge.toId === "service:AccBenefitClaimService.saveBenefitClaim" &&
+          edge.attributes.edgeKind === "flow-family"
+      )
+    ).toBe(true);
   });
 
   it("renders markdown summary without relying on mermaid or UI-only components", () => {

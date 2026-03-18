@@ -1216,6 +1216,89 @@ describe("retrieval unit standardization", () => {
     expect(ranked.find((item) => item.unit.id === "unit:flow:status")?.reasons).toContain("action-mismatch");
   });
 
+  it("boosts workflow-family flow units for cross-layer questions", () => {
+    const flowFamilySnapshot = RetrievalUnitSnapshotSchema.parse({
+      version: 1,
+      generatedAt: "2026-03-17T00:00:00.000Z",
+      workspaceDir: "/workspace",
+      units: [
+        {
+          id: "unit:flow:claim:save",
+          type: "flow",
+          title: "claim spotSave flow",
+          summary: "insurance accBenefit claim representative save flow",
+          confidence: 0.82,
+          validatedStatus: "validated",
+          entityIds: ["api:/insurance/accBenefit/claim/spotSave"],
+          edgeIds: [],
+          searchText: ["insurance accBenefit claim save"],
+          domains: [],
+          subdomains: [],
+          channels: [],
+          actions: ["action-write"],
+          moduleRoles: [],
+          processRoles: ["state-transition"],
+          evidencePaths: ["src/views/insurance/MDP-MYINT020540M.vue"]
+        },
+        {
+          id: "unit:flow:claim:progress",
+          type: "flow",
+          title: "claim progress flow",
+          summary: "insurance benefit claim progress flow",
+          confidence: 0.79,
+          validatedStatus: "validated",
+          entityIds: ["api:/insurance/benefit/claim/progress/gen/inqury"],
+          edgeIds: ["edge:transitions-to:api:/insurance/accBenefit/claim/spotSave:api:/insurance/benefit/claim/progress/gen/inqury:flow-family"],
+          searchText: ["insurance benefit claim progress inqury"],
+          domains: [],
+          subdomains: [],
+          channels: [],
+          actions: ["action-read"],
+          moduleRoles: [],
+          processRoles: ["state-transition"],
+          evidencePaths: ["src/views/insurance/MDP-MYINT021120M.vue"]
+        },
+        {
+          id: "unit:flow:generic",
+          type: "flow",
+          title: "generic insurance read flow",
+          summary: "insurance status inquiry flow",
+          confidence: 0.83,
+          validatedStatus: "validated",
+          entityIds: ["api:/insurance/status/inquiry"],
+          edgeIds: [],
+          searchText: ["insurance status inquiry"],
+          domains: [],
+          subdomains: [],
+          channels: [],
+          actions: ["action-read"],
+          moduleRoles: [],
+          processRoles: ["state-transition"],
+          evidencePaths: ["src/views/insurance/MDP-MYINT099999M.vue"]
+        }
+      ],
+      summary: {
+        unitCount: 3,
+        unitTypeCounts: { flow: 3 },
+        unitStatusCounts: { validated: 3 },
+        topDomains: [],
+        topChannels: [],
+        topModuleRoles: []
+      }
+    });
+
+    const ranked = rankRetrievalUnitsForQuestion({
+      snapshot: flowFamilySnapshot,
+      question: "보험금 청구 로직이 엔드투엔드로 어떻게 이루어지는지 상세하게 분석해줘",
+      questionType: "cross_layer_flow",
+      questionTags: ["insurance", "claim", "action-write"]
+    });
+
+    expect(ranked[0]?.unit.id).toBe("unit:flow:claim:save");
+    expect(ranked[1]?.unit.id).toBe("unit:flow:claim:progress");
+    expect(ranked[1]?.reasons).toContain("workflow-family");
+  });
+
   it("creates symbol-block retrieval units for control-guard nodes", () => {
     const guardSnapshot: KnowledgeSchemaSnapshot = {
       ...snapshot,

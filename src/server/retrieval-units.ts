@@ -714,6 +714,17 @@ export function rankRetrievalUnitsForQuestion(options: {
       }
     }
 
+    const workflowFamilyTransitionCount = unit.edgeIds.filter(
+      (edgeId) => edgeId.includes("edge:transitions-to:") && edgeId.includes(":flow-family")
+    ).length;
+    if (
+      workflowFamilyTransitionCount > 0 &&
+      (options.questionType === "cross_layer_flow" || options.questionType === "channel_or_partner_integration")
+    ) {
+      score += Math.min(2.8, workflowFamilyTransitionCount * 1.4);
+      reasons.push("workflow-family");
+    }
+
     if (options.questionType === "channel_or_partner_integration" && unit.channels.length > 0) {
       score += 1.5;
       reasons.push(`channels:${unit.channels.slice(0, 3).join(",")}`);

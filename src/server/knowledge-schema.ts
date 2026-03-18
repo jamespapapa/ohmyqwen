@@ -1158,6 +1158,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   const derivedFlowSequenceCandidates: Array<{
     apiId: string;
     controllerId: string;
+    serviceIds: string[];
     apiUrl: string;
     backendPath: string;
     controllerMethod: string;
@@ -2637,6 +2638,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       });
     }
 
+    const linkedServiceIds: string[] = [];
     for (const serviceHint of link.backend.serviceHints) {
       const serviceClass = serviceHint.split(".")[0] ?? serviceHint;
       const serviceFilePath = classFileMap.get(serviceClass);
@@ -2685,6 +2687,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }
 
       const serviceId = `service:${serviceHint}`;
+      linkedServiceIds.push(serviceId);
       upsertEntity({
         id: serviceId,
         type: "service",
@@ -2809,6 +2812,7 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     derivedFlowSequenceCandidates.push({
       apiId,
       controllerId,
+      serviceIds: unique(linkedServiceIds),
       apiUrl: link.api.normalizedUrl,
       backendPath: link.backend.path,
       controllerMethod: link.backend.controllerMethod,
@@ -2898,6 +2902,30 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
               confidence: Math.min(fromEntry.confidence, toEntry.confidence),
               edgeKind: "flow-family"
             });
+          }
+
+          for (const fromServiceId of fromEntry.serviceIds) {
+            for (const toServiceId of toEntry.serviceIds) {
+              if (fromServiceId === toServiceId) {
+                continue;
+              }
+              addDerivedTransitionEdge({
+                fromId: fromServiceId,
+                toId: toServiceId,
+                label: "workflow family transition",
+                texts: [
+                  fromEntry.apiUrl,
+                  fromEntry.controllerMethod,
+                  ...fromEntry.serviceHints,
+                  toEntry.apiUrl,
+                  toEntry.controllerMethod,
+                  ...toEntry.serviceHints
+                ],
+                evidencePaths: unique([...fromEntry.evidencePaths, ...toEntry.evidencePaths]),
+                confidence: Math.min(fromEntry.confidence, toEntry.confidence),
+                edgeKind: "flow-family"
+              });
+            }
           }
         }
       }
