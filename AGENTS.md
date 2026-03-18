@@ -43,6 +43,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - EAI dictionary
 - learned knowledge
 - ontology graph / ontology projections
+- ontology viewer / fullscreen graph route
 - retrieval units
 - ontology draft / review / replay / feedback lifecycle
 - legacy domain/module-role/process/channel packs (호환 계층, 제거 대상)
@@ -61,6 +62,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 7. 최종 질의응답의 중심은 **ontology graph + path grounding + question-type evidence contract**여야 하며, domain pack/preset은 중심 로직에서 제거한다.
 8. 코드베이스에서 먼저 **최소 ontology graph**를 만들고, 사용자 힌트/피드백/CSV/문서/이력으로 semantic layer를 승격한다.
 9. `QMD = retrieval engine`, `ontology = semantic control plane`, `agentic workflow = orchestration / verification loop` 역할 분리를 유지한다.
+10. 코드베이스 기반 ontology 강화는 **extractor / derivation / projection / evaluation harness** 중심으로 통제하고, 질문 맞춤형 특수분기는 금지한다.
 
 ---
 
@@ -92,6 +94,22 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 
 9. **특정 업무/채널 보정 금지.**
    `모니모`, `보험금청구`, `햇살론` 같은 개별 케이스를 맞추기 위한 특수분기 대신, action/path/state-store/data-persistence/adjacent-flow 일반 규칙으로 고도화한다.
+
+10. **code-only ontology는 extractor completeness를 우선한다.**
+   새로운 품질 요구가 생겨도 먼저
+   - 구조 추출기
+   - ontology derivation
+   - workflow/state transition
+   - evaluation harness
+   관점에서 해결하고, 특정 질문을 맞추기 위한 scoring 꼼수는 지양한다.
+
+11. **현재 code-only 강화는 실질적 실링에 근접했다.**
+   다음 단계의 중심은
+   - evaluation/regression harness 강화
+   - ontology governance 정리
+   - draft/review/self-eval 활용
+   - 사용자/문서/CSV/운영 기록의 semantic layer 승격
+   이다.
 
 ---
 
@@ -153,6 +171,17 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - legacy domain packs / presets를 **ontology concept / path 기반 구조로 대체**
 - 프론트 -> API -> gateway -> controller -> service -> store/EAI/async 까지 **action-aware path graph**로 표현
 - `QMD + vector/FTS + rerank`를 ontology-guided retrieval로 묶고, agentic workflow가 검증/재시도/중단을 담당
+- ontology viewer / fullscreen graph route / representative path focus / structural component focus 추가
+- exact endpoint / ordered workflow sequence / canonical path / workflow-family / contract propagation / async transition / persistence transition까지 code-only ontology seed 확장
+
+**현재 판단**
+
+- code-only ontology 확장은 **고레버리지 구간은 대부분 반영**되었다.
+- 남은 품질 향상은 주로
+  - 평가 하네스 강화
+  - ontology governance 정리
+  - human/runtime semantic layer 추가
+  쪽이 크다.
 
 **설계 문서 우선 참조**
 
@@ -161,6 +190,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - `docs/ONTOLOGY_GRAPH_MIGRATION_PLAN.md`
 - `docs/ONTOLOGY_SYSTEM_DESIGN.md`
 - `docs/ONTOLOGY_GRAPH_ASCII.md`
+- `docs/NEXT_STEP_ONTOLOGY_HARNESS.md`
 
 ---
 
@@ -168,29 +198,28 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 
 우선순위는 아래 순서로 본다.
 
-1. **폐쇄망 자가강화 구조 강화**
-   - 사전/그래프/후보지식 누적
-   - replay / regression 축적
-   - validated knowledge 승격
+1. **Ontology evaluation harness 정비**
+   - 대표 질문셋 / regression 질문셋 정리
+   - 질문 유형별 acceptance criteria 명문화
+   - ask/search/self-eval/replay를 동일한 품질 지표로 연결
 
-2. **RAG 본공사**
-   - knowledge schema 통합
-   - retrieval unit 표준화
-   - knowledge lifecycle 정식화
-   - 질문 유형별 retrieval / gate contract 정리
-   - ontology graph snapshot / projection / planner / lifecycle 설계와 구현
-   - domain pack / preset 제거 migration
+2. **Ontology governance 정리**
+   - extractor / derivation / ranking / gate rule 경계를 문서화
+   - core ontology node/edge/action/state 개념을 freeze
+   - heuristic pile 방지용 rule registry/정책 분리 방향 정리
 
-3. **질문 품질 일반화**
-   - 특정 도메인 하드코딩 제거
-   - module-role / process-role / channel / state-store / cross-layer 질문 대응력 강화
-   - adjacent flow suppression / confidence calibration 강화
+3. **Agentic workflow 고도화**
+   - exact target trace
+   - workflow sequence reconstruction
+   - representative scenario synthesis
+   - answer self-critique / abstain / retry contract 강화
 
-4. **사용자 상호작용 기반 지식 승격**
-   - 자유 메모 / 구조화 폼 / CSV / 문서 입력 채널
-   - feedback schema / evaluation criteria / promotion state machine 정교화
-   - 시각화된 projection 위에서 node / edge / path 검증 가능하게 만들기
+4. **사용자 상호작용 기반 semantic layer 승격**
+   - 자유 메모 / 구조화 폼 / CSV / 문서 입력 채널 정교화
+   - draft / review / rollback / self-eval을 실제 품질 향상 루프와 연결
+   - node / edge / path 검증을 시각화 위에서 수행 가능하게 만들기
 
 5. **오프라인 배포 안정화**
    - Windows x64 bundle runtime 검증
    - qmd models / wrapper / frontend-backend startup 안정화
+   - filesystem artifact 기반 ontology/QMD runtime 반입 절차 점검
