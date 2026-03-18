@@ -59,6 +59,7 @@ import {
   buildLinkedFlowEvidence,
   type CanonicalLinkedFlowPlan
 } from "./flow-links.js";
+import { buildCanonicalFlowSupportUnits, type CanonicalFlowSupportUnit } from "./canonical-flow-support.js";
 import { traceLinkedFlowDownstream } from "./flow-trace.js";
 import {
   applyLearnedKnowledgePromotionActions,
@@ -8503,6 +8504,14 @@ export async function askServerProject(options: {
           }
         });
       }
+      const canonicalSupportUnits =
+        crossLayerFlowQuestion && canonicalFlowPlan
+          ? buildCanonicalFlowSupportUnits({
+              canonicalFlowPlan,
+              rankedUnits: rankedRetrievalUnits,
+              limit: 6
+            })
+          : [];
 
       const bestSearch =
         [...results].sort((a, b) => {
@@ -8530,6 +8539,7 @@ export async function askServerProject(options: {
         linkedFlowEvidence: linkedFlows,
         downstreamFlowTraces: downstream,
         canonicalFlowPlan,
+        canonicalSupportUnits,
         rankedOntologyNodes,
         rankedOntologyProjections,
         ontologyRerankContext,
@@ -8554,6 +8564,7 @@ export async function askServerProject(options: {
       linkedEaiEvidence: Array<{ interfaceId: string }>;
       downstreamFlowTraces: Array<{ phase: string; serviceMethod: string }>;
       canonicalFlowPlan: CanonicalLinkedFlowPlan | null;
+      canonicalSupportUnits: CanonicalFlowSupportUnit[];
       rankedOntologyNodes: Array<{ node: { id: string } }>;
       rankedOntologyProjections: Array<{ projection: { id: string } }>;
     }) =>
@@ -8589,6 +8600,7 @@ export async function askServerProject(options: {
       linkedFlowEvidence,
       downstreamFlowTraces,
       canonicalFlowPlan: initialCanonicalFlowPlan,
+      canonicalSupportUnits,
       rankedOntologyNodes,
       rankedOntologyProjections,
       ontologyRerankContext,
@@ -8756,7 +8768,8 @@ export async function askServerProject(options: {
             hydratedEvidenceCount: promptHydratedEvidence.length,
             linkedEaiEvidenceCount: promptLinkedEaiEvidence.length,
             linkedFlowEvidenceCount: promptLinkedFlowEvidence.length,
-            downstreamTraceCount: downstreamFlowTraces.length
+            downstreamTraceCount: downstreamFlowTraces.length,
+            canonicalSupportUnitCount: canonicalSupportUnits.length
           }
         });
         await appendProjectDebugEvent({
@@ -8778,6 +8791,7 @@ export async function askServerProject(options: {
           "For logic questions, prefer code-level evidence over XML-only evidence.",
           "If linkedEaiEvidence is present, prefer those interfaces over unrelated XML-only candidates and cite the interfaceId explicitly.",
           "If linkedFlowEvidence is present for a cross-layer question, explicitly connect frontend screen/route -> API URL -> gateway/controller -> service.",
+          "If canonicalSupportUnits is present, use it to ground DTO/store/query/EAI/async support details for the representative path and avoid broad unrelated implementation details.",
           "If confidence is low, explicitly say uncertainty and missing coverage.",
           "If hydratedEvidence contains callee:* method blocks, use at least one of them in the answer when explaining the internal flow."
         ].join("\n"),
@@ -8825,6 +8839,7 @@ export async function askServerProject(options: {
             hydratedEvidence: promptHydratedEvidence,
             linkedEaiEvidence: promptLinkedEaiEvidence,
             linkedFlowEvidence: promptLinkedFlowEvidence,
+            canonicalSupportUnits,
             canonicalLinkedFlowPlan: canonicalCrossLayerPlan
               ? {
                   primary: canonicalCrossLayerPlan.primary
@@ -9045,6 +9060,7 @@ export async function askServerProject(options: {
           linkedEaiEvidence,
           downstreamFlowTraces,
           canonicalFlowPlan: canonicalCrossLayerPlan,
+          canonicalSupportUnits,
           rankedOntologyNodes,
           rankedOntologyProjections
         });
@@ -9123,6 +9139,7 @@ export async function askServerProject(options: {
             linkedFlowEvidence,
             downstreamFlowTraces,
             canonicalFlowPlan: canonicalCrossLayerPlan,
+            canonicalSupportUnits,
             rankedOntologyNodes,
             rankedOntologyProjections,
             ontologyRerankContext,
