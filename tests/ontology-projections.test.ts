@@ -350,6 +350,54 @@ describe("ontology projections", () => {
     );
   });
 
+  it("prefers cross-layer representative paths over service-only workflow paths", () => {
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      knowledgeSchema,
+      retrievalUnits: {
+        ...retrievalUnits,
+        units: [
+          ...retrievalUnits.units,
+          {
+            id: "unit:flow:service-only",
+            type: "flow",
+            title: "service only workflow",
+            summary: "service family only",
+            confidence: 0.95,
+            validatedStatus: "derived",
+            entityIds: [
+              "controller:MonimoAsyncController.jellyPayRes",
+              "controller:MonimoAsyncController.jellyPayRes"
+            ],
+            edgeIds: [],
+            searchText: ["workflow", "service"],
+            domains: ["member-auth"],
+            subdomains: [],
+            channels: ["monimo"],
+            actions: ["action-check"],
+            moduleRoles: ["async-support"],
+            processRoles: [],
+            evidencePaths: ["dcp-async/src/main/java/com/example/MonimoAsyncController.java"]
+          }
+        ],
+        summary: {
+          ...retrievalUnits.summary,
+          unitCount: 3,
+          unitTypeCounts: { flow: 2, "eai-link": 1 }
+        }
+      }
+    });
+    const snapshot = buildOntologyProjectionSnapshot({ ontologyGraph });
+    const frontBack = snapshot.projections.find((projection) => projection.type === "front-back-flow");
+
+    expect(frontBack?.representativePaths[0]?.nodeIds).toEqual(
+      expect.arrayContaining([
+        "route:/monimo/callback",
+        "api:/monimo/jellyPayRes",
+        "controller:MonimoAsyncController.jellyPayRes"
+      ])
+    );
+  });
+
   it("includes ui-action and gateway-handler nodes in front-back projections", () => {
     const ontologyGraph = buildOntologyGraphSnapshot({
       knowledgeSchema: {

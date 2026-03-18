@@ -103,6 +103,45 @@ function flowNodeRank(type: string): number {
   return ranks[type] ?? 99;
 }
 
+function scoreFrontBackPath(options: {
+  nodeIds: string[];
+  edgeIds: string[];
+  ontologyGraph: OntologyGraphSnapshot;
+}): number {
+  const { nodeIds, edgeIds, ontologyGraph } = options;
+  const nodesById = new Map(ontologyGraph.nodes.map((node) => [node.id, node]));
+  const edgesById = new Map(ontologyGraph.edges.map((edge) => [edge.id, edge]));
+  const nodeTypes = nodeIds.map((id) => nodesById.get(id)?.type ?? "");
+  const uniqueNodeTypes = new Set(nodeTypes.filter(Boolean));
+  const edges = edgeIds.map((id) => edgesById.get(id)).filter(Boolean) as OntologyGraphSnapshot["edges"];
+  const edgeTypes = edges.map((edge) => edge.type);
+  const routeLikeCount = nodeTypes.filter((type) => ["route", "ui-action", "api"].includes(type)).length;
+  const backendCount = nodeTypes.filter((type) => ["gateway-handler", "controller", "service"].includes(type)).length;
+  const transitionCount = edgeTypes.filter((type) => ["routes-to", "proxies-to", "calls"].includes(type)).length;
+  const onlyServiceFamily = uniqueNodeTypes.size === 1 && uniqueNodeTypes.has("service");
+
+  let score = 0;
+  score += uniqueNodeTypes.size * 12;
+  score += routeLikeCount * 14;
+  score += backendCount * 12;
+  score += transitionCount * 18;
+  score += edgeTypes.filter((type) => type === "transitions-to").length * 4;
+  score += Math.min(nodeIds.length, 6) * 3;
+
+  if (nodeTypes.includes("api")) score += 24;
+  if (nodeTypes.includes("controller")) score += 24;
+  if (nodeTypes.includes("service")) score += 12;
+  if (nodeTypes.includes("gateway-handler")) score += 16;
+  if (nodeTypes.includes("route") || nodeTypes.includes("ui-action")) score += 20;
+
+  if (onlyServiceFamily) score -= 60;
+  if (routeLikeCount === 0) score -= 22;
+  if (backendCount === 0) score -= 18;
+  if (transitionCount === 0) score -= 18;
+
+  return score;
+}
+
 export function deriveFallbackFrontBackPaths(options: {
   ontologyGraph: OntologyGraphSnapshot;
   frontBackNodeIds: string[];
@@ -209,13 +248,20 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
 
   const flowPathsFromUnits = ontologyGraph.nodes
     .filter((node) => node.type === "retrieval-unit" && node.attributes.unitType === "flow")
-    .slice(0, 12)
     .map((node) => ({
       id: `path:${node.id}`,
       label: node.label,
       nodeIds: unique([node.id, ...((node.attributes.entityIds as string[] | undefined) ?? [])]),
       edgeIds: ontologyGraph.edges.filter((edge) => edge.fromId === node.id && edge.type.startsWith("references-")).map((edge) => edge.id)
-    }));
+    }))
+    .sort((a, b) => {
+      const scoreDiff =
+        scoreFrontBackPath({ nodeIds: b.nodeIds, edgeIds: b.edgeIds, ontologyGraph }) -
+        scoreFrontBackPath({ nodeIds: a.nodeIds, edgeIds: a.edgeIds, ontologyGraph });
+      if (scoreDiff !== 0) return scoreDiff;
+      return a.label.localeCompare(b.label);
+    })
+    .slice(0, 12);
 
   const frontBackNodeIds = ontologyGraph.nodes
     .filter((node) => ["route", "ui-action", "api", "gateway-handler", "controller", "service", "decision-path", "async-channel", "retrieval-unit"].includes(node.type) && (node.type !== "retrieval-unit" || node.attributes.unitType === "flow"))
