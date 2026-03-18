@@ -2136,6 +2136,23 @@ export default function HomePage() {
           >
             {ontologyViewLoading ? "불러오는 중" : "새로고침"}
           </button>
+          <a
+            href={selectedProjectId ? `/ontology/${selectedProjectId}` : "#"}
+            className="secondary"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textDecoration: "none",
+              minHeight: 44,
+              padding: "0 14px",
+              borderRadius: 10,
+              pointerEvents: selectedProjectId ? "auto" : "none",
+              opacity: selectedProjectId ? 1 : 0.5
+            }}
+          >
+            전체화면 보기
+          </a>
         </div>
 
         <div className="hint" style={{ marginTop: 8 }}>
