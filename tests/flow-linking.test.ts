@@ -535,6 +535,58 @@ describe("flow linking", () => {
     expect(output.answer).toContain("대표 E2E 경로군");
   });
 
+  it("keeps deterministic phase selection inside the primary workflow family", () => {
+    const output = buildDeterministicFlowAnswer({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 엔드투엔드로 어떻게 돌아가는지 설명해줘.",
+      questionTags: ["보험금", "청구", "benefit", "claim", "action-read", "action-write", "action-document"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020540M",
+          screenCode: "MDP-MYINT020540M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/spotSave",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/spotSave",
+          backendControllerMethod: "AccBenefitClaimController.spotSave",
+          serviceHints: ["AccBenefitClaimService.spotSave", "CallAccBenefitClaimService.callAddinsert"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-write"],
+          confidence: 0.85,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+          screenCode: "MDP-MYINT020220M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/doc/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/doc/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["AccBenefitClaimService.saveBenefitClaimDoc"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-document"],
+          confidence: 0.84,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020100M",
+          screenCode: "MDP-MYINT020100M",
+          apiUrl: "/gw/api/insurance/premium/payment/proc",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/premium/payment/proc",
+          backendControllerMethod: "PremiumPaymentController.premiumPaymentProc",
+          serviceHints: ["PremiumPaymentService.premiumPaymentProc"],
+          capabilityTags: ["insurance", "payment", "action-write"],
+          confidence: 0.92,
+          reasons: []
+        }
+      ]
+    });
+
+    expect(output.answer).toContain("AccBenefitClaimController.spotSave");
+    expect(output.answer).toContain("AccBenefitClaimController.insertBenefitClaimDoc");
+    expect(output.answer).not.toContain("PremiumPaymentController.premiumPaymentProc");
+  });
+
   it("prefers coherent namespace clusters during linked flow discovery", () => {
     const coherentSnapshot = {
       ...snapshot,

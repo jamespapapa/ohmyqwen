@@ -329,6 +329,9 @@ function buildCanonicalFlowCluster(
     if (anchorFamilyKey && flowFamilyKey === anchorFamilyKey) {
       return true;
     }
+    if (anchorFamilyKey && flowFamilyKey && flowFamilyKey !== anchorFamilyKey) {
+      return false;
+    }
     if (questionNamespaceTokens.length > 0 && questionNamespaceOverlap === 0) {
       return false;
     }
@@ -837,6 +840,7 @@ export function buildDeterministicFlowAnswer(options: {
   const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
   const minSharedNonActionTags =
     nonActionQuestionTags.length >= 3 ? 2 : nonActionQuestionTags.length >= 1 ? 1 : 0;
+  const primaryWorkflowFamily = deriveFlowFamilyKey(primary);
 
   const scorePhaseCandidate = (
     item: LinkedFlowEvidence,
@@ -854,6 +858,7 @@ export function buildDeterministicFlowAnswer(options: {
     const itemTagSet = new Set(item.capabilityTags ?? []);
     const sharedQuestionTags = questionTags.filter((tag) => itemTagSet.has(tag));
     const actionAlignment = scoreActionAlignment(inferFlowActionTags(item), desiredActions);
+    const itemWorkflowFamily = deriveFlowFamilyKey(item);
     const genericAlignment = scoreOntologySignalAlignment(questionTags, item.capabilityTags ?? [], {
       question: options.question,
       pathText: [item.routePath, item.screenPath, item.backendPath].join(" "),
@@ -898,6 +903,11 @@ export function buildDeterministicFlowAnswer(options: {
     }
     if (specificQuestionTags.length > 0 && specificSignalMatches.length === 0) {
       score -= 140;
+    }
+    if (primaryWorkflowFamily && itemWorkflowFamily === primaryWorkflowFamily) {
+      score += 55;
+    } else if (primaryWorkflowFamily && itemWorkflowFamily && itemWorkflowFamily !== primaryWorkflowFamily) {
+      score -= 120;
     }
     return score;
   };
