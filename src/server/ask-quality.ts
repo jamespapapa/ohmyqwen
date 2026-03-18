@@ -1,5 +1,6 @@
 import {
   classifyAskQuestionType,
+  extractAskQuestionFlowTargets,
   inferQuestionActionHints,
   getAskQuestionTypeContract,
   type AskQuestionType,
@@ -98,6 +99,61 @@ function answerMentionsFlowDetail(answer: string, flow: AskLinkedFlowQualityEvid
   );
 }
 
+function normalizeTargetText(value: string): string {
+  return value.trim().replace(/^\/+/, "").toLowerCase();
+}
+
+function flowMatchesQuestionTargets(
+  flow: AskLinkedFlowQualityEvidence,
+  targets: ReturnType<typeof extractAskQuestionFlowTargets>
+): boolean {
+  const flowTexts = [
+    flow.screenCode,
+    flow.routePath,
+    flow.apiUrl,
+    flow.gatewayPath,
+    flow.gatewayControllerMethod,
+    flow.backendPath,
+    flow.backendControllerMethod,
+    ...(flow.serviceHints ?? [])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (
+    targets.endpointPaths.some((target) => {
+      const normalizedTarget = normalizeTargetText(target);
+      return flowTexts.includes(normalizedTarget) || flowTexts.includes(`/gw/api/${normalizedTarget}`);
+    })
+  ) {
+    return true;
+  }
+  if (targets.controllerMethods.some((target) => flowTexts.includes(target.toLowerCase()))) {
+    return true;
+  }
+  if (targets.controllerClasses.some((target) => flowTexts.includes(target.toLowerCase()))) {
+    return true;
+  }
+  return false;
+}
+
+function answerMentionsWorkflowSequence(answer: string, sequence: string[]): boolean {
+  if (sequence.length < 2) {
+    return true;
+  }
+  const lower = answer.toLowerCase();
+  let matchedCount = 0;
+  let lastIndex = -1;
+  for (const step of sequence) {
+    const index = lower.indexOf(step.toLowerCase(), Math.max(0, lastIndex + 1));
+    if (index >= 0) {
+      matchedCount += 1;
+      lastIndex = index;
+    }
+  }
+  return matchedCount >= Math.min(sequence.length, 3);
+}
+
 function topLevelModulesFromPaths(paths: string[]): string[] {
   return unique(paths.map((entry) => entry.replace(/\\/g, "/").split("/")[0] ?? ""));
 }
@@ -169,6 +225,7 @@ export function qualityGateForAskOutput(options: {
   const matchedOntologyNodeTypes = unique(options.matchedOntologyNodeTypes ?? []);
   const matchedOntologyNodeLabels = unique(options.matchedOntologyNodeLabels ?? []);
   const matchedOntologyNodeActions = unique(options.matchedOntologyNodeActions ?? []);
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
   const questionType =
     options.questionType ??
     classifyAskQuestionType({
@@ -232,11 +289,29 @@ export function qualityGateForAskOutput(options: {
 
   if (questionType === "symbol_deep_trace") {
     const targetSymbols = extractTargetSymbolNames(options.question);
+    const targetFlowTerms = unique([
+      ...targetSymbols,
+      ...flowTargets.endpointPaths,
+      ...flowTargets.controllerClasses,
+      ...flowTargets.controllerMethods
+    ]);
+    const mentionsEndpointTarget =
+      flowTargets.endpointPaths.length === 0 ||
+      answerMentionsAny(options.output.answer, flowTargets.endpointPaths);
     if (targetSymbols.length > 0 && !answerMentionsAny(options.output.answer, targetSymbols)) {
       failures.push("missing-target-symbol-detail");
     }
+    if (targetFlowTerms.length > 0 && !answerMentionsAny(options.output.answer, targetFlowTerms)) {
+      failures.push("missing-target-flow-detail");
+    }
+    if (!mentionsEndpointTarget) {
+      failures.push("missing-target-flow-detail");
+    }
     if (calleeNames.length > 0 && !answerMentionsAny(options.output.answer, calleeNames)) {
       failures.push("missing-symbol-callee-detail");
+    }
+    if (!answerMentionsWorkflowSequence(options.output.answer, flowTargets.workflowSequence)) {
+      failures.push("missing-workflow-sequence-detail");
     }
     if (!/(호출|callee|service|controller|dao|mapper|eai|이후|다음|entry|return|downstream)/i.test(options.output.answer)) {
       failures.push("missing-symbol-trace-structure");
@@ -253,6 +328,9 @@ export function qualityGateForAskOutput(options: {
         ...(item.serviceHints ?? [])
       ])
     ]);
+    const mentionsEndpointTarget =
+      flowTargets.endpointPaths.length === 0 ||
+      answerMentionsAny(options.output.answer, flowTargets.endpointPaths);
     if (contract.requireBusinessTraceDetail && directTraceSignals.length > 0 && !answerMentionsAny(options.output.answer, directTraceSignals)) {
       failures.push("missing-business-trace-detail");
     }
@@ -268,6 +346,15 @@ export function qualityGateForAskOutput(options: {
       !directQuestionActions.some((action) => actionAnswerPatterns(action).test(options.output.answer))
     ) {
       failures.push("missing-aligned-action-detail");
+    }
+    if (flowTargets.exactTerms.length > 0 && !answerMentionsAny(options.output.answer, flowTargets.exactTerms)) {
+      failures.push("missing-target-flow-detail");
+    }
+    if (!mentionsEndpointTarget) {
+      failures.push("missing-target-flow-detail");
+    }
+    if (!answerMentionsWorkflowSequence(options.output.answer, flowTargets.workflowSequence)) {
+      failures.push("missing-workflow-sequence-detail");
     }
   }
 
@@ -392,6 +479,10 @@ export function qualityGateForAskOutput(options: {
     });
     const canonicalPrimary = canonicalFlowPlan.primary;
     const canonicalFlows = canonicalFlowPlan.canonicalFlows;
+    const targetAlignedFlows =
+      flowTargets.exactTerms.length > 0
+        ? linkedFlowEvidence.filter((item) => flowMatchesQuestionTargets(item, flowTargets))
+        : linkedFlowEvidence;
     const specificQuestionCapabilities = extractSpecificOntologySignals(questionCapabilities);
     const flowSignals = linkedFlowEvidence.map((item) => ({
       item,
@@ -461,6 +552,13 @@ export function qualityGateForAskOutput(options: {
     const answerMentionsCanonicalFlow =
       canonicalFlows.length === 0 ||
       canonicalFlows.some((item) => answerMentionsFlowDetail(options.output.answer, item));
+    const answerMentionsTargetFlow =
+      flowTargets.exactTerms.length === 0 ||
+      targetAlignedFlows.some((item) => answerMentionsFlowDetail(options.output.answer, item));
+    const canonicalPrimaryMatchesTarget =
+      !canonicalPrimary ||
+      flowTargets.exactTerms.length === 0 ||
+      flowMatchesQuestionTargets(canonicalPrimary, flowTargets);
 
     if (!linkedFlowEvidence.some((item) => (item.screenCode && options.output.answer.includes(item.screenCode)) || (item.routePath && options.output.answer.includes(item.routePath)))) {
       failures.push("missing-frontend-route-evidence");
@@ -484,11 +582,23 @@ export function qualityGateForAskOutput(options: {
     if (questionCapabilities.length > 0 && !answerAlignedFlow) {
       failures.push("missing-aligned-flow-detail");
     }
+    if (flowTargets.exactTerms.length > 0 && targetAlignedFlows.length === 0) {
+      failures.push("missing-target-flow-evidence");
+    }
+    if (!canonicalPrimaryMatchesTarget) {
+      failures.push("target-flow-mismatch");
+    }
+    if (!answerMentionsTargetFlow) {
+      failures.push("missing-target-flow-detail");
+    }
     if (!answerMentionsCanonicalPrimary) {
       failures.push("missing-representative-flow-detail");
     }
     if (!answerMentionsCanonicalFlow) {
       failures.push("missing-canonical-flow-detail");
+    }
+    if (!answerMentionsWorkflowSequence(options.output.answer, flowTargets.workflowSequence)) {
+      failures.push("missing-workflow-sequence-detail");
     }
     if (specificQuestionCapabilities.length > 0 && !answerSpecificFlow) {
       failures.push("missing-specific-ontology-signal-detail");

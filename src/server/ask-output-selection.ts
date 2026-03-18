@@ -34,7 +34,10 @@ function hasCanonicalFlowFailure(failures: string[]): boolean {
       "missing-representative-flow-detail",
       "missing-canonical-flow-detail",
       "missing-aligned-flow-detail",
-      "missing-specific-ontology-signal-detail"
+      "missing-specific-ontology-signal-detail",
+      "missing-target-flow-detail",
+      "missing-workflow-sequence-detail",
+      "target-flow-mismatch"
     ].includes(failure)
   );
 }

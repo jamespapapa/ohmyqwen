@@ -33,4 +33,12 @@ describe("server ask strategy normalization", () => {
 
     expect(normalizeAskStrategyForQuestion(question, "method_trace")).toBe("module_flow_topdown");
   });
+
+  it("normalizes explicit endpoint/controller trace questions to method_trace instead of cross_layer_flow", () => {
+    const question =
+      "AccBenefitClaimController 안의 claim/doc/insert api가 하는 일을 분석하고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 봐줘.";
+
+    expect(normalizeAskStrategyForQuestion(question, "cross_layer_flow")).toBe("method_trace");
+    expect(classifyQuestionIntentFallback(question).strategy).toBe("method_trace");
+  });
 });

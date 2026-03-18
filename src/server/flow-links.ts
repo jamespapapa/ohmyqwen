@@ -2,7 +2,7 @@ import type { FrontBackGraphLink, FrontBackGraphSnapshot } from "./front-back-gr
 import type { DownstreamFlowTrace } from "./flow-trace.js";
 import type { LearnedKnowledgeSnapshot } from "./learned-knowledge.js";
 import { extractLearnedKnowledgeTagsFromTexts } from "./learned-knowledge.js";
-import { inferQuestionActionHints } from "./question-types.js";
+import { extractAskQuestionFlowTargets, inferQuestionActionHints } from "./question-types.js";
 import {
   buildQuestionOntologySignals,
   extractOntologyTextSignalsFromTexts,
@@ -103,6 +103,53 @@ function flowText(item: {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function normalizeFlowTarget(value: string): string {
+  return value.trim().replace(/^\/+/, "").replace(/\/+/g, "/").toLowerCase();
+}
+
+function flowMatchesEndpointTarget(flow: LinkedFlowEvidence, target: string): boolean {
+  const normalizedTarget = normalizeFlowTarget(target);
+  const haystack = [
+    flow.routePath,
+    flow.screenPath,
+    flow.apiUrl,
+    flow.gatewayPath,
+    flow.backendPath,
+    flow.backendControllerMethod,
+    flow.gatewayControllerMethod,
+    ...(flow.serviceHints ?? [])
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(normalizedTarget) || haystack.includes(`/gw/api/${normalizedTarget}`);
+}
+
+function flowMatchesWorkflowStep(flow: LinkedFlowEvidence, step: string): boolean {
+  const normalizedStep = normalizeFlowTarget(step);
+  return flowText(flow).includes(normalizedStep);
+}
+
+function flowMatchesQuestionTargets(
+  flow: LinkedFlowEvidence,
+  targets: ReturnType<typeof extractAskQuestionFlowTargets>
+): boolean {
+  if (targets.endpointPaths.some((target) => flowMatchesEndpointTarget(flow, target))) {
+    return true;
+  }
+  const lowerFlowText = flowText(flow);
+  if (targets.controllerMethods.some((target) => lowerFlowText.includes(target.toLowerCase()))) {
+    return true;
+  }
+  if (targets.controllerClasses.some((target) => lowerFlowText.includes(target.toLowerCase()))) {
+    return true;
+  }
+  if (targets.workflowSequence.some((step) => flowMatchesWorkflowStep(flow, step))) {
+    return true;
+  }
+  return false;
 }
 
 function inferFlowActionTags(item: {
@@ -294,9 +341,11 @@ function classifyFlowPhase(flow: LinkedFlowEvidence): DownstreamFlowTrace["phase
 
 function buildCanonicalFlowCluster(
   flows: LinkedFlowEvidence[],
-  questionTags: string[]
+  questionTags: string[],
+  question?: string
 ): LinkedFlowEvidence[] {
-  const anchor = selectCanonicalFlowAnchor(flows, questionTags);
+  const flowTargets = extractAskQuestionFlowTargets(question ?? "");
+  const anchor = selectCanonicalFlowAnchor(flows, questionTags, flowTargets);
   if (!anchor) {
     return [];
   }
@@ -323,8 +372,12 @@ function buildCanonicalFlowCluster(
     const flowNamespace = extractFlowNamespaceTokens(flow);
     const flowFamilyKey = deriveFlowFamilyKey(flow);
     const questionNamespaceOverlap = questionNamespaceTokens.filter((token) => flowNamespace.includes(token)).length;
+    const exactTargetMatch = flowMatchesQuestionTargets(flow, flowTargets);
     if (sharedSpecificSignals.length > 0) {
       return true;
+    }
+    if (flowTargets.exactTerms.length > 0) {
+      return exactTargetMatch;
     }
     if (anchorFamilyKey && flowFamilyKey === anchorFamilyKey) {
       return true;
@@ -353,7 +406,8 @@ function buildCanonicalFlowCluster(
 
 function selectCanonicalFlowAnchor(
   flows: LinkedFlowEvidence[],
-  questionTags: string[]
+  questionTags: string[],
+  flowTargets: ReturnType<typeof extractAskQuestionFlowTargets>
 ): LinkedFlowEvidence | undefined {
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
 
@@ -366,7 +420,23 @@ function selectCanonicalFlowAnchor(
       );
       const candidateActions = new Set(inferFlowActionTags(candidate));
       const specificMatches = specificQuestionTags.filter((tag) => (candidate.capabilityTags ?? []).includes(tag));
+      const exactEndpointMatches = flowTargets.endpointPaths.filter((target) => flowMatchesEndpointTarget(candidate, target)).length;
+      const exactControllerMethodMatches = flowTargets.controllerMethods.filter((target) =>
+        flowText(candidate).includes(target.toLowerCase())
+      ).length;
+      const exactControllerClassMatches = flowTargets.controllerClasses.filter((target) =>
+        flowText(candidate).includes(target.toLowerCase())
+      ).length;
+      const exactSequenceMatches = flowTargets.workflowSequence.filter((step) => flowMatchesWorkflowStep(candidate, step)).length;
+      const exactTargetMatchCount =
+        exactEndpointMatches + exactControllerMethodMatches + exactControllerClassMatches + exactSequenceMatches;
       let score = candidate.confidence * 100;
+
+      if (exactTargetMatchCount > 0) {
+        score += exactTargetMatchCount * 160;
+      } else if (flowTargets.exactTerms.length > 0) {
+        score -= 220;
+      }
 
       if (specificMatches.length > 0) {
         score += specificMatches.length * 38;
@@ -440,7 +510,11 @@ export function buildCanonicalLinkedFlowPlan(options: {
 }): CanonicalLinkedFlowPlan {
   const effectiveQuestionTags =
     options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
-  const canonicalFlows = buildCanonicalFlowCluster(options.linkedFlowEvidence, effectiveQuestionTags);
+  const canonicalFlows = buildCanonicalFlowCluster(
+    options.linkedFlowEvidence,
+    effectiveQuestionTags,
+    options.question
+  );
   return {
     primary: canonicalFlows[0],
     canonicalFlows,
@@ -543,6 +617,7 @@ export function buildLinkedFlowEvidence(options: {
 }): LinkedFlowEvidence[] {
   const tokens = tokenize(options.question);
   const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question: options.question });
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
   const questionNamespaceTokens = unique(
     specificQuestionTags
@@ -594,6 +669,72 @@ export function buildLinkedFlowEvidence(options: {
       if (/(화면|screen|page|뷰|view)/i.test(options.question) && screenCode) {
         score += 6;
         reasons.push("screen-code-match");
+      }
+      const exactEndpointMatches = flowTargets.endpointPaths.filter((target) =>
+        [
+          link.frontend.routePath,
+          link.api.rawUrl,
+          link.api.normalizedUrl,
+          link.gateway.path,
+          link.backend.path
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizeFlowTarget(target))
+      ).length;
+      const exactControllerMatches =
+        flowTargets.controllerMethods.filter((target) =>
+          [link.gateway.controllerMethod, link.backend.controllerMethod, ...link.backend.serviceHints]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+            .includes(target.toLowerCase())
+        ).length +
+        flowTargets.controllerClasses.filter((target) =>
+          [link.gateway.controllerMethod, link.backend.controllerMethod, ...link.backend.serviceHints]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase()
+            .includes(target.toLowerCase())
+        ).length;
+      const workflowSequenceMatches = flowTargets.workflowSequence.filter((step) => {
+        const normalizedStep = normalizeFlowTarget(step);
+        return [
+          link.frontend.screenCode,
+          link.frontend.routePath,
+          link.api.rawUrl,
+          link.api.normalizedUrl,
+          link.gateway.controllerMethod,
+          link.backend.path,
+          link.backend.controllerMethod,
+          ...link.backend.serviceHints
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedStep);
+      }).length;
+      if (exactEndpointMatches > 0) {
+        score += exactEndpointMatches * 96;
+        reasons.push("exact-endpoint-match");
+      }
+      if (exactControllerMatches > 0) {
+        score += exactControllerMatches * 78;
+        reasons.push("exact-controller-match");
+      }
+      if (workflowSequenceMatches > 0) {
+        score += workflowSequenceMatches * 28;
+        reasons.push("workflow-sequence-match");
+      }
+      if (
+        flowTargets.exactTerms.length > 0 &&
+        exactEndpointMatches === 0 &&
+        exactControllerMatches === 0 &&
+        workflowSequenceMatches === 0
+      ) {
+        score -= 64;
+        reasons.push("missing-exact-target-match");
       }
       if (
         hitPaths.some(
@@ -835,6 +976,7 @@ export function buildDeterministicFlowAnswer(options: {
   }
 
   const questionTags = effectiveQuestionTags;
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
   const specificQuestionTags = extractSpecificOntologySignals(questionTags);
   const desiredActions = expandDesiredActionTags(inferQuestionActionHints(options.question, questionTags));
   const nonActionQuestionTags = questionTags.filter((tag) => !isActionCapabilityTag(tag));
@@ -943,6 +1085,47 @@ export function buildDeterministicFlowAnswer(options: {
     methodPatterns: [/doc/i, /agreement/i, /upload/i, /pdf/i]
   });
 
+  const orderedSequenceFlows =
+    flowTargets.workflowSequence.length >= 2
+      ? unique(
+          flowTargets.workflowSequence
+            .map((step) => {
+              const normalizedStep = normalizeFlowTarget(step);
+              return [...canonicalFlows]
+                .map((item) => {
+                  let score = item.confidence * 100;
+                  if (flowMatchesWorkflowStep(item, step)) {
+                    score += 180;
+                  }
+                  const itemWorkflowFamily = deriveFlowFamilyKey(item);
+                  if (primaryWorkflowFamily && itemWorkflowFamily === primaryWorkflowFamily) {
+                    score += 35;
+                  }
+                  if (flowTargets.endpointPaths.some((target) => flowMatchesEndpointTarget(item, target))) {
+                    score += 40;
+                  }
+                  if (
+                    [item.backendControllerMethod, ...(item.serviceHints ?? [])]
+                      .join(" ")
+                      .toLowerCase()
+                      .includes(normalizedStep)
+                  ) {
+                    score += 28;
+                  }
+                  return { item, score };
+                })
+                .sort((a, b) => b.score - a.score)
+                .find((entry) => entry.score >= 120)?.item;
+            })
+            .filter((item): item is LinkedFlowEvidence => Boolean(item))
+            .map((item) => `${item.apiUrl}|${item.backendControllerMethod}`)
+        )
+          .map((key) =>
+            canonicalFlows.find((candidate) => `${candidate.apiUrl}|${candidate.backendControllerMethod}` === key)
+          )
+          .filter((item): item is LinkedFlowEvidence => Boolean(item))
+      : [];
+
   const fallbackPhaseFlow = (phase: DownstreamFlowTrace["phase"]): LinkedFlowEvidence | undefined =>
     [...canonicalFlows]
       .filter((candidate) => classifyFlowPhase(candidate) === phase)
@@ -950,6 +1133,7 @@ export function buildDeterministicFlowAnswer(options: {
 
   const orderedFlowCandidates = unique(
     [
+      ...orderedSequenceFlows,
       checkFlow ?? fallbackPhaseFlow("action-check"),
       inquiryFlow ?? fallbackPhaseFlow("action-read"),
       insertFlow ?? (classifyFlowPhase(primary) === "action-write" ? primary : undefined) ?? fallbackPhaseFlow("action-write"),
@@ -962,6 +1146,7 @@ export function buildDeterministicFlowAnswer(options: {
   )
     .map((key) =>
       [
+        ...orderedSequenceFlows,
         checkFlow,
         inquiryFlow,
         insertFlow,
@@ -1050,7 +1235,13 @@ export function buildDeterministicFlowAnswer(options: {
   });
 
   const primaryOverview =
-    orderedFlows.length > 1
+    flowTargets.workflowSequence.length >= 2 && orderedFlows.length >= 2
+      ? `질문에서 지정한 대표 workflow sequence는 ${flowTargets.workflowSequence.join(" -> ")} 이며, 정적으로 복원된 관련 경로군은 ${
+          orderedFlows
+            .map((flow) => `${flow.screenCode ?? flow.routePath ?? "front"} -> ${flow.apiUrl} -> ${flow.backendControllerMethod}`)
+            .join(" | ")
+        } 이다.`
+      : orderedFlows.length > 1
       ? `정적으로 복원된 대표 E2E 경로군은 ${
           orderedFlows
             .map((flow) => `${flow.screenCode ?? flow.routePath ?? "front"} -> ${flow.apiUrl} -> ${flow.backendControllerMethod}`)

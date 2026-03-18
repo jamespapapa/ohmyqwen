@@ -54,7 +54,14 @@ export function tokenizeOntologyText(value: string): string[] {
 }
 
 export function isCrossLayerFlowQuestion(question: string): boolean {
-  return /(프론트|frontend|화면|버튼|vue|screen|ui|api|gateway)/i.test(question) && /(백엔드|backend|service|controller|route|흐름|trace|추적|거쳐)/i.test(question);
+  const explicitEndToEnd =
+    /(엔드투엔드|e2e|front\s*to\s*back|frontend\s*to\s*backend|frontend부터 backend|프론트부터 백엔드까지)/i.test(
+      question
+    );
+  const frontendCue = /(프론트|frontend|화면|버튼|vue|screen|ui|route|router)/i.test(question);
+  const gatewayCue = /(gateway|게이트웨이|\/gw\/api|gw\/api)/i.test(question);
+  const backendCue = /(백엔드|backend|service|controller|requestmapping|route|라우팅)/i.test(question);
+  return explicitEndToEnd || (frontendCue && backendCue) || (gatewayCue && backendCue);
 }
 
 export function extractOntologyTextSignalsFromTexts(

@@ -55,6 +55,27 @@ describe("ask output selection", () => {
     expect(choice.reason).toBe("deterministic-canonical-fallback");
   });
 
+  it("prefers deterministic output when generated answer misses explicit target flow detail", () => {
+    const choice = selectPreferredAskOutput({
+      questionType: "cross_layer_flow",
+      retryTargetConfidence: 0.65,
+      deterministic,
+      generated: {
+        output: {
+          answer: "spotSave만 설명",
+          confidence: 0.73,
+          evidence: ["spotSave"],
+          caveats: []
+        },
+        gatePassed: true,
+        failures: ["missing-target-flow-detail", "missing-workflow-sequence-detail"]
+      }
+    });
+
+    expect(choice.source).toBe("deterministic");
+    expect(choice.reason).toBe("deterministic-canonical-fallback");
+  });
+
   it("keeps generated output for non cross-layer question types", () => {
     const choice = selectPreferredAskOutput({
       questionType: "module_role_explanation",

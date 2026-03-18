@@ -709,4 +709,63 @@ describe("ask quality gate", () => {
     expect(gate.failures).toContain("stale-retrieval-only");
   });
 
+  it("fails exact endpoint trace answers when the named target api is omitted", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "AccBenefitClaimController.spotSave 는 service 를 호출하고 resolveResponse 를 반환한다.",
+        confidence: 0.74,
+        evidence: ["controller evidence", "service evidence"],
+        caveats: []
+      },
+      question:
+        "AccBenefitClaimController 안의 claim/doc/insert api가 하는 일을 면밀히 분석해줘.",
+      questionType: "symbol_deep_trace",
+      hitPaths: [
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+          reason: "callee:AccBenefitClaimController.insertBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-target-flow-detail");
+  });
+
+  it("fails workflow sequence answers when ordered steps are omitted", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "AccBenefitClaimController.insertBenefitClaimDoc 는 service 저장을 수행한다.",
+        confidence: 0.72,
+        evidence: ["controller evidence", "service evidence"],
+        caveats: []
+      },
+      question:
+        "spotSave, validate, insert, doc/insert 순으로 호출하는 흐름을 면밀히 분석해줘.",
+      questionType: "symbol_deep_trace",
+      hitPaths: [
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+          reason: "callee:AccBenefitClaimController.insertBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(false);
+    expect(gate.failures).toContain("missing-workflow-sequence-detail");
+  });
+
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyAskQuestionType,
+  extractAskQuestionFlowTargets,
   inferQuestionActionHints,
   getAskQuestionTypeContract,
   getAskQuestionTypeRetrievalContract
@@ -117,5 +118,27 @@ describe("question types", () => {
     expect(inferQuestionActionHints("회원 상태 조회와 redis 세션 정보를 확인해줘.")).toEqual(
       expect.arrayContaining(["action-status-read", "action-state-store"])
     );
+  });
+
+  it("extracts explicit endpoint and ordered workflow targets from questions", () => {
+    const targets = extractAskQuestionFlowTargets(
+      "AccBenefitClaimController 안의 claim/doc/insert api를 분석하고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 봐줘."
+    );
+
+    expect(targets.endpointPaths).toEqual(expect.arrayContaining(["claim/doc/insert", "doc/insert"]));
+    expect(targets.controllerClasses).toContain("AccBenefitClaimController");
+    expect(targets.workflowSequence).toEqual(
+      expect.arrayContaining(["spotSave", "validate", "insert", "doc/insert"])
+    );
+  });
+
+  it("classifies explicit endpoint/controller questions as symbol_deep_trace even when api/controller words are present", () => {
+    const result = classifyAskQuestionType({
+      question:
+        "보험금 청구 로직 내에서 AccBenefitClaimController 안에 claim/doc/insert api가 있어. 이 api가 하는 일을 분석해줘.",
+      strategy: "cross_layer_flow"
+    });
+
+    expect(result.type).toBe("symbol_deep_trace");
   });
 });

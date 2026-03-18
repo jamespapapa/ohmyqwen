@@ -182,6 +182,7 @@ import {
 } from "./project-feedback.js";
 import {
   classifyAskQuestionType,
+  extractAskQuestionFlowTargets,
   getAskQuestionTypeRetrievalContract,
   type AskQuestionType
 } from "./question-types.js";
@@ -1445,6 +1446,7 @@ function buildAskQueryCandidates(options: {
   const targetSymbols = unique((options.targetSymbols ?? []).slice(0, 5));
   const moduleCandidates = unique((options.moduleCandidates ?? []).slice(0, 3));
   const questionTags = options.questionTags ?? buildQuestionOntologySignals({ question });
+  const flowTargets = extractAskQuestionFlowTargets(question);
   const capabilityTerms = unique(
     questionTags
       .flatMap((tag) => tag.replace(/^(channel:|concept:|module-role:|process:|module:)/, "").split(/[:/_-]+/))
@@ -1463,6 +1465,7 @@ function buildAskQueryCandidates(options: {
     question,
     compact,
     targetSymbols.length > 0 ? `${targetSymbols.join(" ")} ${compact}` : "",
+    flowTargets.exactTerms.length > 0 ? `${flowTargets.exactTerms.join(" ")} ${compact}` : "",
     moduleCandidates.length > 0 ? `${moduleCandidates.join(" ")} ${compact}` : ""
   ];
 
@@ -1494,6 +1497,12 @@ function buildAskQueryCandidates(options: {
   }
   if (ontologyTerms.length > 0) {
     candidates.push(`${ontologyTerms.join(" ")} ${compact}`.trim());
+  }
+  if (flowTargets.workflowSequence.length >= 2) {
+    candidates.push(`${flowTargets.workflowSequence.join(" ")} ${compact}`.trim());
+  }
+  if (flowTargets.endpointPaths.length > 0) {
+    candidates.push(`${flowTargets.endpointPaths.join(" ")} controller service ${compact}`.trim());
   }
 
   for (const moduleName of moduleCandidates) {
@@ -5773,6 +5782,18 @@ function buildAskFocusTokens(question: string): string[] {
     }
     tokens.add(signal.toLowerCase());
   }
+  const flowTargets = extractAskQuestionFlowTargets(question);
+  for (const value of [
+    ...flowTargets.endpointPaths,
+    ...flowTargets.controllerClasses,
+    ...flowTargets.controllerMethods,
+    ...flowTargets.workflowSequence
+  ]) {
+    for (const token of value.split(/[^a-z0-9가-힣]+/i).filter((item) => item.length >= 2)) {
+      tokens.add(token.toLowerCase());
+    }
+    tokens.add(value.toLowerCase());
+  }
 
   return Array.from(tokens).filter((item) => item.length >= 2).slice(0, 24);
 }
@@ -5792,6 +5813,10 @@ export function scoreAskHitRelevance(options: {
 }): number {
   const normalizedPath = toForwardSlash(options.hit.path).toLowerCase();
   const ext = path.extname(normalizedPath);
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
+  const lowerTitle = options.hit.title?.toLowerCase() ?? "";
+  const lowerSnippet = options.hit.snippet?.toLowerCase() ?? "";
+  const combinedText = `${normalizedPath} ${lowerTitle} ${lowerSnippet}`;
   let score = options.hit.score;
 
   if (pathMatchesAnyModule(normalizedPath, options.moduleCandidates)) {
@@ -5819,6 +5844,33 @@ export function scoreAskHitRelevance(options: {
   for (const token of options.focusTokens) {
     if (normalizedPath.includes(token)) {
       score += 12;
+    }
+  }
+
+  for (const endpointPath of flowTargets.endpointPaths) {
+    const normalizedEndpointPath = endpointPath.toLowerCase();
+    if (
+      normalizedPath.includes(normalizedEndpointPath) ||
+      normalizedPath.includes(`/gw/api/${normalizedEndpointPath}`) ||
+      combinedText.includes(normalizedEndpointPath)
+    ) {
+      score += 85;
+    }
+  }
+  for (const controllerMethod of flowTargets.controllerMethods) {
+    if (combinedText.includes(controllerMethod.toLowerCase())) {
+      score += 72;
+    }
+  }
+  for (const controllerClass of flowTargets.controllerClasses) {
+    if (combinedText.includes(controllerClass.toLowerCase())) {
+      score += 56;
+    }
+  }
+  for (const workflowStep of flowTargets.workflowSequence) {
+    const normalizedStep = workflowStep.toLowerCase();
+    if (combinedText.includes(normalizedStep)) {
+      score += 24;
     }
   }
 
@@ -6096,10 +6148,16 @@ export function classifyQuestionIntentFallback(question: string): {
 } {
   const moduleCandidates = extractModuleCandidates(question);
   const crossLayerFocused = isCrossLayerFlowQuestion(question);
+  const flowTargets = extractAskQuestionFlowTargets(question);
+  const exactFlowTargetFocused =
+    flowTargets.endpointPaths.length > 0 ||
+    flowTargets.controllerClasses.length > 0 ||
+    flowTargets.controllerMethods.length > 0;
+  const workflowSequenceFocused = flowTargets.workflowSequence.length >= 2;
   const methodFocused =
     /함수|메서드|method|호출|콜트리|이후|흐름|save[A-Z]|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*/i.test(
       question
-    );
+    ) || exactFlowTargetFocused || workflowSequenceFocused;
   const moduleFlowFocused =
     moduleCandidates.length > 0 &&
     /(내부|모듈|흐름|로직|탑다운|큰 그림|실행|처리|service|controller|domain)/i.test(question);
@@ -6113,15 +6171,29 @@ export function classifyQuestionIntentFallback(question: string): {
       strategy: "cross_layer_flow",
       confidence: 0.76,
       reason: "fallback: cross-layer frontend/backend flow question detected",
-      targetSymbols: [...extractClassCandidates(question), ...extractMethodCandidates(question)].slice(0, 8)
+      targetSymbols: [
+        ...extractClassCandidates(question),
+        ...extractMethodCandidates(question),
+        ...flowTargets.controllerMethods,
+        ...flowTargets.endpointPaths
+      ].slice(0, 8)
     };
   }
   if (methodFocused) {
     return {
       strategy: "method_trace",
       confidence: 0.62,
-      reason: "fallback: method/call-flow keywords detected",
-      targetSymbols: extractMethodCandidates(question)
+      reason:
+        exactFlowTargetFocused || workflowSequenceFocused
+          ? "fallback: explicit endpoint/controller or ordered workflow trace detected"
+          : "fallback: method/call-flow keywords detected",
+      targetSymbols: unique([
+        ...extractClassCandidates(question),
+        ...extractMethodCandidates(question),
+        ...flowTargets.controllerMethods,
+        ...flowTargets.endpointPaths,
+        ...flowTargets.workflowSequence
+      ]).slice(0, 8)
     };
   }
   if (moduleFlowFocused) {
@@ -6168,15 +6240,28 @@ export function normalizeAskStrategyForQuestion(
   question: string,
   strategy: AskStrategyType
 ): AskStrategyType {
+  const flowTargets = extractAskQuestionFlowTargets(question);
+  const exactFlowTargetFocused =
+    flowTargets.endpointPaths.length > 0 ||
+    flowTargets.controllerClasses.length > 0 ||
+    flowTargets.controllerMethods.length > 0;
+  const workflowSequenceFocused = flowTargets.workflowSequence.length >= 2;
   const questionType = classifyAskQuestionType({
     question,
     strategy
   }).type;
-  if (questionType === "cross_layer_flow" || isCrossLayerFlowQuestion(question)) {
+  if (
+    (questionType === "cross_layer_flow" || isCrossLayerFlowQuestion(question)) &&
+    !exactFlowTargetFocused &&
+    !workflowSequenceFocused
+  ) {
     return "cross_layer_flow";
   }
   if (questionType === "state_store_schema") {
     return "config_resource";
+  }
+  if (exactFlowTargetFocused || workflowSequenceFocused || questionType === "symbol_deep_trace") {
+    return "method_trace";
   }
   if (questionType === "channel_or_partner_integration" && strategy === "method_trace") {
     return "module_flow_topdown";

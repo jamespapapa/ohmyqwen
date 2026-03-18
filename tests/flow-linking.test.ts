@@ -587,6 +587,89 @@ describe("flow linking", () => {
     expect(output.answer).not.toContain("PremiumPaymentController.premiumPaymentProc");
   });
 
+  it("anchors on explicit target endpoint and preserves ordered workflow sequence", () => {
+    const output = buildDeterministicFlowAnswer({
+      question:
+        "AccBenefitClaimController 안의 claim/doc/insert api가 하는 일을 분석하고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 설명해줘.",
+      questionTags: ["insurance", "benefit", "claim", "action-write", "action-document"],
+      linkedFlowEvidence: [
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020540M",
+          screenCode: "MDP-MYINT020540M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/spotSave",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/spotSave",
+          backendControllerMethod: "AccBenefitClaimController.spotSave",
+          serviceHints: ["AccBenefitClaimService.spotSave"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-write"],
+          confidence: 0.83,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020560M",
+          screenCode: "MDP-MYINT020560M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/validate",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/validate",
+          backendControllerMethod: "AccBenefitClaimController.validateBenefitClaim",
+          serviceHints: ["AccBenefitClaimService.validateBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-check"],
+          confidence: 0.84,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M",
+          screenCode: "MDP-MYINT020210M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaim",
+          serviceHints: ["AccBenefitClaimService.insertBenefitClaim"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-write"],
+          confidence: 0.85,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020220M",
+          screenCode: "MDP-MYINT020220M",
+          apiUrl: "/gw/api/insurance/accBenefit/claim/doc/insert",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/accBenefit/claim/doc/insert",
+          backendControllerMethod: "AccBenefitClaimController.insertBenefitClaimDoc",
+          serviceHints: ["AccBenefitClaimService.saveBenefitClaimDoc"],
+          capabilityTags: ["insurance", "benefit", "claim", "action-document"],
+          confidence: 0.82,
+          reasons: []
+        },
+        {
+          routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020100M",
+          screenCode: "MDP-MYINT020100M",
+          apiUrl: "/gw/api/insurance/premium/payment/proc",
+          gatewayPath: "/api/**",
+          gatewayControllerMethod: "RouteController.route",
+          backendPath: "/insurance/premium/payment/proc",
+          backendControllerMethod: "PremiumPaymentController.premiumPaymentProc",
+          serviceHints: ["PremiumPaymentService.premiumPaymentProc"],
+          capabilityTags: ["insurance", "payment", "action-write"],
+          confidence: 0.95,
+          reasons: []
+        }
+      ]
+    });
+
+    expect(output.answer).toContain("claim/doc/insert");
+    expect(output.answer).toContain("spotSave");
+    expect(output.answer).toContain("validate");
+    expect(output.answer).toContain("insert");
+    expect(output.answer).toContain("doc/insert");
+    expect(output.answer).toContain("AccBenefitClaimController.insertBenefitClaimDoc");
+    expect(output.answer).not.toContain("PremiumPaymentController.premiumPaymentProc");
+  });
+
   it("prefers coherent namespace clusters during linked flow discovery", () => {
     const coherentSnapshot = {
       ...snapshot,

@@ -50,8 +50,129 @@ export interface AskQuestionTypeRetrievalContract {
   queryHints: string[];
 }
 
+export interface AskQuestionFlowTargets {
+  endpointPaths: string[];
+  controllerClasses: string[];
+  controllerMethods: string[];
+  workflowSequence: string[];
+  exactTerms: string[];
+}
+
 function unique(items: string[]): string[] {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
+const FLOW_SEQUENCE_STOP_WORDS = new Set([
+  "api",
+  "apis",
+  "controller",
+  "service",
+  "flow",
+  "logic",
+  "route",
+  "screen",
+  "backend",
+  "frontend",
+  "gateway",
+  "before",
+  "after",
+  "order",
+  "sequence"
+]);
+
+function normalizeQuestionEndpointPath(value: string): string | undefined {
+  const trimmed = value
+    .trim()
+    .replace(/^[`"'(\[\s]+/, "")
+    .replace(/[`"')\],.\s]+$/, "")
+    .replace(/\s+/g, "");
+  if (!trimmed || !trimmed.includes("/")) {
+    return undefined;
+  }
+  return trimmed.replace(/^\/+/, "").replace(/\/+/g, "/").toLowerCase();
+}
+
+function isWorkflowTokenCandidate(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.includes("/")) {
+    return true;
+  }
+  if (/^[A-Z][A-Za-z0-9_]*(?:Controller|Service|Handler|Manager|Processor|Worker|Tasklet|Job|Step)$/.test(trimmed)) {
+    return true;
+  }
+  if (/^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) {
+    return true;
+  }
+  if (/^[a-z][A-Za-z0-9_]{2,}$/.test(trimmed) && /[A-Z]/.test(trimmed)) {
+    return true;
+  }
+  if (/^[a-z][a-z0-9_-]{3,}$/.test(trimmed) && !FLOW_SEQUENCE_STOP_WORDS.has(trimmed.toLowerCase())) {
+    return true;
+  }
+  return false;
+}
+
+function extractSequenceFromSegment(segment: string): string[] {
+  return unique(
+    segment
+      .split(/\s*(?:->|=>|→|,|>|→)\s*/g)
+      .map((item) => item.trim())
+      .filter((item) => isWorkflowTokenCandidate(item))
+      .map((item) => normalizeQuestionEndpointPath(item) ?? item)
+  );
+}
+
+export function extractAskQuestionFlowTargets(question: string): AskQuestionFlowTargets {
+  const endpointPaths = unique(
+    Array.from(
+      question.matchAll(
+        /(?:^|[^A-Za-z0-9_])((?:\/?[A-Za-z][A-Za-z0-9_-]*)(?:\/[A-Za-z0-9._-]+){1,})(?=$|[^A-Za-z0-9_])/g
+      ),
+      (match) => normalizeQuestionEndpointPath(match[1] ?? "") ?? ""
+    )
+  );
+  const controllerMethods = unique(
+    Array.from(
+      question.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g),
+      (match) => `${match[1]}.${match[2]}`
+    )
+  );
+  const controllerClasses = unique(
+    Array.from(
+      question.matchAll(
+        /\b([A-Z][A-Za-z0-9_]*(?:Controller|Service|Handler|Manager|Processor|Worker|Tasklet|Job|Step|Mapper|Dao|Repository))\b/g
+      ),
+      (match) => match[1] ?? ""
+    )
+  );
+
+  const workflowSequenceSegments = [
+    ...Array.from(question.matchAll(/([A-Za-z0-9_./,\-\s>→]{6,180})\s*(?:순으로|순서로|순서는|순서|sequence|order)/gi), (match) => match[1] ?? ""),
+    ...Array.from(question.matchAll(/(?:순으로|순서로|순서|sequence|order)\s*[:\-]?\s*([A-Za-z0-9_./,\-\s>→]{6,180})/gi), (match) => match[1] ?? "")
+  ];
+  const workflowSequence = unique(
+    workflowSequenceSegments
+      .flatMap((segment) => extractSequenceFromSegment(segment))
+      .filter((item) => isWorkflowTokenCandidate(item))
+  );
+
+  const exactTerms = unique([
+    ...endpointPaths,
+    ...controllerClasses,
+    ...controllerMethods,
+    ...workflowSequence
+  ]);
+
+  return {
+    endpointPaths,
+    controllerClasses,
+    controllerMethods,
+    workflowSequence,
+    exactTerms
+  };
 }
 
 function normalizeSignals(options: {
@@ -205,8 +326,14 @@ export function classifyAskQuestionType(options: {
   const moduleCandidates = options.moduleCandidates ?? [];
   const signals = normalizeSignals(options);
   const specificCapability = hasSpecificCapabilitySignal(signals);
+  const flowTargets = extractAskQuestionFlowTargets(question);
+  const exactFlowTargetFocused =
+    flowTargets.endpointPaths.length > 0 ||
+    flowTargets.controllerClasses.length > 0 ||
+    flowTargets.controllerMethods.length > 0;
+  const workflowSequenceFocused = flowTargets.workflowSequence.length >= 2;
 
-  if (isCrossLayerFlowQuestion(question) || strategy === "cross_layer_flow") {
+  if (isCrossLayerFlowQuestion(question) || (strategy === "cross_layer_flow" && !exactFlowTargetFocused && !workflowSequenceFocused)) {
     return {
       type: "cross_layer_flow",
       confidence: 0.95,
@@ -260,12 +387,15 @@ export function classifyAskQuestionType(options: {
     };
   }
 
-  if (looksLikeSymbolQuestion(question) || strategy === "method_trace") {
+  if (exactFlowTargetFocused || workflowSequenceFocused || looksLikeSymbolQuestion(question) || strategy === "method_trace") {
     return {
       type: "symbol_deep_trace",
-      confidence: 0.83,
-      reason: "symbol/method-specific trace question detected",
-      signals: unique(["symbol-trace", ...signals])
+      confidence: exactFlowTargetFocused || workflowSequenceFocused ? 0.9 : 0.83,
+      reason:
+        exactFlowTargetFocused || workflowSequenceFocused
+          ? "explicit endpoint/controller or ordered workflow trace question detected"
+          : "symbol/method-specific trace question detected",
+      signals: unique(["symbol-trace", ...signals, ...flowTargets.exactTerms.slice(0, 8)])
     };
   }
 
