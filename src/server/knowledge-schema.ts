@@ -3019,6 +3019,107 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     }
   }
 
+  const declaresEdges = Array.from(edges.values()).filter((edge) => edge.type === "declares");
+  const declaredEdgesByFile = new Map<string, KnowledgeEdge[]>();
+  for (const declaresEdge of declaresEdges) {
+    const bucket = declaredEdgesByFile.get(declaresEdge.fromId) ?? [];
+    bucket.push(declaresEdge);
+    declaredEdgesByFile.set(declaresEdge.fromId, bucket);
+  }
+  for (const [fileId, fileDeclares] of declaredEdgesByFile.entries()) {
+    const fileEntity = entities.get(fileId);
+    if (!fileEntity || fileEntity.type !== "file") {
+      continue;
+    }
+    const runtimeEntities = fileDeclares
+      .map((edge) => entities.get(edge.toId))
+      .filter(
+        (entity): entity is KnowledgeEntity =>
+          entity != null &&
+          ["controller", "service", "gateway-handler", "symbol"].includes(entity.type)
+      );
+    const queryEntities = fileDeclares
+      .map((edge) => entities.get(edge.toId))
+      .filter((entity): entity is KnowledgeEntity => entity != null && entity.type === "data-query");
+    if (runtimeEntities.length === 0 || queryEntities.length === 0) {
+      continue;
+    }
+    for (const runtimeEntity of runtimeEntities) {
+      for (const queryEntity of queryEntities) {
+        addDerivedTransitionEdge({
+          fromId: runtimeEntity.id,
+          toId: queryEntity.id,
+          label: "data query transition",
+          texts: [
+            runtimeEntity.label,
+            runtimeEntity.summary,
+            queryEntity.label,
+            queryEntity.summary,
+            fileEntity.label
+          ],
+          evidencePaths: [
+            ...runtimeEntity.metadata.evidencePaths,
+            ...queryEntity.metadata.evidencePaths,
+            ...fileEntity.metadata.evidencePaths
+          ],
+          confidence: Math.max(runtimeEntity.metadata.confidence, queryEntity.metadata.confidence, fileEntity.metadata.confidence),
+          edgeKind: "data-query"
+        });
+      }
+    }
+  }
+
+  const queryTableEdges = Array.from(edges.values()).filter((edge) => edge.type === "queries-table");
+  const queryNodesByTable = new Map<string, KnowledgeEntity[]>();
+  const runtimeNodesByQueriedTable = new Map<string, KnowledgeEntity[]>();
+  for (const queryTableEdge of queryTableEdges) {
+    const fromEntity = entities.get(queryTableEdge.fromId);
+    if (!fromEntity) {
+      continue;
+    }
+    if (fromEntity.type === "data-query") {
+      const bucket = queryNodesByTable.get(queryTableEdge.toId) ?? [];
+      bucket.push(fromEntity);
+      queryNodesByTable.set(queryTableEdge.toId, bucket);
+      continue;
+    }
+    if (["controller", "service", "gateway-handler", "symbol"].includes(fromEntity.type)) {
+      const bucket = runtimeNodesByQueriedTable.get(queryTableEdge.toId) ?? [];
+      bucket.push(fromEntity);
+      runtimeNodesByQueriedTable.set(queryTableEdge.toId, bucket);
+    }
+  }
+  for (const [tableId, runtimeNodes] of runtimeNodesByQueriedTable.entries()) {
+    const queryNodes = queryNodesByTable.get(tableId) ?? [];
+    if (queryNodes.length === 0) {
+      continue;
+    }
+    const tableEntity = entities.get(tableId);
+    for (const runtimeEntity of runtimeNodes) {
+      for (const queryEntity of queryNodes) {
+        addDerivedTransitionEdge({
+          fromId: runtimeEntity.id,
+          toId: queryEntity.id,
+          label: "data query transition",
+          texts: [
+            runtimeEntity.label,
+            runtimeEntity.summary,
+            queryEntity.label,
+            queryEntity.summary,
+            tableEntity?.label
+          ],
+          evidencePaths: [
+            ...runtimeEntity.metadata.evidencePaths,
+            ...queryEntity.metadata.evidencePaths,
+            ...(tableEntity?.metadata.evidencePaths ?? [])
+          ],
+          confidence: Math.max(runtimeEntity.metadata.confidence, queryEntity.metadata.confidence, tableEntity?.metadata.confidence ?? 0),
+          edgeKind: "data-query"
+        });
+      }
+    }
+  }
+
   const requestSourceContractsByNode = new Map<string, Set<string>>();
   const requestTargetContractsByNode = new Map<string, Set<string>>();
   const responseSourceContractsByNode = new Map<string, Set<string>>();

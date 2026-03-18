@@ -389,6 +389,7 @@ describe("knowledge schema foundation", () => {
     expect(snapshot.entities.some((entity) => entity.id === "async-channel:monimo.auth.callback")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id.includes("MonimoAuthEventDispatcher.dispatchCallback"))).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
+    expect(snapshot.entities.some((entity) => entity.type === "data-query" && entity.label === "findActiveSession")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "MemberAuthValidator")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.type === "control-guard" && entity.label === "validateSessionToken")).toBe(true);
     expect(snapshot.entities.some((entity) => entity.id === "knowledge:candidate:channel:monimo")).toBe(true);
@@ -488,6 +489,15 @@ describe("knowledge schema foundation", () => {
           edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
           ["store:redis", "eai:F14090150"].includes(edge.toId) &&
           ["uses-store", "uses-eai"].includes(String(edge.attributes.edgeKind))
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "service:EmbededMemberLoginService.authenticate" &&
+          edge.toId.includes("data-query:findactivesession") &&
+          edge.attributes.edgeKind === "data-query"
       )
     ).toBe(true);
     expect(

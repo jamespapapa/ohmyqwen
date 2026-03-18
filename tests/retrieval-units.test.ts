@@ -283,6 +283,25 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { modelName: "MemberSessionEntity", tableName: "TB_MEMBER_SESSION" }
     },
     {
+      id: "data-query:findactivesession:dcp-member-src-main-java-com-example-embededmemberloginservice-java",
+      type: "data-query",
+      label: "findActiveSession",
+      summary: "Database query findActiveSession",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.81,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { queryName: "findActiveSession" }
+    },
+    {
       id: "data-contract:monimoauthrequest",
       type: "data-contract",
       label: "MonimoAuthRequest",
@@ -672,6 +691,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: { edgeKind: "uses-store" }
     },
     {
+      id: "edge:transitions-to:service:query:data-query",
+      type: "transitions-to",
+      fromId: "service:EmbededMemberLoginService.authenticate",
+      toId: "data-query:findactivesession:dcp-member-src-main-java-com-example-embededmemberloginservice-java",
+      label: "data query transition",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read"],
+        moduleRoles: ["data-persistence"],
+        processRoles: ["state-transition"],
+        confidence: 0.78,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: { edgeKind: "data-query" }
+    },
+    {
       id: "edge:propagates-contract:service:store:request",
       type: "propagates-contract",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -897,6 +936,26 @@ const snapshot: KnowledgeSchemaSnapshot = {
       attributes: {}
     },
     {
+      id: "edge:queries-table:query:table",
+      type: "queries-table",
+      fromId: "data-query:findactivesession:dcp-member-src-main-java-com-example-embededmemberloginservice-java",
+      toId: "data-table:tb_member_session",
+      label: "query reads table",
+      metadata: {
+        domains: ["member-auth"],
+        subdomains: [],
+        channels: [],
+        actions: ["action-read"],
+        moduleRoles: ["data-persistence"],
+        processRoles: [],
+        confidence: 0.8,
+        evidencePaths: ["dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"],
+        sourceType: "derived",
+        validatedStatus: "derived"
+      },
+      attributes: {}
+    },
+    {
       id: "edge:belongs-to-domain:service:pack",
       type: "belongs-to-domain",
       fromId: "service:EmbededMemberLoginService.authenticate",
@@ -948,6 +1007,7 @@ const snapshot: KnowledgeSchemaSnapshot = {
       "decision-path": 1,
       "symbol": 2,
       "data-model": 1,
+      "data-query": 1,
       "data-store": 2,
       "data-table": 1,
       "eai-interface": 1,
@@ -967,9 +1027,10 @@ const snapshot: KnowledgeSchemaSnapshot = {
       "branches-to": 1,
       "maps-to": 1,
       "maps-to-table": 1,
-      "queries-table": 1,
+      "queries-table": 2,
       "routes-to": 2,
       "stores-model": 1,
+      "transitions-to": 3,
       "uses-cache-key": 1,
       "uses-eai": 1,
       "uses-store": 1
@@ -1013,11 +1074,13 @@ describe("retrieval unit standardization", () => {
         "ui-action:src/views/login/MDP-MYCER999999M.vue:requestmonimoauth",
         "gateway-handler:RouteController.route",
         "data-contract:monimoauthrequest",
+        "data-query:findactivesession:dcp-member-src-main-java-com-example-embededmemberloginservice-java",
         "decision-path:authenticate:switch-auth-status:service",
         "symbol:method:EmbededMemberLoginService.authenticate:dcp-member/src/main/java/com/example/EmbededMemberLoginService.java"
       ])
     );
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:controller:service");
+    expect(uiActionFlowUnit?.edgeIds).toContain("edge:transitions-to:service:query:data-query");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:emits-contract:ui-action:request");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:ui-action:api:request");
     expect(uiActionFlowUnit?.edgeIds).toContain("edge:propagates-contract:controller:service:request");
