@@ -2,6 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import {
+  buildOntologyEdgePath,
+  buildOntologyRenderableGraph
+} from "../lib/ontology-graph-layout.js";
 
 async function getJson(url, init) {
   const response = await fetch(url, {
@@ -65,66 +69,6 @@ function ontologyStatusColor(status) {
   if (status === "deprecated") return "#6b7280";
   if (status === "stale") return "#92400e";
   return "#475569";
-}
-
-function ontologyLaneKey(type) {
-  const lane = {
-    route: "01-route",
-    "ui-action": "02-ui-action",
-    api: "03-api",
-    "gateway-handler": "04-gateway",
-    controller: "05-controller",
-    service: "06-service",
-    "data-contract": "07-contract",
-    "control-guard": "08-guard",
-    "decision-path": "09-decision",
-    "data-query": "10-query",
-    "data-table": "11-table",
-    "data-store": "12-store",
-    "cache-key": "13-cache",
-    "async-channel": "14-async",
-    "eai-interface": "15-eai",
-    "knowledge-cluster": "16-cluster",
-    "retrieval-unit": "17-unit",
-    path: "18-path"
-  };
-  return lane[type] || `99-${type}`;
-}
-
-function ontologyLaneLabel(lane) {
-  return String(lane || "").replace(/^\d+-/, "");
-}
-
-function buildOntologySvgLayout(nodes) {
-  if (!Array.isArray(nodes) || nodes.length === 0) {
-    return { width: 1280, height: 720, positions: {}, lanes: [] };
-  }
-  const lanes = new Map();
-  for (const node of nodes) {
-    const lane = ontologyLaneKey(node.type);
-    if (!lanes.has(lane)) lanes.set(lane, []);
-    lanes.get(lane).push(node);
-  }
-  const laneEntries = Array.from(lanes.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const laneCount = laneEntries.length;
-  const maxLaneSize = Math.max(...laneEntries.map(([, items]) => items.length), 1);
-  const width = Math.max(1400, 220 + laneCount * 190);
-  const height = Math.max(820, 160 + maxLaneSize * 96);
-  const laneGap = laneCount <= 1 ? 0 : (width - 220) / (laneCount - 1);
-  const positions = {};
-  const layoutLanes = [];
-  laneEntries.forEach(([lane, laneNodes], laneIndex) => {
-    const x = 110 + laneIndex * laneGap;
-    layoutLanes.push({ key: lane, label: ontologyLaneLabel(lane), x });
-    const usableHeight = height - 140;
-    const step = Math.max(84, Math.floor(usableHeight / Math.max(1, laneNodes.length)));
-    const contentHeight = step * Math.max(0, laneNodes.length - 1);
-    const startY = 70 + Math.max(0, Math.floor((usableHeight - contentHeight) / 2));
-    laneNodes.forEach((node, nodeIndex) => {
-      positions[node.id] = { x, y: startY + nodeIndex * step, lane };
-    });
-  });
-  return { width, height, positions, lanes: layoutLanes };
 }
 
 function pickDefaultOntologyNodeId(ontology) {
@@ -198,7 +142,18 @@ export default function OntologyFullscreenPage({ projectId }) {
     if (!projection || !selectedNode) return [];
     return (projection.edges || []).filter((edge) => edge.fromId === selectedNode.id || edge.toId === selectedNode.id);
   }, [projection, selectedNode]);
-  const layout = useMemo(() => buildOntologySvgLayout(projection?.nodes || []), [projection?.nodes]);
+  const renderableGraph = useMemo(
+    () =>
+      buildOntologyRenderableGraph({
+        nodes: projection?.nodes || [],
+        edges: projection?.edges || [],
+        representativePaths: projection?.representativePaths || [],
+        selectedPathId,
+        focusMode
+      }),
+    [focusMode, projection?.edges, projection?.nodes, projection?.representativePaths, selectedPathId]
+  );
+  const layout = renderableGraph.layout;
 
   return (
     <main style={{ minHeight: "100vh", padding: 16, display: "grid", gap: 16 }}>
@@ -292,10 +247,33 @@ export default function OntologyFullscreenPage({ projectId }) {
 
       <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(320px, 1.15fr)", gap: 16, alignItems: "start" }}>
         <div className="card" style={{ padding: 12, minHeight: "78vh" }}>
-          <div className="label">Projection Graph</div>
-          <div style={{ marginTop: 8, border: "1px solid #d7dde7", borderRadius: 12, overflow: "auto", background: "#f8fafc", maxHeight: "78vh" }}>
+        <div className="label">Projection Graph</div>
+        <div style={{ marginTop: 8, border: "1px solid #d7dde7", borderRadius: 12, overflow: "auto", background: "#f8fafc", maxHeight: "78vh" }}>
             <svg viewBox={`0 0 ${layout.width} ${layout.height}`} style={{ width: "100%", minHeight: "78vh", display: "block" }}>
+              <defs>
+                <pattern id="ontology-grid-full" width="28" height="28" patternUnits="userSpaceOnUse">
+                  <circle cx="2" cy="2" r="1.2" fill="#dbe4f0" />
+                </pattern>
+                <marker id="ontology-arrow-full" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+                </marker>
+              </defs>
               <rect x="0" y="0" width={layout.width} height={layout.height} fill="#f8fafc" />
+              <rect x="0" y="0" width={layout.width} height={layout.height} fill="url(#ontology-grid-full)" opacity="0.7" />
+              {layout.mode === "path" ? (
+                <>
+                  <line
+                    x1="90"
+                    y1={430}
+                    x2={layout.width - 90}
+                    y2={430}
+                    stroke="#cbd5e1"
+                    strokeDasharray="8 10"
+                    strokeWidth={2}
+                  />
+                  <text x="92" y="404" fontSize="12" fill="#64748b">canonical path spine</text>
+                </>
+              ) : null}
               {(layout.lanes || []).map((lane) => (
                 <g key={`lane:${lane.key}`}>
                   <line
@@ -310,32 +288,34 @@ export default function OntologyFullscreenPage({ projectId }) {
                   <text x={lane.x} y={18} textAnchor="middle" fontSize="12" fill="#64748b">{lane.label}</text>
                 </g>
               ))}
-              {(projection?.edges || []).map((edge) => {
+              {renderableGraph.edges.map((edge) => {
                 const from = layout.positions[edge.fromId];
                 const to = layout.positions[edge.toId];
                 if (!from || !to) return null;
                 const selected = selectedNode && (edge.fromId === selectedNode.id || edge.toId === selectedNode.id);
+                const isSpineEdge = layout.pathNodeIds?.has(edge.fromId) && layout.pathNodeIds?.has(edge.toId);
                 return (
-                  <line
+                  <path
                     key={edge.id}
-                    x1={from.x}
-                    y1={from.y}
-                    x2={to.x}
-                    y2={to.y}
-                    stroke={selected ? "#0f172a" : edge.isHighlighted ? "#334155" : "#cbd5e1"}
-                    strokeWidth={selected ? 2.5 : edge.isHighlighted ? 1.9 : 1.1}
-                    opacity={selected ? 0.95 : edge.isHighlighted ? 0.75 : 0.5}
+                    d={buildOntologyEdgePath(edge, layout)}
+                    fill="none"
+                    stroke={selected ? "#0f172a" : isSpineEdge ? "#334155" : edge.isHighlighted ? "#64748b" : "#cbd5e1"}
+                    strokeWidth={selected ? 2.8 : isSpineEdge ? 2.2 : edge.isHighlighted ? 1.8 : 1.25}
+                    opacity={selected ? 0.95 : isSpineEdge ? 0.92 : edge.isHighlighted ? 0.82 : 0.62}
+                    markerEnd="url(#ontology-arrow-full)"
                   />
                 );
               })}
-              {(projection?.nodes || []).map((node) => {
+              {renderableGraph.nodes.map((node) => {
                 const position = layout.positions[node.id];
                 if (!position) return null;
                 const selected = selectedNode?.id === node.id;
+                const onSpine = layout.pathNodeIds?.has(node.id);
                 return (
                   <g key={node.id} transform={`translate(${position.x}, ${position.y})`} onClick={() => setSelectedNodeId(node.id)} style={{ cursor: "pointer" }}>
-                    <circle r={selected ? 21 : 17} fill={ontologyNodeTypeColor(node.type)} opacity={node.isHighlighted ? 0.96 : 0.82} stroke={selected ? "#0f172a" : node.isHighlighted ? "#1e293b" : "#cbd5e1"} strokeWidth={selected ? 3 : 1.5} />
-                    <text x="0" y={selected ? 40 : 35} textAnchor="middle" fontSize="12" fill="#0f172a">{shortText(node.label, 22)}</text>
+                    <circle r={selected ? 22 : onSpine ? 19 : 16} fill={ontologyNodeTypeColor(node.type)} opacity={node.isHighlighted ? 0.96 : 0.84} stroke={selected ? "#0f172a" : onSpine ? "#334155" : node.isHighlighted ? "#1e293b" : "#cbd5e1"} strokeWidth={selected ? 3 : onSpine ? 2.2 : 1.5} />
+                    <rect x={-74} y={selected ? 26 : 24} width="148" height="24" rx="10" fill="rgba(248,250,252,0.96)" stroke={selected ? "#94a3b8" : "#dbe4f0"} />
+                    <text x="0" y={selected ? 42 : 40} textAnchor="middle" fontSize="12" fill="#0f172a">{shortText(node.label, 26)}</text>
                   </g>
                 );
               })}

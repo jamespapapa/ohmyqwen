@@ -1,6 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import {
+  buildOntologyEdgePath,
+  buildOntologyRenderableGraph
+} from "../lib/ontology-graph-layout.js";
 
 const CORE_STAGES = ["ANALYZE", "PLAN", "IMPLEMENT", "VERIFY", "PATCH", "FINISH"];
 const QUERY_MODES = ["query_then_search", "search_only", "query_only"];
@@ -481,81 +485,6 @@ function ontologyStatusColor(status) {
   return "#475569";
 }
 
-function ontologyLaneKey(type) {
-  const lane = {
-    route: "01-route",
-    "ui-action": "02-ui-action",
-    api: "03-api",
-    "gateway-handler": "04-gateway",
-    controller: "05-controller",
-    service: "06-service",
-    "data-contract": "07-contract",
-    "control-guard": "08-guard",
-    "decision-path": "09-decision",
-    "data-query": "10-query",
-    "data-table": "11-table",
-    "data-store": "12-store",
-    "cache-key": "13-cache",
-    "async-channel": "14-async",
-    "eai-interface": "15-eai",
-    "knowledge-cluster": "16-cluster",
-    "retrieval-unit": "17-unit",
-    path: "18-path"
-  };
-  return lane[type] || `99-${type}`;
-}
-
-function ontologyLaneLabel(lane) {
-  return String(lane || "").replace(/^\d+-/, "");
-}
-
-function buildOntologySvgLayout(nodes) {
-  if (!Array.isArray(nodes) || nodes.length === 0) {
-    return {
-      width: 960,
-      height: 280,
-      positions: {},
-      lanes: []
-    };
-  }
-
-  const lanes = new Map();
-  for (const node of nodes) {
-    const lane = ontologyLaneKey(node.type);
-    if (!lanes.has(lane)) {
-      lanes.set(lane, []);
-    }
-    lanes.get(lane).push(node);
-  }
-
-  const laneEntries = Array.from(lanes.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const laneCount = laneEntries.length;
-  const maxLaneSize = Math.max(...laneEntries.map(([, items]) => items.length), 1);
-  const width = Math.max(960, 180 + laneCount * 170);
-  const height = Math.max(320, 120 + maxLaneSize * 88);
-  const laneGap = laneCount <= 1 ? 0 : (width - 180) / (laneCount - 1);
-  const positions = {};
-  const layoutLanes = [];
-
-  laneEntries.forEach(([lane, laneNodes], laneIndex) => {
-    const x = 90 + laneIndex * laneGap;
-    layoutLanes.push({ key: lane, label: ontologyLaneLabel(lane), x });
-    const usableHeight = height - 120;
-    const step = Math.max(78, Math.floor(usableHeight / Math.max(1, laneNodes.length)));
-    const contentHeight = step * Math.max(0, laneNodes.length - 1);
-    const startY = 60 + Math.max(0, Math.floor((usableHeight - contentHeight) / 2));
-    laneNodes.forEach((node, nodeIndex) => {
-      positions[node.id] = {
-        x,
-        y: startY + nodeIndex * step,
-        lane
-      };
-    });
-  });
-
-  return { width, height, positions, lanes: layoutLanes };
-}
-
 function pickDefaultOntologyNodeId(ontology) {
   if (!ontology?.selectedProjection) {
     return "";
@@ -769,10 +698,24 @@ export default function HomePage() {
       (edge) => edge.fromId === ontologySelectedNode.id || edge.toId === ontologySelectedNode.id
     );
   }, [ontologySelectedNode, ontologySelectedProjection]);
-  const ontologySvgLayout = useMemo(
-    () => buildOntologySvgLayout(ontologySelectedProjection?.nodes || []),
-    [ontologySelectedProjection?.nodes]
+  const ontologyRenderableGraph = useMemo(
+    () =>
+      buildOntologyRenderableGraph({
+        nodes: ontologySelectedProjection?.nodes || [],
+        edges: ontologySelectedProjection?.edges || [],
+        representativePaths: ontologySelectedProjection?.representativePaths || [],
+        selectedPathId: ontologySelectedPathId,
+        focusMode: ontologyFocusMode
+      }),
+    [
+      ontologyFocusMode,
+      ontologySelectedPathId,
+      ontologySelectedProjection?.edges,
+      ontologySelectedProjection?.nodes,
+      ontologySelectedProjection?.representativePaths
+    ]
   );
+  const ontologySvgLayout = ontologyRenderableGraph.layout;
   const runBusy = Boolean(runId) && (run?.status === "running" || run?.status === "waiting");
   const activeOps = useMemo(() => {
     const items = [];
@@ -2263,7 +2206,32 @@ export default function HomePage() {
                 viewBox={`0 0 ${ontologySvgLayout.width} ${ontologySvgLayout.height}`}
                 style={{ width: "100%", minHeight: 320, display: "block" }}
               >
+                <defs>
+                  <pattern id="ontology-grid-main" width="24" height="24" patternUnits="userSpaceOnUse">
+                    <circle cx="2" cy="2" r="1.1" fill="#dbe4f0" />
+                  </pattern>
+                  <marker id="ontology-arrow-main" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+                  </marker>
+                </defs>
                 <rect x="0" y="0" width={ontologySvgLayout.width} height={ontologySvgLayout.height} fill="#f8fafc" />
+                <rect x="0" y="0" width={ontologySvgLayout.width} height={ontologySvgLayout.height} fill="url(#ontology-grid-main)" opacity="0.7" />
+                {ontologySvgLayout.mode === "path" ? (
+                  <>
+                    <line
+                      x1="72"
+                      y1={430}
+                      x2={ontologySvgLayout.width - 72}
+                      y2={430}
+                      stroke="#cbd5e1"
+                      strokeDasharray="7 10"
+                      strokeWidth={2}
+                    />
+                    <text x="74" y="404" fontSize="11" fill="#64748b">
+                      canonical path spine
+                    </text>
+                  </>
+                ) : null}
                 {(ontologySvgLayout.lanes || []).map((lane) => (
                   <g key={`lane:${lane.key}`}>
                     <line
@@ -2280,33 +2248,34 @@ export default function HomePage() {
                     </text>
                   </g>
                 ))}
-                {(ontologySelectedProjection?.edges || []).map((edge) => {
+                {ontologyRenderableGraph.edges.map((edge) => {
                   const from = ontologySvgLayout.positions[edge.fromId];
                   const to = ontologySvgLayout.positions[edge.toId];
                   if (!from || !to) return null;
                   const selected =
                     ontologySelectedNode &&
                     (edge.fromId === ontologySelectedNode.id || edge.toId === ontologySelectedNode.id);
+                  const isSpineEdge =
+                    ontologySvgLayout.pathNodeIds?.has(edge.fromId) && ontologySvgLayout.pathNodeIds?.has(edge.toId);
                   return (
-                    <g key={edge.id}>
-                      <line
-                        x1={from.x}
-                        y1={from.y}
-                        x2={to.x}
-                        y2={to.y}
-                        stroke={selected ? "#0f172a" : edge.isHighlighted ? "#334155" : "#cbd5e1"}
-                        strokeWidth={selected ? 2.2 : edge.isHighlighted ? 1.8 : 1.1}
-                        opacity={selected ? 0.95 : edge.isHighlighted ? 0.75 : 0.55}
-                      />
-                    </g>
+                    <path
+                      key={edge.id}
+                      d={buildOntologyEdgePath(edge, ontologySvgLayout)}
+                      fill="none"
+                      stroke={selected ? "#0f172a" : isSpineEdge ? "#334155" : edge.isHighlighted ? "#64748b" : "#cbd5e1"}
+                      strokeWidth={selected ? 2.4 : isSpineEdge ? 2 : edge.isHighlighted ? 1.7 : 1.15}
+                      opacity={selected ? 0.95 : isSpineEdge ? 0.92 : edge.isHighlighted ? 0.8 : 0.62}
+                      markerEnd="url(#ontology-arrow-main)"
+                    />
                   );
                 })}
-                {(ontologySelectedProjection?.nodes || []).map((node) => {
+                {ontologyRenderableGraph.nodes.map((node) => {
                   const position = ontologySvgLayout.positions[node.id];
                   if (!position) return null;
                   const selected = ontologySelectedNode?.id === node.id;
+                  const onSpine = ontologySvgLayout.pathNodeIds?.has(node.id);
                   const fill = ontologyNodeTypeColor(node.type);
-                  const stroke = selected ? "#0f172a" : node.isHighlighted ? "#1e293b" : "#cbd5e1";
+                  const stroke = selected ? "#0f172a" : onSpine ? "#334155" : node.isHighlighted ? "#1e293b" : "#cbd5e1";
                   return (
                     <g
                       key={node.id}
@@ -2314,9 +2283,10 @@ export default function HomePage() {
                       onClick={() => setOntologySelectedNodeId(node.id)}
                       style={{ cursor: "pointer" }}
                     >
-                      <circle r={selected ? 20 : 16} fill={fill} opacity={node.isHighlighted ? 0.95 : 0.82} stroke={stroke} strokeWidth={selected ? 3 : 1.5} />
-                      <text x="0" y={selected ? 38 : 34} textAnchor="middle" fontSize="12" fill="#0f172a">
-                        {shortText(node.label, 22)}
+                      <circle r={selected ? 21 : onSpine ? 18 : 15} fill={fill} opacity={node.isHighlighted ? 0.95 : 0.84} stroke={stroke} strokeWidth={selected ? 3 : onSpine ? 2.1 : 1.4} />
+                      <rect x={-66} y={selected ? 24 : 22} width="132" height="22" rx="10" fill="rgba(248,250,252,0.96)" stroke={selected ? "#94a3b8" : "#dbe4f0"} />
+                      <text x="0" y={selected ? 39 : 37} textAnchor="middle" fontSize="11.5" fill="#0f172a">
+                        {shortText(node.label, 24)}
                       </text>
                     </g>
                   );
