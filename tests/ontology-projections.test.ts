@@ -320,6 +320,36 @@ describe("ontology projections", () => {
     expect(markdown).toContain("truncated: yes");
   });
 
+  it("builds fallback front-back representative paths when flow retrieval units are absent", () => {
+    const ontologyGraph = buildOntologyGraphSnapshot({
+      knowledgeSchema,
+      retrievalUnits: {
+        ...retrievalUnits,
+        units: retrievalUnits.units.filter((unit) => unit.type !== "flow"),
+        summary: {
+          ...retrievalUnits.summary,
+          unitCount: 1,
+          unitTypeCounts: { "eai-link": 1 },
+          unitStatusCounts: { validated: 1 },
+          topDomains: [{ id: "member-auth", count: 1 }],
+          topChannels: [{ id: "monimo", count: 1 }],
+          topModuleRoles: [{ id: "async-support", count: 1 }]
+        }
+      }
+    });
+    const snapshot = buildOntologyProjectionSnapshot({ ontologyGraph });
+    const frontBack = snapshot.projections.find((projection) => projection.type === "front-back-flow");
+
+    expect(frontBack?.representativePaths.length).toBeGreaterThan(0);
+    expect(frontBack?.representativePaths[0]?.nodeIds).toEqual(
+      expect.arrayContaining([
+        "route:/monimo/callback",
+        "api:/monimo/jellyPayRes",
+        "controller:MonimoAsyncController.jellyPayRes"
+      ])
+    );
+  });
+
   it("includes ui-action and gateway-handler nodes in front-back projections", () => {
     const ontologyGraph = buildOntologyGraphSnapshot({
       knowledgeSchema: {

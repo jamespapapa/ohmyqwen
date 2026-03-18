@@ -87,6 +87,107 @@ function projectionStatusCounts(nodeIds: string[], nodesById: Map<string, Ontolo
   );
 }
 
+function flowNodeRank(type: string): number {
+  const ranks: Record<string, number> = {
+    route: 1,
+    "ui-action": 2,
+    api: 3,
+    "gateway-handler": 4,
+    controller: 5,
+    service: 6,
+    "decision-path": 7,
+    "async-channel": 8,
+    "retrieval-unit": 9,
+    path: 10
+  };
+  return ranks[type] ?? 99;
+}
+
+function buildFallbackFrontBackPaths(options: {
+  ontologyGraph: OntologyGraphSnapshot;
+  frontBackNodeIds: string[];
+  frontBackEdgeIds: string[];
+}): Array<z.infer<typeof OntologyProjectionPathSchema>> {
+  const { ontologyGraph, frontBackNodeIds, frontBackEdgeIds } = options;
+  const nodesById = new Map(ontologyGraph.nodes.map((node) => [node.id, node]));
+  const edges = frontBackEdgeIds
+    .map((id) => ontologyGraph.edges.find((edge) => edge.id === id))
+    .filter((edge): edge is OntologyGraphSnapshot["edges"][number] => Boolean(edge));
+  const adjacency = new Map<string, typeof edges>();
+  const incomingCounts = new Map<string, number>();
+
+  for (const edge of edges) {
+    if (!adjacency.has(edge.fromId)) adjacency.set(edge.fromId, []);
+    adjacency.get(edge.fromId)?.push(edge);
+    incomingCounts.set(edge.toId, (incomingCounts.get(edge.toId) ?? 0) + 1);
+  }
+
+  for (const outgoing of adjacency.values()) {
+    outgoing.sort((a, b) => {
+      const aTo = nodesById.get(a.toId);
+      const bTo = nodesById.get(b.toId);
+      const typeDiff = flowNodeRank(aTo?.type ?? "") - flowNodeRank(bTo?.type ?? "");
+      if (typeDiff !== 0) return typeDiff;
+      const confidenceDiff = (b.metadata.confidence ?? 0) - (a.metadata.confidence ?? 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  const candidateStarts = frontBackNodeIds
+    .map((id) => nodesById.get(id))
+    .filter((node): node is OntologyGraphSnapshot["nodes"][number] => Boolean(node))
+    .filter((node) => node.type !== "retrieval-unit")
+    .sort((a, b) => {
+      const aStart = incomingCounts.get(a.id) ?? 0;
+      const bStart = incomingCounts.get(b.id) ?? 0;
+      const incomingDiff = aStart - bStart;
+      if (incomingDiff !== 0) return incomingDiff;
+      const rankDiff = flowNodeRank(a.type) - flowNodeRank(b.type);
+      if (rankDiff !== 0) return rankDiff;
+      const confDiff = (b.metadata.confidence ?? 0) - (a.metadata.confidence ?? 0);
+      if (confDiff !== 0) return confDiff;
+      return a.label.localeCompare(b.label);
+    });
+
+  const paths: Array<z.infer<typeof OntologyProjectionPathSchema>> = [];
+  const seen = new Set<string>();
+
+  for (const start of candidateStarts) {
+    const nodeIds = [start.id];
+    const edgeIds: string[] = [];
+    const visited = new Set<string>([start.id]);
+    let currentId = start.id;
+
+    for (let depth = 0; depth < 8; depth += 1) {
+      const nextEdge = (adjacency.get(currentId) ?? []).find((edge) => !visited.has(edge.toId));
+      if (!nextEdge) break;
+      edgeIds.push(nextEdge.id);
+      nodeIds.push(nextEdge.toId);
+      visited.add(nextEdge.toId);
+      currentId = nextEdge.toId;
+    }
+
+    if (nodeIds.length < 3 || edgeIds.length < 2) continue;
+    const key = nodeIds.join("->");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const labels = nodeIds
+      .map((id) => nodesById.get(id)?.label)
+      .filter(Boolean)
+      .slice(0, 4);
+    paths.push({
+      id: `path:fallback:${start.id}`,
+      label: labels.join(" -> "),
+      nodeIds,
+      edgeIds
+    });
+    if (paths.length >= 12) break;
+  }
+
+  return paths;
+}
+
 function pickLargestProjectionType(projections: OntologyProjectionSnapshot["projections"]): string {
   const sorted = [...projections].sort((a, b) => {
     const sizeDiff = b.nodeIds.length + b.edgeIds.length - (a.nodeIds.length + a.edgeIds.length);
@@ -106,7 +207,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     .filter((edge) => ["contains", "declares", "calls", "proxies-to", "depends-on", "supports-module-role", "uses-store", "dispatches-to", "consumes-from", "transitions-to", "propagates-contract", "emits-contract", "receives-contract", "accepts-contract", "returns-contract", "stores-model", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to"].includes(edge.type))
     .map((edge) => edge.id);
 
-  const flowPaths = ontologyGraph.nodes
+  const flowPathsFromUnits = ontologyGraph.nodes
     .filter((node) => node.type === "retrieval-unit" && node.attributes.unitType === "flow")
     .slice(0, 12)
     .map((node) => ({
@@ -122,6 +223,9 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
   const frontBackEdgeIds = ontologyGraph.edges
     .filter((edge) => ["routes-to", "calls", "proxies-to", "branches-to", "dispatches-to", "consumes-from", "transitions-to", "propagates-contract", "emits-contract", "receives-contract", "maps-to", "references-entity", "references-edge"].includes(edge.type))
     .map((edge) => edge.id);
+  const flowPaths = flowPathsFromUnits.length > 0
+    ? flowPathsFromUnits
+    : buildFallbackFrontBackPaths({ ontologyGraph, frontBackNodeIds, frontBackEdgeIds });
 
   const integrationNodeIds = ontologyGraph.nodes
     .filter((node) => node.type === "eai-interface" || node.type === "data-store" || node.type === "async-channel" || node.type === "data-contract" || node.type === "data-query" || node.type === "data-table" || node.type === "cache-key" || node.type === "control-guard" || node.type === "decision-path" || node.type === "gateway-handler" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow" || node.attributes.unitType === "resource-schema")))
