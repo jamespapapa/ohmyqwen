@@ -236,6 +236,60 @@ function compareEdges(a: OntologyEdge, b: OntologyEdge, highlightedEdges: Set<st
   return a.id.localeCompare(b.id);
 }
 
+function selectVisibleNodes(options: {
+  sortedNodes: OntologyNode[];
+  sortedEdges: OntologyEdge[];
+  highlightedNodes: Set<string>;
+  pathNodes: Set<string>;
+  nodeLimit: number;
+  edgeLimit: number;
+}): OntologyNode[] {
+  const { sortedNodes, sortedEdges, highlightedNodes, pathNodes, nodeLimit, edgeLimit } = options;
+  if (sortedNodes.length <= nodeLimit) {
+    return sortedNodes;
+  }
+
+  const nodesById = new Map(sortedNodes.map((node) => [node.id, node]));
+  const selectedIds = new Set<string>();
+  const visibleNodes: OntologyNode[] = [];
+  const connectedTarget = Math.min(nodeLimit, Math.max(12, Math.min(nodeLimit, edgeLimit * 2)));
+
+  const pushNode = (nodeId: string) => {
+    if (visibleNodes.length >= nodeLimit || selectedIds.has(nodeId)) {
+      return;
+    }
+    const node = nodesById.get(nodeId);
+    if (!node) {
+      return;
+    }
+    selectedIds.add(nodeId);
+    visibleNodes.push(node);
+  };
+
+  for (const node of sortedNodes) {
+    if (highlightedNodes.has(node.id) || pathNodes.has(node.id)) {
+      pushNode(node.id);
+    }
+  }
+
+  for (const edge of sortedEdges) {
+    if (visibleNodes.length >= connectedTarget) {
+      break;
+    }
+    pushNode(edge.fromId);
+    pushNode(edge.toId);
+  }
+
+  for (const node of sortedNodes) {
+    pushNode(node.id);
+    if (visibleNodes.length >= nodeLimit) {
+      break;
+    }
+  }
+
+  return visibleNodes;
+}
+
 export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOptions): OntologyViewerPayload {
   const graph = maybeValidateSnapshot(OntologyGraphSnapshotSchema, options.graph);
   const projections = maybeValidateSnapshot(OntologyProjectionSnapshotSchema, options.projections);
@@ -334,11 +388,17 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
   const sortedNodes = [...filteredProjectionNodes].sort((a, b) =>
     compareNodes(a, b, metrics, highlightedNodes, pathNodes)
   );
-  const visibleNodes = sortedNodes.slice(0, nodeLimit);
+  const candidateEdges = [...filteredProjectionEdges].sort((a, b) => compareEdges(a, b, highlightedEdges, pathEdges));
+  const visibleNodes = selectVisibleNodes({
+    sortedNodes,
+    sortedEdges: candidateEdges,
+    highlightedNodes,
+    pathNodes,
+    nodeLimit,
+    edgeLimit
+  });
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
-  const sortedEdges = [...filteredProjectionEdges]
-    .filter((edge) => visibleNodeIds.has(edge.fromId) && visibleNodeIds.has(edge.toId))
-    .sort((a, b) => compareEdges(a, b, highlightedEdges, pathEdges));
+  const sortedEdges = candidateEdges.filter((edge) => visibleNodeIds.has(edge.fromId) && visibleNodeIds.has(edge.toId));
   const visibleEdges = sortedEdges.slice(0, edgeLimit);
   const visibleEdgeIds = new Set(visibleEdges.map((edge) => edge.id));
 

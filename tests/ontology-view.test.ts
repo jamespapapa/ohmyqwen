@@ -365,4 +365,107 @@ describe("buildOntologyViewerPayload", () => {
     expect(payload.selectedProjection.hiddenNodeCount).toBeGreaterThanOrEqual(0);
     expect(payload.selectedProjection.edges.length).toBeLessThanOrEqual(1);
   });
+
+
+  it("preserves connected edges when visible nodes are heavily compacted", () => {
+    const noisySchema: KnowledgeSchemaSnapshot = {
+      ...knowledgeSchema,
+      entities: [
+        ...knowledgeSchema.entities,
+        ...Array.from({ length: 20 }, (_, index) => ({
+          id: `service:NoiseService${index}.run`,
+          type: "service" as const,
+          label: `NoiseService${index}.run`,
+          summary: "isolated noise service",
+          metadata: {
+            domains: ["noise"],
+            subdomains: [],
+            channels: [],
+            actions: ["action-write"],
+            moduleRoles: [],
+            processRoles: [],
+            confidence: 0.95,
+            evidencePaths: [`src/NoiseService${index}.java`],
+            sourceType: "derived" as const,
+            validatedStatus: "validated" as const
+          },
+          attributes: { serviceMethod: `NoiseService${index}.run` }
+        }))
+      ],
+      summary: {
+        ...knowledgeSchema.summary,
+        entityCount: knowledgeSchema.entities.length + 20,
+        entityTypeCounts: {
+          ...knowledgeSchema.summary.entityTypeCounts,
+          service: (knowledgeSchema.summary.entityTypeCounts.service ?? 0) + 20
+        }
+      }
+    };
+
+    const graph = buildOntologyGraphSnapshot({
+      knowledgeSchema: noisySchema,
+      retrievalUnits: { ...retrievalUnits, units: [] },
+      feedbackArtifacts: [],
+      ontologyInputs: undefined,
+      ontologyReview: undefined,
+      evaluationReplay: undefined,
+      evaluationPromotions: undefined
+    });
+
+    const projectionNodeIds = [
+      "route:/insurance/claim",
+      "api:/gw/api/insurance/claim/spotSave",
+      "controller:ClaimController.spotSave",
+      "service:ClaimService.spotSave",
+      ...Array.from({ length: 20 }, (_, index) => `service:NoiseService${index}.run`)
+    ];
+    const projectionEdgeIds = ["edge:route-api", "edge:api-controller", "edge:controller-service"];
+
+    const projections = {
+      version: 1 as const,
+      generatedAt: graph.generatedAt,
+      workspaceDir: graph.workspaceDir,
+      projections: [
+        {
+          id: "projection:front-back-flow",
+          type: "front-back-flow" as const,
+          title: "Front to Back Flow",
+          summary: "edge preservation",
+          nodeIds: projectionNodeIds,
+          edgeIds: projectionEdgeIds,
+          representativePaths: [],
+          statusCounts: { validated: 21, derived: 3 },
+          highlightedNodeIds: [],
+          highlightedEdgeIds: []
+        }
+      ],
+      summary: {
+        projectionCount: 1,
+        truncated: false,
+        appliedLimits: [],
+        projectionTypeCounts: { "front-back-flow": 1 },
+        topProjectionTypes: [{ id: "front-back-flow", count: 1 }],
+        totalRepresentativePathCount: 0,
+        largestProjectionType: "front-back-flow",
+        lifecycleProjectionPathCount: 0
+      }
+    };
+
+    const payload = buildOntologyViewerPayload({
+      graph,
+      projections,
+      memoryRoot: "/workspace/.ohmyqwen/memory",
+      graphSnapshotPath: "/workspace/.ohmyqwen/memory/ontology-graph/latest.json",
+      projectionSnapshotPath: "/workspace/.ohmyqwen/memory/ontology-projections/latest.json",
+      analysisSnapshotPath: "/workspace/.ohmyqwen/memory/project-analysis/latest.json",
+      selectedProjectionId: "projection:front-back-flow",
+      nodeLimit: 6,
+      edgeLimit: 4
+    });
+
+    expect(payload.selectedProjection.nodes.length).toBe(payload.filters.nodeLimit);
+    expect(payload.selectedProjection.edges.length).toBeGreaterThan(0);
+    expect(payload.selectedProjection.nodes.some((node) => node.id === "route:/insurance/claim")).toBe(true);
+    expect(payload.selectedProjection.nodes.some((node) => node.id === "api:/gw/api/insurance/claim/spotSave")).toBe(true);
+  });
 });
