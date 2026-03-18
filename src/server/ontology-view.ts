@@ -5,7 +5,11 @@ import {
   type OntologyGraphSnapshot,
   type OntologyNode
 } from "./ontology-graph.js";
-import { OntologyProjectionSnapshotSchema, type OntologyProjectionSnapshot } from "./ontology-projections.js";
+import {
+  OntologyProjectionSnapshotSchema,
+  deriveFallbackFrontBackPaths,
+  type OntologyProjectionSnapshot
+} from "./ontology-projections.js";
 import { maybeValidateSnapshot } from "./snapshot-validation.js";
 
 const OntologyViewerNodeSchema = z.object({
@@ -253,6 +257,7 @@ function selectVisibleNodes(options: {
   const selectedIds = new Set<string>();
   const visibleNodes: OntologyNode[] = [];
   const connectedTarget = Math.min(nodeLimit, Math.max(12, Math.min(nodeLimit, edgeLimit * 2)));
+  const diversityTarget = Math.min(nodeLimit, Math.max(10, Math.ceil(nodeLimit * 0.45)));
 
   const pushNode = (nodeId: string) => {
     if (visibleNodes.length >= nodeLimit || selectedIds.has(nodeId)) {
@@ -278,6 +283,21 @@ function selectVisibleNodes(options: {
     }
     pushNode(edge.fromId);
     pushNode(edge.toId);
+  }
+
+  const nodesByType = new Map<string, OntologyNode[]>();
+  for (const node of sortedNodes) {
+    if (!nodesByType.has(node.type)) nodesByType.set(node.type, []);
+    nodesByType.get(node.type)?.push(node);
+  }
+  const typeOrder = Array.from(nodesByType.keys()).sort((a, b) => a.localeCompare(b));
+  for (let round = 0; round < 4 && visibleNodes.length < diversityTarget; round += 1) {
+    for (const type of typeOrder) {
+      const candidate = nodesByType.get(type)?.[round];
+      if (!candidate) continue;
+      pushNode(candidate.id);
+      if (visibleNodes.length >= diversityTarget) break;
+    }
   }
 
   for (const node of sortedNodes) {
@@ -363,12 +383,30 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
 
   const projectionNodes = selectedProjection.nodeIds.map((id) => graphNodesById.get(id)).filter(Boolean) as OntologyNode[];
   const projectionEdges = selectedProjection.edgeIds.map((id) => graphEdgesById.get(id)).filter(Boolean) as OntologyEdge[];
+  const effectiveRepresentativePaths =
+    selectedProjection.representativePaths.length > 0
+      ? selectedProjection.representativePaths
+      : selectedProjection.type === "front-back-flow"
+        ? deriveFallbackFrontBackPaths({
+            ontologyGraph: graph,
+            frontBackNodeIds: selectedProjection.nodeIds,
+            frontBackEdgeIds: selectedProjection.edgeIds
+          })
+        : [];
+  const effectiveHighlightedNodeIds =
+    selectedProjection.highlightedNodeIds.length > 0
+      ? selectedProjection.highlightedNodeIds
+      : effectiveRepresentativePaths.flatMap((path) => path.nodeIds).slice(0, 24);
+  const effectiveHighlightedEdgeIds =
+    selectedProjection.highlightedEdgeIds.length > 0
+      ? selectedProjection.highlightedEdgeIds
+      : effectiveRepresentativePaths.flatMap((path) => path.edgeIds).slice(0, 24);
   const searchLower = String(options.search || "").trim().toLowerCase();
   const requestedNodeType = String(options.nodeType || "all").trim();
-  const highlightedNodes = new Set(selectedProjection.highlightedNodeIds);
-  const highlightedEdges = new Set(selectedProjection.highlightedEdgeIds);
-  const pathNodes = nodeMembershipSet(selectedProjection.representativePaths);
-  const pathEdges = edgeMembershipSet(selectedProjection.representativePaths);
+  const highlightedNodes = new Set(effectiveHighlightedNodeIds);
+  const highlightedEdges = new Set(effectiveHighlightedEdgeIds);
+  const pathNodes = nodeMembershipSet(effectiveRepresentativePaths);
+  const pathEdges = edgeMembershipSet(effectiveRepresentativePaths);
 
   const filteredProjectionNodes = projectionNodes.filter((node) => {
     if (requestedNodeType && requestedNodeType !== "all" && node.type !== requestedNodeType) {
@@ -448,15 +486,15 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
       statusCounts: selectedProjection.statusCounts,
       totalNodeCount: selectedProjection.nodeIds.length,
       totalEdgeCount: selectedProjection.edgeIds.length,
-      totalPathCount: selectedProjection.representativePaths.length,
+      totalPathCount: effectiveRepresentativePaths.length,
       filteredNodeCount: filteredProjectionNodes.length,
       filteredEdgeCount: filteredProjectionEdges.length,
       hiddenNodeCount: Math.max(0, filteredProjectionNodes.length - visibleNodes.length),
       hiddenEdgeCount: Math.max(0, filteredProjectionEdges.length - visibleEdges.length),
       availableNodeTypes: unique(projectionNodes.map((node) => node.type)).sort((a, b) => a.localeCompare(b)),
-      representativePaths: selectedProjection.representativePaths.slice(0, 12),
-      highlightedNodeIds: selectedProjection.highlightedNodeIds.filter((id) => visibleNodeIds.has(id)),
-      highlightedEdgeIds: selectedProjection.highlightedEdgeIds.filter((id) => visibleEdgeIds.has(id)),
+      representativePaths: effectiveRepresentativePaths.slice(0, 12),
+      highlightedNodeIds: effectiveHighlightedNodeIds.filter((id) => visibleNodeIds.has(id)),
+      highlightedEdgeIds: effectiveHighlightedEdgeIds.filter((id) => visibleEdgeIds.has(id)),
       nodes: visibleNodes.map((node) => {
         const nodeMetrics = metrics.get(node.id) ?? { degree: 0, inDegree: 0, outDegree: 0 };
         return {

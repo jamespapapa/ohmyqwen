@@ -91,9 +91,13 @@ function ontologyLaneKey(type) {
   return lane[type] || `99-${type}`;
 }
 
+function ontologyLaneLabel(lane) {
+  return String(lane || "").replace(/^\d+-/, "");
+}
+
 function buildOntologySvgLayout(nodes) {
   if (!Array.isArray(nodes) || nodes.length === 0) {
-    return { width: 1280, height: 720, positions: {} };
+    return { width: 1280, height: 720, positions: {}, lanes: [] };
   }
   const lanes = new Map();
   for (const node of nodes) {
@@ -108,8 +112,10 @@ function buildOntologySvgLayout(nodes) {
   const height = Math.max(820, 160 + maxLaneSize * 96);
   const laneGap = laneCount <= 1 ? 0 : (width - 220) / (laneCount - 1);
   const positions = {};
+  const layoutLanes = [];
   laneEntries.forEach(([lane, laneNodes], laneIndex) => {
     const x = 110 + laneIndex * laneGap;
+    layoutLanes.push({ key: lane, label: ontologyLaneLabel(lane), x });
     const usableHeight = height - 140;
     const step = Math.max(84, Math.floor(usableHeight / Math.max(1, laneNodes.length)));
     const contentHeight = step * Math.max(0, laneNodes.length - 1);
@@ -118,7 +124,7 @@ function buildOntologySvgLayout(nodes) {
       positions[node.id] = { x, y: startY + nodeIndex * step, lane };
     });
   });
-  return { width, height, positions };
+  return { width, height, positions, lanes: layoutLanes };
 }
 
 function pickDefaultOntologyNodeId(ontology) {
@@ -260,6 +266,20 @@ export default function OntologyFullscreenPage({ projectId }) {
           <div style={{ marginTop: 8, border: "1px solid #d7dde7", borderRadius: 12, overflow: "auto", background: "#f8fafc", maxHeight: "78vh" }}>
             <svg viewBox={`0 0 ${layout.width} ${layout.height}`} style={{ width: "100%", minHeight: "78vh", display: "block" }}>
               <rect x="0" y="0" width={layout.width} height={layout.height} fill="#f8fafc" />
+              {(layout.lanes || []).map((lane) => (
+                <g key={`lane:${lane.key}`}>
+                  <line
+                    x1={lane.x}
+                    y1={28}
+                    x2={lane.x}
+                    y2={layout.height - 24}
+                    stroke="#e2e8f0"
+                    strokeDasharray="4 8"
+                    strokeWidth={1}
+                  />
+                  <text x={lane.x} y={18} textAnchor="middle" fontSize="12" fill="#64748b">{lane.label}</text>
+                </g>
+              ))}
               {(projection?.edges || []).map((edge) => {
                 const from = layout.positions[edge.fromId];
                 const to = layout.positions[edge.toId];

@@ -465,6 +465,8 @@ describe("buildOntologyViewerPayload", () => {
 
     expect(payload.selectedProjection.nodes.length).toBe(payload.filters.nodeLimit);
     expect(payload.selectedProjection.edges.length).toBeGreaterThan(0);
+    expect(payload.selectedProjection.representativePaths.length).toBeGreaterThan(0);
+    expect(new Set(payload.selectedProjection.nodes.map((node) => node.type)).size).toBeGreaterThan(1);
     expect(payload.selectedProjection.nodes.some((node) => node.id === "route:/insurance/claim")).toBe(true);
     expect(payload.selectedProjection.nodes.some((node) => node.id === "api:/gw/api/insurance/claim/spotSave")).toBe(true);
   });

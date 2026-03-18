@@ -505,12 +505,17 @@ function ontologyLaneKey(type) {
   return lane[type] || `99-${type}`;
 }
 
+function ontologyLaneLabel(lane) {
+  return String(lane || "").replace(/^\d+-/, "");
+}
+
 function buildOntologySvgLayout(nodes) {
   if (!Array.isArray(nodes) || nodes.length === 0) {
     return {
       width: 960,
       height: 280,
-      positions: {}
+      positions: {},
+      lanes: []
     };
   }
 
@@ -530,9 +535,11 @@ function buildOntologySvgLayout(nodes) {
   const height = Math.max(320, 120 + maxLaneSize * 88);
   const laneGap = laneCount <= 1 ? 0 : (width - 180) / (laneCount - 1);
   const positions = {};
+  const layoutLanes = [];
 
   laneEntries.forEach(([lane, laneNodes], laneIndex) => {
     const x = 90 + laneIndex * laneGap;
+    layoutLanes.push({ key: lane, label: ontologyLaneLabel(lane), x });
     const usableHeight = height - 120;
     const step = Math.max(78, Math.floor(usableHeight / Math.max(1, laneNodes.length)));
     const contentHeight = step * Math.max(0, laneNodes.length - 1);
@@ -546,7 +553,7 @@ function buildOntologySvgLayout(nodes) {
     });
   });
 
-  return { width, height, positions };
+  return { width, height, positions, lanes: layoutLanes };
 }
 
 function pickDefaultOntologyNodeId(ontology) {
@@ -2211,6 +2218,22 @@ export default function HomePage() {
                 style={{ width: "100%", minHeight: 320, display: "block" }}
               >
                 <rect x="0" y="0" width={ontologySvgLayout.width} height={ontologySvgLayout.height} fill="#f8fafc" />
+                {(ontologySvgLayout.lanes || []).map((lane) => (
+                  <g key={`lane:${lane.key}`}>
+                    <line
+                      x1={lane.x}
+                      y1={26}
+                      x2={lane.x}
+                      y2={ontologySvgLayout.height - 22}
+                      stroke="#e2e8f0"
+                      strokeDasharray="4 8"
+                      strokeWidth={1}
+                    />
+                    <text x={lane.x} y={18} textAnchor="middle" fontSize="12" fill="#64748b">
+                      {lane.label}
+                    </text>
+                  </g>
+                ))}
                 {(ontologySelectedProjection?.edges || []).map((edge) => {
                   const from = ontologySvgLayout.positions[edge.fromId];
                   const to = ontologySvgLayout.positions[edge.toId];

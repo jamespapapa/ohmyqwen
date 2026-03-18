@@ -103,7 +103,7 @@ function flowNodeRank(type: string): number {
   return ranks[type] ?? 99;
 }
 
-function buildFallbackFrontBackPaths(options: {
+export function deriveFallbackFrontBackPaths(options: {
   ontologyGraph: OntologyGraphSnapshot;
   frontBackNodeIds: string[];
   frontBackEdgeIds: string[];
@@ -225,7 +225,7 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     .map((edge) => edge.id);
   const flowPaths = flowPathsFromUnits.length > 0
     ? flowPathsFromUnits
-    : buildFallbackFrontBackPaths({ ontologyGraph, frontBackNodeIds, frontBackEdgeIds });
+    : deriveFallbackFrontBackPaths({ ontologyGraph, frontBackNodeIds, frontBackEdgeIds });
 
   const integrationNodeIds = ontologyGraph.nodes
     .filter((node) => node.type === "eai-interface" || node.type === "data-store" || node.type === "async-channel" || node.type === "data-contract" || node.type === "data-query" || node.type === "data-table" || node.type === "cache-key" || node.type === "control-guard" || node.type === "decision-path" || node.type === "gateway-handler" || node.metadata.channels.length > 0 || (node.type === "retrieval-unit" && (node.attributes.unitType === "eai-link" || node.attributes.unitType === "flow" || node.attributes.unitType === "resource-schema")))
