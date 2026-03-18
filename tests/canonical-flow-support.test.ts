@@ -93,6 +93,30 @@ describe("canonical flow support ranking", () => {
         }
       }),
       makeRankedUnit({
+        score: 10.5,
+        unit: {
+          id: "unit:flow:insurance:claim:progress",
+          type: "flow",
+          title: "MDP-MYINT021120M -> BenefitClaimProgressController.benefitClaimProgressGenInqury",
+          summary: "insurance claim progress flow related to representative path",
+          confidence: 0.79,
+          validatedStatus: "derived",
+          entityIds: [
+            "api:/insurance/benefit/claim/progress/gen/inqury",
+            "controller:BenefitClaimProgressController.benefitClaimProgressGenInqury"
+          ],
+          edgeIds: ["edge:transitions-to:api:/insurance/accBenefit/claim/spotSave:api:/insurance/benefit/claim/progress/gen/inqury:flow-family"],
+          searchText: ["insurance benefit claim progress inqury controller service"],
+          domains: [],
+          subdomains: [],
+          channels: [],
+          actions: ["action-read"],
+          moduleRoles: [],
+          processRoles: ["state-transition"],
+          evidencePaths: ["src/views/mo/mysamsunglife/insurance/claim/MDP-MYINT021120M.vue"]
+        }
+      }),
+      makeRankedUnit({
         score: 14,
         unit: {
           id: "unit:flow:loan:noise",
@@ -122,9 +146,11 @@ describe("canonical flow support ranking", () => {
     });
 
     expect(supportUnits[0]?.unitId).toBe("unit:flow:insurance:claim");
-    expect(supportUnits[1]?.unitId).toBe("unit:resource:insurance:claim");
+    expect(supportUnits[1]?.unitId).toBe("unit:flow:insurance:claim:progress");
+    expect(supportUnits[2]?.unitId).toBe("unit:resource:insurance:claim");
     expect(supportUnits.some((item) => item.unitId === "unit:flow:loan:noise")).toBe(false);
     expect(supportUnits[0]?.reasons).toEqual(expect.arrayContaining(["transitions", "request-contract"]));
-    expect(supportUnits[1]?.reasons).toEqual(expect.arrayContaining(["response-contract", "support-entities"]));
+    expect(supportUnits[1]?.reasons).toEqual(expect.arrayContaining(["workflow-family"]));
+    expect(supportUnits[2]?.reasons).toEqual(expect.arrayContaining(["response-contract", "support-entities"]));
   });
 });

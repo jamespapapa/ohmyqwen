@@ -164,6 +164,14 @@ export function buildCanonicalFlowSupportUnits(options: {
         reasons.push("transitions");
       }
 
+      const workflowFamilyTransitionCount = unit.edgeIds.filter(
+        (edgeId) => edgeId.includes("edge:transitions-to:") && edgeId.includes(":flow-family")
+      ).length;
+      if (workflowFamilyTransitionCount > 0) {
+        score += Math.min(30, workflowFamilyTransitionCount * 12);
+        reasons.push("workflow-family");
+      }
+
       const requestPropagationCount = unit.edgeIds.filter(
         (edgeId) => edgeId.includes("edge:propagates-contract:") && edgeId.endsWith(":request")
       ).length;
