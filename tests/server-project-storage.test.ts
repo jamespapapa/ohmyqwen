@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   resolveServerProjectContextCachePath,
@@ -8,13 +8,14 @@ import {
   resolveServerProjectMemoryHome,
   resolveServerProjectStructureSnapshotPath
 } from "../src/server/projects.js";
+import { rmWithRetry } from "./temp-dir-utils.js";
 
 const originalProjectHome = process.env.OHMYQWEN_PROJECT_HOME;
 const originalMemoryHome = process.env.OHMYQWEN_MEMORY_HOME;
 const originalCwd = process.cwd();
 const tempDirs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   if (originalProjectHome === undefined) {
     delete process.env.OHMYQWEN_PROJECT_HOME;
   } else {
@@ -28,6 +29,14 @@ afterEach(() => {
   }
 
   process.chdir(originalCwd);
+  vi.resetModules();
+
+  while (tempDirs.length > 0) {
+    const dir = tempDirs.pop();
+    if (dir) {
+      await rmWithRetry(dir);
+    }
+  }
 });
 
 describe("server project storage paths", () => {
@@ -107,13 +116,4 @@ describe("server project storage paths", () => {
     expect(rawStore.projects?.[0]).toBeTruthy();
     expect("presetId" in (rawStore.projects?.[0] ?? {})).toBe(false);
   });
-});
-
-afterEach(async () => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop();
-    if (dir) {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
 });

@@ -1954,7 +1954,7 @@ async function collectProjectFiles(workspaceDir: string, maxFiles = 10_000): Pro
         continue;
       }
 
-      const relative = path.relative(workspaceDir, fullPath);
+      const relative = toForwardSlash(path.relative(workspaceDir, fullPath));
       if (isRetrievalNoisePath(relative)) {
         continue;
       }

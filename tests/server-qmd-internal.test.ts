@@ -1,7 +1,8 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { rmWithRetry } from "./temp-dir-utils.js";
 
 const originalCwd = process.cwd();
 const originalFetch = globalThis.fetch;
@@ -401,7 +402,7 @@ describe("server projects with vendored internal qmd runtime", () => {
       if (!dir) {
         continue;
       }
-      await rm(dir, { recursive: true, force: true });
+      await rmWithRetry(dir);
     }
   });
 
@@ -568,6 +569,20 @@ describe("server projects with vendored internal qmd runtime", () => {
       summary?: { unitCount?: number };
     };
     expect(Number(retrievalUnits.summary?.unitCount ?? 0)).toBeGreaterThan(0);
+    const structureIndexPath = path.join(
+      appRoot,
+      ".project-home",
+      ".ohmyqwen",
+      "cache",
+      "structure-index.v1.json"
+    );
+    const structureIndex = JSON.parse(await readFile(structureIndexPath, "utf8")) as {
+      entries?: Record<string, unknown>;
+    };
+    const structurePaths = Object.keys(structureIndex.entries ?? {});
+    expect(structurePaths.length).toBeGreaterThan(0);
+    expect(structurePaths.every((entry) => !entry.includes("\\"))).toBe(true);
+    expect(structurePaths).toContain("src/LoanController.java");
     const ontologyGraphPath = path.join(
       appRoot,
       ".project-home",
