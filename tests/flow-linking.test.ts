@@ -209,6 +209,106 @@ describe("flow linking", () => {
     expect(linked[0]?.backendControllerMethod).toBe("BenefitClaimController.insertBenefitClaim");
   });
 
+  it("prefers workflow-family coherent claim flows over adjacent same-namespace insurance flows", () => {
+    const coherentSnapshot = {
+      ...snapshot,
+      links: [
+        {
+          confidence: 0.92,
+          frontend: {
+            screenCode: "MDP-MYINT020100M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020100M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020100M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/premium/payment/proc",
+            normalizedUrl: "/insurance/premium/payment/proc",
+            functionName: "premiumPaymentProc",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/premium/payment/proc",
+            controllerMethod: "PremiumPaymentController.premiumPaymentProc",
+            filePath: "dcp-insurance/src/main/java/com/acme/PremiumPaymentController.java",
+            serviceHints: ["PremiumPaymentService.premiumPaymentProc"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        },
+        {
+          confidence: 0.84,
+          frontend: {
+            screenCode: "MDP-MYINT020200M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020200M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/benefit/claim/inquiry",
+            normalizedUrl: "/insurance/benefit/claim/inquiry",
+            functionName: "benefitClaimInquiry",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/benefit/claim/inquiry",
+            controllerMethod: "BenefitClaimController.benefitClaimInquiry",
+            filePath: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.loadBenefitClaim"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        },
+        {
+          confidence: 0.85,
+          frontend: {
+            screenCode: "MDP-MYINT020210M",
+            screenPath: "src/views/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M.vue",
+            routePath: "/mo/mysamsunglife/insurance/internet/MDP-MYINT020210M"
+          },
+          api: {
+            method: "POST",
+            rawUrl: "/gw/api/insurance/benefit/claim/insert",
+            normalizedUrl: "/insurance/benefit/claim/insert",
+            functionName: "insertBenefitClaim",
+            source: "http-call"
+          },
+          gateway: {
+            path: "/api/**",
+            controllerMethod: "RouteController.route"
+          },
+          backend: {
+            path: "/insurance/benefit/claim/insert",
+            controllerMethod: "BenefitClaimController.insertBenefitClaim",
+            filePath: "dcp-insurance/src/main/java/com/acme/BenefitClaimController.java",
+            serviceHints: ["BenefitClaimService.saveBenefitClaim"]
+          },
+          evidence: ["frontend-http-call", "gateway-api-proxy"]
+        }
+      ]
+    } satisfies FrontBackGraphSnapshot;
+
+    const linked = buildLinkedFlowEvidence({
+      question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",
+      hits: [],
+      snapshot: coherentSnapshot
+    });
+
+    expect(linked[0]?.backendControllerMethod).not.toBe("PremiumPaymentController.premiumPaymentProc");
+    expect(linked.slice(0, 2).map((item) => item.backendControllerMethod)).toEqual(
+      expect.arrayContaining([
+        "BenefitClaimController.benefitClaimInquiry",
+        "BenefitClaimController.insertBenefitClaim"
+      ])
+    );
+  });
+
   it("filters incoherent cross-layer flows from deterministic answers", () => {
     const output = buildDeterministicFlowAnswer({
       question: "보험금 청구 로직이 프론트부터 백엔드까지 어떻게 돌아가는지 설명해줘.",

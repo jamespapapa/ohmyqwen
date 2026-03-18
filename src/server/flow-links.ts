@@ -161,6 +161,44 @@ const GENERIC_FLOW_NAMESPACE_TOKENS = new Set([
   "v2"
 ]);
 
+const GENERIC_WORKFLOW_FAMILY_TOKENS = new Set([
+  ...GENERIC_FLOW_NAMESPACE_TOKENS,
+  "benefit",
+  "claim",
+  "loan",
+  "member",
+  "insurance",
+  "pension",
+  "fund",
+  "document",
+  "doc",
+  "attachment",
+  "upload",
+  "agreement",
+  "auth",
+  "token",
+  "callback",
+  "bridge",
+  "check",
+  "status",
+  "read",
+  "load",
+  "inquiry",
+  "inqury",
+  "query",
+  "insert",
+  "save",
+  "write",
+  "update",
+  "delete",
+  "remove",
+  "progress",
+  "register",
+  "registe",
+  "validate",
+  "verify"
+]);
+
 function extractFlowNamespaceTokens(item: {
   screenCode?: string;
   routePath?: string;
@@ -189,6 +227,34 @@ function extractFlowNamespaceTokens(item: {
         !/\d/.test(token)
     )
   );
+}
+
+function extractFlowFamilyTokens(item: {
+  apiUrl: string;
+  backendPath: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+}): string[] {
+  return unique(
+    tokenizeOntologyText(
+      [item.apiUrl, item.backendPath, item.backendControllerMethod, ...(item.serviceHints ?? [])]
+        .filter(Boolean)
+        .join(" ")
+    ).filter((token) => token.length >= 3 && !GENERIC_WORKFLOW_FAMILY_TOKENS.has(token))
+  );
+}
+
+function deriveFlowFamilyKey(item: {
+  apiUrl: string;
+  backendPath: string;
+  backendControllerMethod: string;
+  serviceHints?: string[];
+}): string | undefined {
+  const tokens = extractFlowFamilyTokens(item);
+  if (tokens.length === 0) {
+    return undefined;
+  }
+  return tokens.slice(0, 4).join(":");
 }
 
 function topNamespaceFromPath(value?: string): string | undefined {
@@ -235,6 +301,7 @@ function buildCanonicalFlowCluster(
     return [];
   }
   const anchorNamespace = new Set(extractFlowNamespaceTokens(anchor));
+  const anchorFamilyKey = deriveFlowFamilyKey(anchor);
   const anchorTopNamespaces = new Set(
     [topNamespaceFromPath(anchor.apiUrl), topNamespaceFromPath(anchor.backendPath)].filter(Boolean)
   );
@@ -254,8 +321,12 @@ function buildCanonicalFlowCluster(
     }
     const sharedSpecificSignals = specificQuestionTags.filter((tag) => (flow.capabilityTags ?? []).includes(tag));
     const flowNamespace = extractFlowNamespaceTokens(flow);
+    const flowFamilyKey = deriveFlowFamilyKey(flow);
     const questionNamespaceOverlap = questionNamespaceTokens.filter((token) => flowNamespace.includes(token)).length;
     if (sharedSpecificSignals.length > 0) {
+      return true;
+    }
+    if (anchorFamilyKey && flowFamilyKey === anchorFamilyKey) {
       return true;
     }
     if (questionNamespaceTokens.length > 0 && questionNamespaceOverlap === 0) {
@@ -286,6 +357,7 @@ function selectCanonicalFlowAnchor(
   return [...flows]
     .map((candidate) => {
       const candidateNamespace = new Set(extractFlowNamespaceTokens(candidate));
+      const candidateFamilyKey = deriveFlowFamilyKey(candidate);
       const candidateTopNamespaces = new Set(
         [topNamespaceFromPath(candidate.apiUrl), topNamespaceFromPath(candidate.backendPath)].filter(Boolean)
       );
@@ -311,10 +383,14 @@ function selectCanonicalFlowAnchor(
         const topNamespaceOverlap = peerTopNamespaces.some((token) => candidateTopNamespaces.has(token)) ? 1 : 0;
         const peerSpecificMatches = specificQuestionTags.filter((tag) => (peer.capabilityTags ?? []).includes(tag));
         const peerActions = inferFlowActionTags(peer);
+        const peerFamilyKey = deriveFlowFamilyKey(peer);
         const actionOverlap = peerActions.filter((action) => candidateActions.has(action)).length;
 
         if (peerSpecificMatches.length > 0) {
           score += 14;
+        }
+        if (candidateFamilyKey && peerFamilyKey === candidateFamilyKey) {
+          score += 18;
         }
         if (namespaceOverlap > 0) {
           score += Math.min(18, namespaceOverlap * 6);
@@ -565,6 +641,12 @@ export function buildLinkedFlowEvidence(options: {
         serviceHints: link.backend.serviceHints
       });
       const sharedNamespaceTokens = questionNamespaceTokens.filter((tag) => flowNamespaceTokens.includes(tag));
+      const workflowFamilyKey = deriveFlowFamilyKey({
+        apiUrl: link.api.normalizedUrl,
+        backendPath: link.backend.path,
+        backendControllerMethod: link.backend.controllerMethod,
+        serviceHints: link.backend.serviceHints
+      });
       const topNamespaces = collectFlowTopNamespaces({
         apiUrl: link.api.normalizedUrl,
         backendPath: link.backend.path
@@ -583,10 +665,6 @@ export function buildLinkedFlowEvidence(options: {
       if (!/(취소|cancel|delete)/i.test(options.question) && /delete|cancel/.test(fullFlowText)) {
         score -= 14;
         reasons.push("destructive-action-penalty");
-      }
-      if (/spotsave|spotload/.test(fullFlowText)) {
-        score -= 8;
-        reasons.push("draft-flow-penalty");
       }
       const strongQuestionAlignment = hasStrongOntologySignalAlignment(questionTags, capabilityTags, {
         question: options.question,
@@ -612,6 +690,7 @@ export function buildLinkedFlowEvidence(options: {
         confidence: Math.min(0.99, Number((score / 100).toFixed(2))),
         reasons: unique(reasons),
         _score: score,
+        _workflowFamilyKey: workflowFamilyKey,
         _topNamespaces: topNamespaces,
         _namespaceOverlapCount: sharedNamespaceTokens.length,
         _specificMatchCount: sharedSpecificSignals.length,
@@ -628,12 +707,20 @@ export function buildLinkedFlowEvidence(options: {
     }));
 
   const namespaceSupport = new Map<string, number>();
+  const workflowFamilySupport = new Map<string, number>();
   for (const item of ranked) {
     for (const namespace of item._topNamespaces) {
       namespaceSupport.set(namespace, (namespaceSupport.get(namespace) ?? 0) + item._namespaceSupportWeight);
     }
+    if (item._workflowFamilyKey) {
+      workflowFamilySupport.set(
+        item._workflowFamilyKey,
+        (workflowFamilySupport.get(item._workflowFamilyKey) ?? 0) + item._namespaceSupportWeight
+      );
+    }
   }
   const maxNamespaceSupport = Math.max(0, ...namespaceSupport.values());
+  const maxWorkflowFamilySupport = Math.max(0, ...workflowFamilySupport.values());
 
   return ranked
     .map((item) => {
@@ -642,10 +729,17 @@ export function buildLinkedFlowEvidence(options: {
         ...item._topNamespaces.map((namespace) => namespaceSupport.get(namespace) ?? 0)
       );
       const peerNamespaceSupport = Math.max(0, strongestNamespaceSupport - item._namespaceSupportWeight);
+      const strongestWorkflowFamilySupport = item._workflowFamilyKey
+        ? workflowFamilySupport.get(item._workflowFamilyKey) ?? 0
+        : 0;
+      const peerWorkflowFamilySupport = Math.max(0, strongestWorkflowFamilySupport - item._namespaceSupportWeight);
       let adjustedScore = item._score;
 
       if (peerNamespaceSupport > 0) {
         adjustedScore += Math.min(26, peerNamespaceSupport / 55);
+      }
+      if (peerWorkflowFamilySupport > 0) {
+        adjustedScore += Math.min(24, peerWorkflowFamilySupport / 60);
       }
 
       if (
@@ -664,6 +758,22 @@ export function buildLinkedFlowEvidence(options: {
         (item._specificMatchCount > 0 || item._namespaceOverlapCount > 0)
       ) {
         adjustedScore += 14;
+      }
+      if (
+        maxWorkflowFamilySupport >= 180 &&
+        strongestWorkflowFamilySupport > 0 &&
+        strongestWorkflowFamilySupport < maxWorkflowFamilySupport * 0.46 &&
+        item._specificMatchCount === 0 &&
+        item._namespaceOverlapCount === 0
+      ) {
+        adjustedScore -= 24;
+      }
+      if (
+        maxWorkflowFamilySupport >= 180 &&
+        strongestWorkflowFamilySupport >= maxWorkflowFamilySupport * 0.72 &&
+        (item._specificMatchCount > 0 || item._namespaceOverlapCount > 0 || item._workflowFamilyKey)
+      ) {
+        adjustedScore += 10;
       }
 
       return {
@@ -685,6 +795,7 @@ export function buildLinkedFlowEvidence(options: {
     .map(
       ({
         _score: _unusedScore,
+        _workflowFamilyKey: _unusedWorkflowFamilyKey,
         _topNamespaces: _unusedTopNamespaces,
         _namespaceOverlapCount: _unusedNamespaceOverlapCount,
         _specificMatchCount: _unusedSpecificMatchCount,
