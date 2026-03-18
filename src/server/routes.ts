@@ -10,6 +10,7 @@ import {
   getServerLlmSettings,
   getServerDomainPack,
   getServerProject,
+  getServerProjectOntologyView,
   getServerProjectOntologyDraft,
   listServerDomainPacks,
   listServerProjectPresets,
@@ -84,6 +85,7 @@ function matchProjectPath(
     | "ask"
     | "debug"
     | "feedback"
+    | "ontology"
     | "ontology-inputs"
     | "ontology-draft"
     | "ontology-draft/evaluate"
@@ -733,6 +735,43 @@ export async function handleApiRoutes(req: IncomingMessage, res: ServerResponse)
     } catch (error) {
       routeTrace("project/feedback:failure", {
         projectId: projectFeedbackId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      json(res, 400, {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return true;
+    }
+  }
+
+  const projectOntologyId = matchProjectPath(pathname, "ontology");
+  if (projectOntologyId && method === "GET") {
+    routeTrace("project/ontology:get:start", { projectId: projectOntologyId });
+    try {
+      const projectionId = url.searchParams.get("projectionId") ?? undefined;
+      const nodeType = url.searchParams.get("nodeType") ?? undefined;
+      const search = url.searchParams.get("search") ?? undefined;
+      const nodeLimitRaw = url.searchParams.get("nodeLimit");
+      const edgeLimitRaw = url.searchParams.get("edgeLimit");
+      const result = await getServerProjectOntologyView({
+        projectId: projectOntologyId,
+        projectionId,
+        nodeType,
+        search,
+        nodeLimit: nodeLimitRaw ? Number(nodeLimitRaw) : undefined,
+        edgeLimit: edgeLimitRaw ? Number(edgeLimitRaw) : undefined
+      });
+      routeTrace("project/ontology:get:success", {
+        projectId: projectOntologyId,
+        projectionId: result.ontology.filters.selectedProjectionId,
+        nodeCount: result.ontology.selectedProjection.nodes.length,
+        edgeCount: result.ontology.selectedProjection.edges.length
+      });
+      json(res, 200, result);
+      return true;
+    } catch (error) {
+      routeTrace("project/ontology:get:failure", {
+        projectId: projectOntologyId,
         error: error instanceof Error ? error.message : String(error)
       });
       json(res, 400, {

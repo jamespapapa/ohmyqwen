@@ -448,6 +448,119 @@ function cardStatusClass(status) {
   return "";
 }
 
+function ontologyNodeTypeColor(type) {
+  const colors = {
+    route: "#2563eb",
+    "ui-action": "#0f766e",
+    api: "#0891b2",
+    "gateway-handler": "#7c3aed",
+    controller: "#4f46e5",
+    service: "#9333ea",
+    "data-contract": "#f59e0b",
+    "data-query": "#ea580c",
+    "data-table": "#b45309",
+    "data-store": "#dc2626",
+    "cache-key": "#be123c",
+    "async-channel": "#db2777",
+    "eai-interface": "#c026d3",
+    "control-guard": "#65a30d",
+    "decision-path": "#84cc16",
+    "knowledge-cluster": "#475569",
+    "retrieval-unit": "#334155",
+    path: "#64748b"
+  };
+  return colors[type] || "#64748b";
+}
+
+function ontologyStatusColor(status) {
+  if (status === "validated") return "#166534";
+  if (status === "candidate") return "#b45309";
+  if (status === "contested") return "#b91c1c";
+  if (status === "deprecated") return "#6b7280";
+  if (status === "stale") return "#92400e";
+  return "#475569";
+}
+
+function ontologyLaneKey(type) {
+  const lane = {
+    route: "01-route",
+    "ui-action": "02-ui-action",
+    api: "03-api",
+    "gateway-handler": "04-gateway",
+    controller: "05-controller",
+    service: "06-service",
+    "data-contract": "07-contract",
+    "control-guard": "08-guard",
+    "decision-path": "09-decision",
+    "data-query": "10-query",
+    "data-table": "11-table",
+    "data-store": "12-store",
+    "cache-key": "13-cache",
+    "async-channel": "14-async",
+    "eai-interface": "15-eai",
+    "knowledge-cluster": "16-cluster",
+    "retrieval-unit": "17-unit",
+    path: "18-path"
+  };
+  return lane[type] || `99-${type}`;
+}
+
+function buildOntologySvgLayout(nodes) {
+  if (!Array.isArray(nodes) || nodes.length === 0) {
+    return {
+      width: 960,
+      height: 280,
+      positions: {}
+    };
+  }
+
+  const lanes = new Map();
+  for (const node of nodes) {
+    const lane = ontologyLaneKey(node.type);
+    if (!lanes.has(lane)) {
+      lanes.set(lane, []);
+    }
+    lanes.get(lane).push(node);
+  }
+
+  const laneEntries = Array.from(lanes.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  const laneCount = laneEntries.length;
+  const maxLaneSize = Math.max(...laneEntries.map(([, items]) => items.length), 1);
+  const width = Math.max(960, 180 + laneCount * 170);
+  const height = Math.max(320, 120 + maxLaneSize * 88);
+  const laneGap = laneCount <= 1 ? 0 : (width - 180) / (laneCount - 1);
+  const positions = {};
+
+  laneEntries.forEach(([lane, laneNodes], laneIndex) => {
+    const x = 90 + laneIndex * laneGap;
+    const usableHeight = height - 120;
+    const step = Math.max(78, Math.floor(usableHeight / Math.max(1, laneNodes.length)));
+    const contentHeight = step * Math.max(0, laneNodes.length - 1);
+    const startY = 60 + Math.max(0, Math.floor((usableHeight - contentHeight) / 2));
+    laneNodes.forEach((node, nodeIndex) => {
+      positions[node.id] = {
+        x,
+        y: startY + nodeIndex * step,
+        lane
+      };
+    });
+  });
+
+  return { width, height, positions };
+}
+
+function pickDefaultOntologyNodeId(ontology) {
+  if (!ontology?.selectedProjection) {
+    return "";
+  }
+  return (
+    ontology.selectedProjection.highlightedNodeIds?.[0] ||
+    ontology.selectedProjection.representativePaths?.[0]?.nodeIds?.[0] ||
+    ontology.selectedProjection.nodes?.[0]?.id ||
+    ""
+  );
+}
+
 async function getJson(url, init) {
   const response = await fetch(url, {
     cache: "no-store",
@@ -519,6 +632,14 @@ export default function HomePage() {
   const [selectedFileError, setSelectedFileError] = useState("");
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [ontologyViewData, setOntologyViewData] = useState(null);
+  const [ontologyViewLoading, setOntologyViewLoading] = useState(false);
+  const [ontologyViewError, setOntologyViewError] = useState("");
+  const [ontologyProjectionId, setOntologyProjectionId] = useState("projection:front-back-flow");
+  const [ontologyNodeTypeFilter, setOntologyNodeTypeFilter] = useState("all");
+  const [ontologySearchInput, setOntologySearchInput] = useState("");
+  const [ontologyAppliedSearch, setOntologyAppliedSearch] = useState("");
+  const [ontologySelectedNodeId, setOntologySelectedNodeId] = useState("");
   const [askQuestion, setAskQuestion] = useState("");
   const [askMaxAttempts, setAskMaxAttempts] = useState(3);
   const [askDeterministicOnly, setAskDeterministicOnly] = useState(false);
@@ -621,6 +742,27 @@ export default function HomePage() {
   const latestDebugEvent = useMemo(
     () => (debugEvents.length > 0 ? debugEvents[debugEvents.length - 1] : null),
     [debugEvents]
+  );
+  const ontologyViewer = ontologyViewData?.ontology || null;
+  const ontologySelectedProjection = ontologyViewer?.selectedProjection || null;
+  const ontologySelectedNode = useMemo(
+    () =>
+      ontologySelectedProjection?.nodes?.find((node) => node.id === ontologySelectedNodeId) ||
+      ontologySelectedProjection?.nodes?.[0] ||
+      null,
+    [ontologySelectedNodeId, ontologySelectedProjection]
+  );
+  const ontologyAdjacentEdges = useMemo(() => {
+    if (!ontologySelectedProjection || !ontologySelectedNode) {
+      return [];
+    }
+    return (ontologySelectedProjection.edges || []).filter(
+      (edge) => edge.fromId === ontologySelectedNode.id || edge.toId === ontologySelectedNode.id
+    );
+  }, [ontologySelectedNode, ontologySelectedProjection]);
+  const ontologySvgLayout = useMemo(
+    () => buildOntologySvgLayout(ontologySelectedProjection?.nodes || []),
+    [ontologySelectedProjection?.nodes]
   );
   const runBusy = Boolean(runId) && (run?.status === "running" || run?.status === "waiting");
   const activeOps = useMemo(() => {
@@ -727,8 +869,11 @@ export default function HomePage() {
     setSelectedFileDetail(null);
     setSelectedFileError("");
     setOntologyDraftMessage("");
+    setOntologyViewError("");
+    setOntologySelectedNodeId("");
     void loadDebugEvents(selectedProject.id);
     void loadOntologyDraft(selectedProject.id, { silent: true });
+    void loadOntologyView(selectedProject.id, { silent: true, allowMissing: true });
   }, [selectedProject, llmSettings?.defaultModelId]);
 
   useEffect(() => {
@@ -1177,6 +1322,7 @@ export default function HomePage() {
         body: JSON.stringify({})
       });
       setAnalysisResult(response);
+      await loadOntologyView(selectedProjectId, { silent: true, allowMissing: true });
       setProjectMessage(
         `분석 완료: confidence=${Number(response.confidence || 0).toFixed(2)}, memory=${response.memoryFiles?.length || 0} files`
       );
@@ -1199,6 +1345,52 @@ export default function HomePage() {
       body: JSON.stringify({})
     });
     setAnalysisResult(response);
+    await loadOntologyView(selectedProjectId, { silent: true, allowMissing: true });
+  }
+
+  async function loadOntologyView(projectId = selectedProjectId, options = {}) {
+    if (!projectId) {
+      setOntologyViewData(null);
+      return;
+    }
+    if (!options.silent) {
+      setOntologyViewLoading(true);
+      setOntologyViewError("");
+    }
+    try {
+      const query = new URLSearchParams();
+      const projectionId = options.projectionId ?? ontologyProjectionId;
+      const nodeType = options.nodeType ?? ontologyNodeTypeFilter;
+      const search = options.search ?? ontologyAppliedSearch;
+      if (projectionId) query.set("projectionId", projectionId);
+      if (nodeType && nodeType !== "all") query.set("nodeType", nodeType);
+      if (search && String(search).trim()) query.set("search", String(search).trim());
+      query.set("nodeLimit", String(options.nodeLimit ?? 72));
+      query.set("edgeLimit", String(options.edgeLimit ?? 160));
+
+      const response = await getJson(`/api/projects/${projectId}/ontology?${query.toString()}`);
+      setOntologyViewData(response);
+      setOntologyProjectionId(response?.ontology?.filters?.selectedProjectionId || projectionId || "projection:front-back-flow");
+      setOntologySelectedNodeId((current) => {
+        const nodes = response?.ontology?.selectedProjection?.nodes || [];
+        if (current && nodes.some((node) => node.id === current)) {
+          return current;
+        }
+        return pickDefaultOntologyNodeId(response?.ontology);
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (options.allowMissing && message.includes("run analyze first")) {
+        setOntologyViewData(null);
+        setOntologyViewError("");
+      } else {
+        setOntologyViewError(message);
+      }
+    } finally {
+      if (!options.silent) {
+        setOntologyViewLoading(false);
+      }
+    }
   }
 
   async function loadOntologyDraft(projectId = selectedProjectId, options = {}) {
@@ -1844,6 +2036,331 @@ export default function HomePage() {
           </button>
         </div>
         {ontologyInputMessageText ? <div className="hint" style={{ marginTop: 8 }}>{ontologyInputMessageText}</div> : null}
+      </div>
+    </>
+  ) : null;
+
+  const ontologyViewerPanel = selectedProjectId ? (
+    <>
+      <div className="label" style={{ marginTop: 8 }}>Ontology Graph Viewer</div>
+      <div className="report-box" style={{ marginTop: 8 }}>
+        <div className="toolbar" style={{ marginTop: 0, alignItems: "center" }}>
+          <select
+            value={ontologyProjectionId}
+            onChange={(e) => {
+              const value = e.target.value;
+              setOntologyProjectionId(value);
+              setOntologySelectedNodeId("");
+              void loadOntologyView(selectedProjectId, {
+                projectionId: value,
+                nodeType: ontologyNodeTypeFilter,
+                search: ontologyAppliedSearch
+              });
+            }}
+            disabled={!selectedProjectId || ontologyViewLoading}
+            style={{ minWidth: 220 }}
+          >
+            {((ontologyViewer?.projections || []).length > 0 ? ontologyViewer.projections : [
+              { id: "projection:front-back-flow", title: "Front to Back Flow", type: "front-back-flow" }
+            ]).map((projection) => (
+              <option key={projection.id} value={projection.id}>
+                {projection.title} · {projection.type}
+              </option>
+            ))}
+          </select>
+          <select
+            value={ontologyNodeTypeFilter}
+            onChange={(e) => {
+              const value = e.target.value;
+              setOntologyNodeTypeFilter(value);
+              setOntologySelectedNodeId("");
+              void loadOntologyView(selectedProjectId, {
+                projectionId: ontologyProjectionId,
+                nodeType: value,
+                search: ontologyAppliedSearch
+              });
+            }}
+            disabled={!selectedProjectId || ontologyViewLoading}
+            style={{ minWidth: 160 }}
+          >
+            <option value="all">all node types</option>
+            {(ontologySelectedProjection?.availableNodeTypes || []).map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+          <input
+            value={ontologySearchInput}
+            onChange={(e) => setOntologySearchInput(e.target.value)}
+            placeholder="node / path / action 검색"
+            style={{ minWidth: 220, flex: 1 }}
+          />
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setOntologyAppliedSearch(ontologySearchInput.trim());
+              setOntologySelectedNodeId("");
+              void loadOntologyView(selectedProjectId, {
+                projectionId: ontologyProjectionId,
+                nodeType: ontologyNodeTypeFilter,
+                search: ontologySearchInput.trim()
+              });
+            }}
+            disabled={!selectedProjectId || ontologyViewLoading}
+          >
+            적용
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setOntologySearchInput("");
+              setOntologyAppliedSearch("");
+              setOntologyNodeTypeFilter("all");
+              setOntologySelectedNodeId("");
+              void loadOntologyView(selectedProjectId, {
+                projectionId: ontologyProjectionId,
+                nodeType: "all",
+                search: ""
+              });
+            }}
+            disabled={!selectedProjectId || ontologyViewLoading}
+          >
+            필터 초기화
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void loadOntologyView(selectedProjectId, { projectionId: ontologyProjectionId, nodeType: ontologyNodeTypeFilter, search: ontologyAppliedSearch })}
+            disabled={!selectedProjectId || ontologyViewLoading}
+          >
+            {ontologyViewLoading ? "불러오는 중" : "새로고침"}
+          </button>
+        </div>
+
+        <div className="hint" style={{ marginTop: 8 }}>
+          현재 ontology는 LLM 구조분석 시 메모리에 materialize되고, 동시에 filesystem artifact로 저장된다.
+          source={ontologyViewer?.storage?.kind || "filesystem-artifacts"} · graph=
+          {ontologyViewer?.storage?.graphSnapshotPath || "-"}
+        </div>
+        {ontologyViewError ? <div className="error" style={{ marginTop: 8 }}>{ontologyViewError}</div> : null}
+
+        {ontologyViewer ? (
+          <>
+            <div className="status-grid" style={{ marginTop: 10 }}>
+              <div className="status-box">
+                <div className="k">Projection</div>
+                <div className="v">{ontologySelectedProjection?.title || "-"}</div>
+              </div>
+              <div className="status-box">
+                <div className="k">Visible Nodes</div>
+                <div className="v">
+                  {ontologySelectedProjection?.nodes?.length ?? 0}/{ontologySelectedProjection?.filteredNodeCount ?? 0}
+                </div>
+              </div>
+              <div className="status-box">
+                <div className="k">Visible Edges</div>
+                <div className="v">
+                  {ontologySelectedProjection?.edges?.length ?? 0}/{ontologySelectedProjection?.filteredEdgeCount ?? 0}
+                </div>
+              </div>
+              <div className="status-box">
+                <div className="k">Representative Paths</div>
+                <div className="v">{ontologySelectedProjection?.representativePaths?.length ?? 0}</div>
+              </div>
+              <div className="status-box">
+                <div className="k">Hidden</div>
+                <div className="v">
+                  n={ontologySelectedProjection?.hiddenNodeCount ?? 0} / e={ontologySelectedProjection?.hiddenEdgeCount ?? 0}
+                </div>
+              </div>
+              <div className="status-box">
+                <div className="k">Generated</div>
+                <div className="v">{ontologyViewer.generatedAt || "-"}</div>
+              </div>
+            </div>
+
+            <div
+              style={{
+                marginTop: 12,
+                border: "1px solid #d7dde7",
+                borderRadius: 12,
+                overflow: "auto",
+                background: "#f8fafc"
+              }}
+            >
+              <svg
+                viewBox={`0 0 ${ontologySvgLayout.width} ${ontologySvgLayout.height}`}
+                style={{ width: "100%", minHeight: 320, display: "block" }}
+              >
+                <rect x="0" y="0" width={ontologySvgLayout.width} height={ontologySvgLayout.height} fill="#f8fafc" />
+                {(ontologySelectedProjection?.edges || []).map((edge) => {
+                  const from = ontologySvgLayout.positions[edge.fromId];
+                  const to = ontologySvgLayout.positions[edge.toId];
+                  if (!from || !to) return null;
+                  const selected =
+                    ontologySelectedNode &&
+                    (edge.fromId === ontologySelectedNode.id || edge.toId === ontologySelectedNode.id);
+                  return (
+                    <g key={edge.id}>
+                      <line
+                        x1={from.x}
+                        y1={from.y}
+                        x2={to.x}
+                        y2={to.y}
+                        stroke={selected ? "#0f172a" : edge.isHighlighted ? "#334155" : "#cbd5e1"}
+                        strokeWidth={selected ? 2.2 : edge.isHighlighted ? 1.8 : 1.1}
+                        opacity={selected ? 0.95 : edge.isHighlighted ? 0.75 : 0.55}
+                      />
+                    </g>
+                  );
+                })}
+                {(ontologySelectedProjection?.nodes || []).map((node) => {
+                  const position = ontologySvgLayout.positions[node.id];
+                  if (!position) return null;
+                  const selected = ontologySelectedNode?.id === node.id;
+                  const fill = ontologyNodeTypeColor(node.type);
+                  const stroke = selected ? "#0f172a" : node.isHighlighted ? "#1e293b" : "#cbd5e1";
+                  return (
+                    <g
+                      key={node.id}
+                      transform={`translate(${position.x}, ${position.y})`}
+                      onClick={() => setOntologySelectedNodeId(node.id)}
+                      style={{ cursor: "pointer" }}
+                    >
+                      <circle r={selected ? 20 : 16} fill={fill} opacity={node.isHighlighted ? 0.95 : 0.82} stroke={stroke} strokeWidth={selected ? 3 : 1.5} />
+                      <text x="0" y={selected ? 38 : 34} textAnchor="middle" fontSize="12" fill="#0f172a">
+                        {shortText(node.label, 22)}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
+
+            <div className="status-grid" style={{ marginTop: 12, alignItems: "stretch" }}>
+              <div className="status-box" style={{ minHeight: 220 }}>
+                <div className="k">Representative Paths</div>
+                <ul className="artifacts" style={{ maxHeight: 210, marginTop: 8 }}>
+                  {(ontologySelectedProjection?.representativePaths || []).length === 0 ? (
+                    <li><span>대표 path 없음</span><span>-</span></li>
+                  ) : (
+                    ontologySelectedProjection.representativePaths.map((path, index) => (
+                      <li key={`${path.id}-${index}`} title={`${path.nodeIds.join(" -> ")}`}>
+                        <span>{shortText(path.label, 48)}</span>
+                        <span>{path.nodeIds.length}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+
+              <div className="status-box" style={{ minHeight: 220 }}>
+                <div className="k">Selected Node</div>
+                {ontologySelectedNode ? (
+                  <>
+                    <div className="hint" style={{ marginTop: 8 }}>
+                      {ontologySelectedNode.id}
+                    </div>
+                    <div className="report-box" style={{ marginTop: 8 }}>
+                      <div className="report-row">
+                        <span>type / status</span>
+                        <span>
+                          <span style={{ color: ontologyNodeTypeColor(ontologySelectedNode.type) }}>{ontologySelectedNode.type}</span>
+                          {" · "}
+                          <span style={{ color: ontologyStatusColor(ontologySelectedNode.status) }}>{ontologySelectedNode.status}</span>
+                        </span>
+                      </div>
+                      <div className="report-row">
+                        <span>confidence / degree</span>
+                        <span>{Number(ontologySelectedNode.confidence || 0).toFixed(2)} · {ontologySelectedNode.degree}</span>
+                      </div>
+                      <div className="report-row">
+                        <span>summary</span>
+                        <span>{shortText(ontologySelectedNode.summary || "-", 120)}</span>
+                      </div>
+                      <div className="report-row">
+                        <span>domains</span>
+                        <span>{(ontologySelectedNode.domains || []).join(", ") || "-"}</span>
+                      </div>
+                      <div className="report-row">
+                        <span>channels / actions</span>
+                        <span>{[...(ontologySelectedNode.channels || []), ...(ontologySelectedNode.actions || [])].join(", ") || "-"}</span>
+                      </div>
+                    </div>
+                    {(ontologySelectedNode.attributePreview || []).length > 0 ? (
+                      <ul className="artifacts" style={{ maxHeight: 140, marginTop: 8 }}>
+                        {ontologySelectedNode.attributePreview.map((entry) => (
+                          <li key={`${ontologySelectedNode.id}:${entry.key}`}>
+                            <span>{entry.key}</span>
+                            <span>{shortText(entry.value, 48)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="hint" style={{ marginTop: 8 }}>노드를 선택하면 상세를 표시한다.</div>
+                )}
+              </div>
+            </div>
+
+            <div className="status-grid" style={{ marginTop: 12, alignItems: "stretch" }}>
+              <div className="status-box" style={{ minHeight: 220 }}>
+                <div className="k">Visible Nodes</div>
+                <ul className="artifacts" style={{ maxHeight: 220, marginTop: 8 }}>
+                  {(ontologySelectedProjection?.nodes || []).map((node) => (
+                    <li
+                      key={node.id}
+                      title={node.id}
+                      onClick={() => setOntologySelectedNodeId(node.id)}
+                      style={{ cursor: "pointer", background: ontologySelectedNode?.id === node.id ? "#eef2ff" : "transparent" }}
+                    >
+                      <span>
+                        {shortText(node.label, 34)} · {node.type}
+                      </span>
+                      <span style={{ color: ontologyStatusColor(node.status) }}>{node.status}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="status-box" style={{ minHeight: 220 }}>
+                <div className="k">Visible Edges</div>
+                <ul className="artifacts" style={{ maxHeight: 220, marginTop: 8 }}>
+                  {(ontologySelectedProjection?.edges || []).length === 0 ? (
+                    <li><span>edge 없음</span><span>-</span></li>
+                  ) : (
+                    ontologySelectedProjection.edges.map((edge) => (
+                      <li key={edge.id} title={`${edge.fromId} -> ${edge.toId}`}>
+                        <span>{shortText(edge.type, 18)} · {shortText(edge.label || `${edge.fromId} -> ${edge.toId}`, 44)}</span>
+                        <span style={{ color: ontologyStatusColor(edge.status) }}>{edge.status}</span>
+                      </li>
+                    ))
+                  )}
+                </ul>
+              </div>
+            </div>
+
+            {ontologyAdjacentEdges.length > 0 ? (
+              <>
+                <div className="label" style={{ marginTop: 12 }}>Selected Node Adjacency</div>
+                <ul className="artifacts" style={{ maxHeight: 180, marginTop: 8 }}>
+                  {ontologyAdjacentEdges.map((edge) => (
+                    <li key={`adj-${edge.id}`} title={`${edge.fromId} -> ${edge.toId}`}>
+                      <span>{shortText(edge.type, 18)} · {shortText(edge.fromId, 28)} → {shortText(edge.toId, 28)}</span>
+                      <span>{Number(edge.confidence || 0).toFixed(2)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <div className="hint" style={{ marginTop: 8 }}>
+            아직 ontology viewer data가 없다. 구조분석을 먼저 실행하거나 새로고침해라.
+          </div>
+        )}
       </div>
     </>
   ) : null;
@@ -2494,6 +3011,8 @@ export default function HomePage() {
                   </>
                 ) : null}
 
+                {ontologyViewerPanel}
+
                 {analysisResult.ontologyInputs ? (
                   <>
                     <div className="label" style={{ marginTop: 8 }}>
@@ -2577,6 +3096,7 @@ export default function HomePage() {
               </div>
             ) : null}
 
+            {!analysisResult ? ontologyViewerPanel : null}
             {!analysisResult ? (<>{ontologyDraftPanel}{ontologyInputPanel}</>) : null}
 
             <div className="label" style={{ marginTop: 10 }}>프로젝트 Q&A</div>

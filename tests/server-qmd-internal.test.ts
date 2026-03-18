@@ -326,6 +326,15 @@ describe("server projects with vendored internal qmd runtime", () => {
       maxFiles: 20
     });
     expect("projectPreset" in analysis).toBe(false);
+    const ontologyView = await projectsModule.getServerProjectOntologyView({
+      projectId: project.id,
+      nodeLimit: 24,
+      edgeLimit: 48
+    });
+    expect(ontologyView.ontology.storage.kind).toBe("filesystem-artifacts");
+    expect(ontologyView.ontology.projections.length).toBeGreaterThan(0);
+    expect(ontologyView.ontology.selectedProjection.nodes.length).toBeGreaterThan(0);
+
     expect("domains" in analysis).toBe(false);
     expect("maturitySummary" in analysis).toBe(false);
     expect(analysis.ontologyInputs?.totalInputs).toBeGreaterThanOrEqual(1);

@@ -200,6 +200,7 @@ import {
   selectPreferredAskOutput,
   type AskOutputReplayPressure
 } from "./ask-output-selection.js";
+import { buildOntologyViewerPayload, type OntologyViewerPayload } from "./ontology-view.js";
 
 const ServerProjectSchema = z.object({
   id: z.string().min(1),
@@ -9463,6 +9464,47 @@ function normalizeOntologyDraftOperationInputs(
     notes: String(operation.notes || ""),
     ...operation
   })) as Array<z.input<typeof OntologyDraftOperationSchema>>;
+}
+
+export async function getServerProjectOntologyView(options: {
+  projectId: string;
+  projectionId?: string;
+  nodeType?: string;
+  search?: string;
+  nodeLimit?: number;
+  edgeLimit?: number;
+}): Promise<{
+  project: ServerProject;
+  ontology: OntologyViewerPayload;
+}> {
+  const project = await getServerProject(options.projectId);
+  if (!project) {
+    throw new Error(`project not found: ${options.projectId}`);
+  }
+
+  const memoryRoot = resolveMemoryHome(project.workspaceDir);
+  const ontologyGraphSnapshot = await readOntologyGraphSnapshot(memoryRoot);
+  const ontologyProjectionSnapshot = await readOntologyProjectionSnapshot(memoryRoot);
+  if (!ontologyGraphSnapshot || !ontologyProjectionSnapshot) {
+    throw new Error('ontology snapshot not found; run analyze first');
+  }
+
+  return {
+    project,
+    ontology: buildOntologyViewerPayload({
+      graph: ontologyGraphSnapshot,
+      projections: ontologyProjectionSnapshot,
+      memoryRoot,
+      graphSnapshotPath: ontologyGraphSnapshotPath(memoryRoot),
+      projectionSnapshotPath: ontologyProjectionSnapshotPath(memoryRoot),
+      analysisSnapshotPath: analysisSnapshotPath(memoryRoot),
+      selectedProjectionId: options.projectionId,
+      nodeType: options.nodeType,
+      search: options.search,
+      nodeLimit: options.nodeLimit,
+      edgeLimit: options.edgeLimit
+    })
+  };
 }
 
 export async function getServerProjectOntologyDraft(options: {
