@@ -295,6 +295,136 @@ function inferActionsFromTexts(...values: Array<string | undefined>): string[] {
   return Array.from(actions);
 }
 
+const GENERIC_FLOW_FAMILY_TOKENS = new Set([
+  "gw",
+  "api",
+  "mo",
+  "pc",
+  "mysamsunglife",
+  "src",
+  "views",
+  "view",
+  "java",
+  "com",
+  "samsunglife",
+  "dcp",
+  "frontend",
+  "backend",
+  "screen",
+  "route",
+  "controller",
+  "service",
+  "request",
+  "response",
+  "status",
+  "state",
+  "check",
+  "select",
+  "insert",
+  "update",
+  "delete",
+  "remove",
+  "save",
+  "load",
+  "get",
+  "set",
+  "inqury",
+  "inquiry",
+  "info",
+  "main",
+  "proc",
+  "process",
+  "auth",
+  "register",
+  "regist",
+  "write",
+  "read",
+  "callback",
+  "token",
+  "query",
+  "create",
+  "modify",
+  "change",
+  "file",
+  "doc",
+  "document",
+  "v1",
+  "v2"
+]);
+
+function extractFlowFamilyTokens(...values: Array<string | undefined>): string[] {
+  return unique(
+    values
+      .flatMap((value) =>
+        String(value ?? "")
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+          .replace(/[\\/_:.-]+/g, " ")
+          .toLowerCase()
+          .replace(/[^a-z0-9가-힣\s]+/g, " ")
+          .split(/\s+/)
+          .filter(Boolean)
+      )
+      .filter((token) => token.length >= 3)
+      .filter((token) => !GENERIC_FLOW_FAMILY_TOKENS.has(token))
+      .filter((token) => !/^\d+$/.test(token))
+  );
+}
+
+function topNamespaceFromFlowPath(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const segments = value
+    .toLowerCase()
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment) => !["gw", "api", "mo", "pc", "mysamsunglife", "v1", "v2"].includes(segment));
+  return segments[0];
+}
+
+function deriveFlowFamilyKey(options: {
+  apiUrl: string;
+  backendPath: string;
+  controllerMethod: string;
+  serviceHints?: string[];
+}): string | undefined {
+  const topNamespace = topNamespaceFromFlowPath(options.apiUrl) ?? topNamespaceFromFlowPath(options.backendPath);
+  const tokens = extractFlowFamilyTokens(
+    options.apiUrl,
+    options.backendPath,
+    options.controllerMethod,
+    ...(options.serviceHints ?? [])
+  );
+  const keyParts = unique([topNamespace ?? "", ...tokens]).filter(Boolean).slice(0, 4);
+  return keyParts.length > 0 ? keyParts.join("/") : undefined;
+}
+
+const FLOW_PHASE_ORDER = [
+  "action-auth",
+  "action-register",
+  "action-check",
+  "action-status-read",
+  "action-read",
+  "action-document",
+  "action-write",
+  "action-update",
+  "action-delete",
+  "action-callback",
+  "action-token",
+  "action-state-store"
+] as const;
+
+function primaryFlowPhase(...values: Array<string | undefined>): string | undefined {
+  const actions = new Set(inferActionsFromTexts(...values));
+  return FLOW_PHASE_ORDER.find((action) => actions.has(action));
+}
+
+function flowPhaseRank(phase?: string): number {
+  const index = FLOW_PHASE_ORDER.findIndex((entry) => entry === phase);
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
+}
+
 function normalizeStoreKind(value: string): "redis" | "database" | undefined {
   const normalized = normalizeComparable(value);
   if (normalized.includes("redis")) {
@@ -1024,6 +1154,19 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }
     });
   };
+
+  const derivedFlowSequenceCandidates: Array<{
+    apiId: string;
+    controllerId: string;
+    apiUrl: string;
+    backendPath: string;
+    controllerMethod: string;
+    serviceHints: string[];
+    confidence: number;
+    evidencePaths: string[];
+    familyKey?: string;
+    phase?: string;
+  }> = [];
 
   for (const [relativePath, entry] of Object.entries(options.structure?.entries ?? {})) {
     const normalizedPath = toForwardSlash(relativePath);
@@ -2660,6 +2803,103 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           }),
           attributes: {}
         });
+      }
+    }
+
+    derivedFlowSequenceCandidates.push({
+      apiId,
+      controllerId,
+      apiUrl: link.api.normalizedUrl,
+      backendPath: link.backend.path,
+      controllerMethod: link.backend.controllerMethod,
+      serviceHints: [...link.backend.serviceHints],
+      confidence: link.confidence,
+      evidencePaths: unique([link.frontend.screenPath, backendPath]),
+      familyKey: deriveFlowFamilyKey({
+        apiUrl: link.api.normalizedUrl,
+        backendPath: link.backend.path,
+        controllerMethod: link.backend.controllerMethod,
+        serviceHints: link.backend.serviceHints
+      }),
+      phase: primaryFlowPhase(link.api.normalizedUrl, link.backend.controllerMethod, ...link.backend.serviceHints)
+    });
+  }
+
+  const flowSequenceGroups = new Map<string, Array<(typeof derivedFlowSequenceCandidates)[number]>>();
+  for (const candidate of derivedFlowSequenceCandidates) {
+    if (!candidate.familyKey || !candidate.phase) {
+      continue;
+    }
+    const bucket = flowSequenceGroups.get(candidate.familyKey) ?? [];
+    bucket.push(candidate);
+    flowSequenceGroups.set(candidate.familyKey, bucket);
+  }
+
+  for (const group of flowSequenceGroups.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+
+    const phaseBuckets = new Map<number, Array<(typeof group)[number]>>();
+    for (const candidate of group) {
+      const rank = flowPhaseRank(candidate.phase);
+      if (!Number.isFinite(rank) || rank === Number.MAX_SAFE_INTEGER) {
+        continue;
+      }
+      const bucket = phaseBuckets.get(rank) ?? [];
+      bucket.push(candidate);
+      phaseBuckets.set(rank, bucket);
+    }
+
+    const orderedRanks = Array.from(phaseBuckets.keys()).sort((a, b) => a - b);
+    for (let index = 0; index < orderedRanks.length - 1; index += 1) {
+      const fromRank = orderedRanks[index];
+      const toRank = orderedRanks[index + 1];
+      if (fromRank == null || toRank == null) {
+        continue;
+      }
+      const fromEntries = phaseBuckets.get(fromRank) ?? [];
+      const toEntries = phaseBuckets.get(toRank) ?? [];
+      for (const fromEntry of fromEntries) {
+        for (const toEntry of toEntries) {
+          if (fromEntry.apiId !== toEntry.apiId) {
+            addDerivedTransitionEdge({
+              fromId: fromEntry.apiId,
+              toId: toEntry.apiId,
+              label: "workflow family transition",
+              texts: [
+                fromEntry.apiUrl,
+                fromEntry.controllerMethod,
+                ...fromEntry.serviceHints,
+                toEntry.apiUrl,
+                toEntry.controllerMethod,
+                ...toEntry.serviceHints
+              ],
+              evidencePaths: unique([...fromEntry.evidencePaths, ...toEntry.evidencePaths]),
+              confidence: Math.min(fromEntry.confidence, toEntry.confidence),
+              edgeKind: "flow-family"
+            });
+          }
+
+          if (fromEntry.controllerId !== toEntry.controllerId) {
+            addDerivedTransitionEdge({
+              fromId: fromEntry.controllerId,
+              toId: toEntry.controllerId,
+              label: "workflow family transition",
+              texts: [
+                fromEntry.apiUrl,
+                fromEntry.controllerMethod,
+                ...fromEntry.serviceHints,
+                toEntry.apiUrl,
+                toEntry.controllerMethod,
+                ...toEntry.serviceHints
+              ],
+              evidencePaths: unique([...fromEntry.evidencePaths, ...toEntry.evidencePaths]),
+              confidence: Math.min(fromEntry.confidence, toEntry.confidence),
+              edgeKind: "flow-family"
+            });
+          }
+        }
       }
     }
   }

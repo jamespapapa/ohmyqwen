@@ -790,6 +790,225 @@ describe("knowledge schema foundation", () => {
     ).toBe(true);
   });
 
+  it("derives workflow-family transitions across related api/controller flows", () => {
+    const snapshot = buildKnowledgeSchemaSnapshot({
+      generatedAt: "2026-03-16T00:00:00.000Z",
+      workspaceDir: "/workspace/dcp-services",
+      structure: { entries: {} },
+      frontBackGraph: {
+        ...frontBackGraph,
+        frontend: {
+          ...frontBackGraph.frontend,
+          routeCount: 3,
+          screenCount: 3,
+          apiCount: 3,
+          routes: [
+            {
+              routePath: "/mo/insurance/claim/MDP-MYINT020110M",
+              screenPath: "src/views/insurance/MDP-MYINT020110M.vue",
+              sourceFile: "src/router/mo/insurance/route.js",
+              screenCode: "MDP-MYINT020110M"
+            },
+            {
+              routePath: "/mo/insurance/claim/MDP-MYINT020540M",
+              screenPath: "src/views/insurance/MDP-MYINT020540M.vue",
+              sourceFile: "src/router/mo/insurance/route.js",
+              screenCode: "MDP-MYINT020540M"
+            },
+            {
+              routePath: "/mo/insurance/claim/MDP-MYINT021120M",
+              screenPath: "src/views/insurance/MDP-MYINT021120M.vue",
+              sourceFile: "src/router/mo/insurance/route.js",
+              screenCode: "MDP-MYINT021120M"
+            }
+          ],
+          screens: [
+            {
+              filePath: "src/views/insurance/MDP-MYINT020110M.vue",
+              screenCode: "MDP-MYINT020110M",
+              componentName: "MDP-MYINT020110M",
+              routePaths: ["/mo/insurance/claim/MDP-MYINT020110M"],
+              exportPaths: [],
+              apiPaths: ["/insurance/accBenefit/claim/check"],
+              httpCalls: [
+                {
+                  rawUrl: "/gw/api/insurance/accBenefit/claim/check",
+                  normalizedUrl: "/insurance/accBenefit/claim/check",
+                  functionName: "checkClaim",
+                  source: "http-call"
+                }
+              ]
+            },
+            {
+              filePath: "src/views/insurance/MDP-MYINT020540M.vue",
+              screenCode: "MDP-MYINT020540M",
+              componentName: "MDP-MYINT020540M",
+              routePaths: ["/mo/insurance/claim/MDP-MYINT020540M"],
+              exportPaths: [],
+              apiPaths: ["/insurance/accBenefit/claim/spotSave"],
+              httpCalls: [
+                {
+                  rawUrl: "/gw/api/insurance/accBenefit/claim/spotSave",
+                  normalizedUrl: "/insurance/accBenefit/claim/spotSave",
+                  functionName: "saveClaimDraft",
+                  source: "http-call"
+                }
+              ]
+            },
+            {
+              filePath: "src/views/insurance/MDP-MYINT021120M.vue",
+              screenCode: "MDP-MYINT021120M",
+              componentName: "MDP-MYINT021120M",
+              routePaths: ["/mo/insurance/claim/MDP-MYINT021120M"],
+              exportPaths: [],
+              apiPaths: ["/insurance/benefit/claim/progress/gen/inqury"],
+              httpCalls: [
+                {
+                  rawUrl: "/gw/api/insurance/benefit/claim/progress/gen/inqury",
+                  normalizedUrl: "/insurance/benefit/claim/progress/gen/inqury",
+                  functionName: "loadClaimProgress",
+                  source: "http-call"
+                }
+              ]
+            }
+          ]
+        },
+        backend: {
+          ...frontBackGraph.backend,
+          routeCount: 3,
+          routes: [
+            {
+              path: "/insurance/accBenefit/claim/check",
+              internalPath: "/insurance/accBenefit/claim/check",
+              controllerClass: "AccBenefitClaimController",
+              controllerMethod: "benefitClaimCheck",
+              filePath: "dcp-insurance/src/main/java/com/example/AccBenefitClaimController.java",
+              serviceHints: ["AccBenefitClaimService.checkApply"],
+              labels: [],
+              capabilityTags: []
+            },
+            {
+              path: "/insurance/accBenefit/claim/spotSave",
+              internalPath: "/insurance/accBenefit/claim/spotSave",
+              controllerClass: "AccBenefitClaimController",
+              controllerMethod: "spotSave",
+              filePath: "dcp-insurance/src/main/java/com/example/AccBenefitClaimController.java",
+              serviceHints: ["AccBenefitClaimService.saveBenefitClaim"],
+              labels: [],
+              capabilityTags: []
+            },
+            {
+              path: "/insurance/benefit/claim/progress/gen/inqury",
+              internalPath: "/insurance/benefit/claim/progress/gen/inqury",
+              controllerClass: "BenefitClaimProgressController",
+              controllerMethod: "benefitClaimProgressGenInqury",
+              filePath: "dcp-insurance/src/main/java/com/example/BenefitClaimProgressController.java",
+              serviceHints: ["BenefitClaimProgressService.callF1FCZ0230"],
+              labels: [],
+              capabilityTags: []
+            }
+          ]
+        },
+        links: [
+          {
+            confidence: 0.91,
+            frontend: {
+              screenCode: "MDP-MYINT020110M",
+              screenPath: "src/views/insurance/MDP-MYINT020110M.vue",
+              routePath: "/mo/insurance/claim/MDP-MYINT020110M"
+            },
+            api: {
+              rawUrl: "/gw/api/insurance/accBenefit/claim/check",
+              normalizedUrl: "/insurance/accBenefit/claim/check",
+              functionName: "checkClaim",
+              source: "http-call"
+            },
+            gateway: {
+              path: "/api/**",
+              controllerMethod: "RouteController.route"
+            },
+            backend: {
+              path: "/insurance/accBenefit/claim/check",
+              controllerMethod: "AccBenefitClaimController.benefitClaimCheck",
+              filePath: "dcp-insurance/src/main/java/com/example/AccBenefitClaimController.java",
+              serviceHints: ["AccBenefitClaimService.checkApply"]
+            },
+            evidence: ["frontend-http-call", "backend-request-mapping"]
+          },
+          {
+            confidence: 0.93,
+            frontend: {
+              screenCode: "MDP-MYINT020540M",
+              screenPath: "src/views/insurance/MDP-MYINT020540M.vue",
+              routePath: "/mo/insurance/claim/MDP-MYINT020540M"
+            },
+            api: {
+              rawUrl: "/gw/api/insurance/accBenefit/claim/spotSave",
+              normalizedUrl: "/insurance/accBenefit/claim/spotSave",
+              functionName: "saveClaimDraft",
+              source: "http-call"
+            },
+            gateway: {
+              path: "/api/**",
+              controllerMethod: "RouteController.route"
+            },
+            backend: {
+              path: "/insurance/accBenefit/claim/spotSave",
+              controllerMethod: "AccBenefitClaimController.spotSave",
+              filePath: "dcp-insurance/src/main/java/com/example/AccBenefitClaimController.java",
+              serviceHints: ["AccBenefitClaimService.saveBenefitClaim"]
+            },
+            evidence: ["frontend-http-call", "backend-request-mapping"]
+          },
+          {
+            confidence: 0.89,
+            frontend: {
+              screenCode: "MDP-MYINT021120M",
+              screenPath: "src/views/insurance/MDP-MYINT021120M.vue",
+              routePath: "/mo/insurance/claim/MDP-MYINT021120M"
+            },
+            api: {
+              rawUrl: "/gw/api/insurance/benefit/claim/progress/gen/inqury",
+              normalizedUrl: "/insurance/benefit/claim/progress/gen/inqury",
+              functionName: "loadClaimProgress",
+              source: "http-call"
+            },
+            gateway: {
+              path: "/api/**",
+              controllerMethod: "RouteController.route"
+            },
+            backend: {
+              path: "/insurance/benefit/claim/progress/gen/inqury",
+              controllerMethod: "BenefitClaimProgressController.benefitClaimProgressGenInqury",
+              filePath: "dcp-insurance/src/main/java/com/example/BenefitClaimProgressController.java",
+              serviceHints: ["BenefitClaimProgressService.callF1FCZ0230"]
+            },
+            evidence: ["frontend-http-call", "backend-request-mapping"]
+          }
+        ]
+      }
+    });
+
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "api:/insurance/accBenefit/claim/check" &&
+          edge.toId === "api:/insurance/accBenefit/claim/spotSave" &&
+          edge.attributes.edgeKind === "flow-family"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "transitions-to" &&
+          edge.fromId === "controller:AccBenefitClaimController.benefitClaimCheck" &&
+          edge.toId === "controller:AccBenefitClaimController.spotSave" &&
+          edge.attributes.edgeKind === "flow-family"
+      )
+    ).toBe(true);
+  });
+
   it("renders markdown summary without relying on mermaid or UI-only components", () => {
     const snapshot = buildKnowledgeSchemaSnapshot({
       generatedAt: "2026-03-16T00:00:00.000Z",
