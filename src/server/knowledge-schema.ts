@@ -575,9 +575,21 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     });
   };
 
+  const edgeStorageKey = (edge: Pick<KnowledgeEdge, "type" | "fromId" | "toId" | "attributes">) => {
+    if (edge.type === "propagates-contract") {
+      return [
+        edge.type,
+        edge.fromId,
+        edge.toId,
+        String(edge.attributes.contractId ?? ""),
+        String(edge.attributes.direction ?? "")
+      ].join(":");
+    }
+    return `${edge.type}:${edge.fromId}:${edge.toId}`;
+  };
   const upsertEdge = (edge: KnowledgeEdge) => {
     const next = maybeValidateSnapshot(KnowledgeEdgeSchema, edge);
-    const key = `${next.type}:${next.fromId}:${next.toId}`;
+    const key = edgeStorageKey(next);
     const existing = edges.get(key);
     if (!existing) {
       edges.set(key, next);
@@ -593,7 +605,8 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       }
     });
   };
-  const hasEdge = (type: KnowledgeEdgeType, fromId: string, toId: string) => edges.has(`${type}:${fromId}:${toId}`);
+  const hasEdge = (type: KnowledgeEdgeType, fromId: string, toId: string) =>
+    edges.has(edgeStorageKey({ type, fromId, toId, attributes: {} }));
 
   const ensureModule = (moduleName: string, sourceType: KnowledgeSourceType, evidencePath?: string) => {
     const id = `module:${moduleName}`;
@@ -3171,16 +3184,19 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   }
 
   const requestCarrierContractsByNode = new Map<string, Set<string>>();
-  const seedRequestCarrierContracts = (bucket: Map<string, Set<string>>) => {
+  const responseCarrierContractsByNode = new Map<string, Set<string>>();
+  const seedCarrierContracts = (target: Map<string, Set<string>>, bucket: Map<string, Set<string>>) => {
     for (const [nodeId, contracts] of bucket.entries()) {
       for (const contractId of contracts) {
-        addContractForNode(requestCarrierContractsByNode, nodeId, contractId);
+        addContractForNode(target, nodeId, contractId);
       }
     }
   };
-  seedRequestCarrierContracts(requestSourceContractsByNode);
-  seedRequestCarrierContracts(requestTargetContractsByNode);
-  seedRequestCarrierContracts(asyncRequestContractsByChannel);
+  seedCarrierContracts(requestCarrierContractsByNode, requestSourceContractsByNode);
+  seedCarrierContracts(requestCarrierContractsByNode, requestTargetContractsByNode);
+  seedCarrierContracts(requestCarrierContractsByNode, asyncRequestContractsByChannel);
+  seedCarrierContracts(responseCarrierContractsByNode, responseSourceContractsByNode);
+  seedCarrierContracts(responseCarrierContractsByNode, responseTargetContractsByNode);
 
   const supportPropagationRules: Array<{
     edgeType: KnowledgeEdgeType;
@@ -3197,31 +3213,39 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     { edgeType: "dispatches-to", direction: "forward" },
     { edgeType: "consumes-from", direction: "reverse" }
   ];
-  let supportPropagationChanged = true;
-  while (supportPropagationChanged) {
-    supportPropagationChanged = false;
-    for (const rule of supportPropagationRules) {
-      for (const supportEdge of Array.from(edges.values()).filter((edge) => edge.type === rule.edgeType)) {
-        const fromId = rule.direction === "forward" ? supportEdge.fromId : supportEdge.toId;
-        const toId = rule.direction === "forward" ? supportEdge.toId : supportEdge.fromId;
-        const contracts = requestCarrierContractsByNode.get(fromId) ?? new Set<string>();
-        for (const contractId of contracts) {
-          const knownContracts = requestCarrierContractsByNode.get(toId) ?? new Set<string>();
-          if (!knownContracts.has(contractId)) {
-            addContractForNode(requestCarrierContractsByNode, toId, contractId);
-            supportPropagationChanged = true;
+  const propagateCarrierContracts = (
+    carrierContractsByNode: Map<string, Set<string>>,
+    direction: "request" | "response"
+  ) => {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const rule of supportPropagationRules) {
+        for (const supportEdge of Array.from(edges.values()).filter((edge) => edge.type === rule.edgeType)) {
+          const fromId = rule.direction === "forward" ? supportEdge.fromId : supportEdge.toId;
+          const toId = rule.direction === "forward" ? supportEdge.toId : supportEdge.fromId;
+          const contracts = carrierContractsByNode.get(fromId) ?? new Set<string>();
+          for (const contractId of contracts) {
+            const knownContracts = carrierContractsByNode.get(toId) ?? new Set<string>();
+            if (!knownContracts.has(contractId)) {
+              addContractForNode(carrierContractsByNode, toId, contractId);
+              changed = true;
+            }
+            addContractPropagationEdge({
+              fromId,
+              toId,
+              contractId,
+              direction,
+              flowEdge: supportEdge
+            });
           }
-          addContractPropagationEdge({
-            fromId,
-            toId,
-            contractId,
-            direction: "request",
-            flowEdge: supportEdge
-          });
         }
       }
     }
-  }
+  };
+
+  propagateCarrierContracts(requestCarrierContractsByNode, "request");
+  propagateCarrierContracts(responseCarrierContractsByNode, "response");
 
   const supportTransitionLabels: Partial<Record<KnowledgeEdgeType, string>> = {
     "uses-store": "state store transition",
