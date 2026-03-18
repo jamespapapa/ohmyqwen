@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyQuestionIntentFallback,
-  normalizeAskStrategyForQuestion
+  normalizeAskStrategyForQuestion,
+  shouldShortCircuitDeterministicMethodAnswer
 } from "../src/server/projects.js";
 
 describe("server ask strategy normalization", () => {
@@ -40,5 +41,30 @@ describe("server ask strategy normalization", () => {
 
     expect(normalizeAskStrategyForQuestion(question, "cross_layer_flow")).toBe("method_trace");
     expect(classifyQuestionIntentFallback(question).strategy).toBe("method_trace");
+  });
+
+  it("does not short-circuit deterministic method answers for endpoint+sequence questions", () => {
+    expect(
+      shouldShortCircuitDeterministicMethodAnswer({
+        question:
+          "AccBenefitClaimController 안의 claim/doc/insert api가 있고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 분석해줘.",
+        questionType: "symbol_deep_trace",
+        strategy: "method_trace",
+        gatePassed: true
+      })
+    ).toBe(false);
+  });
+
+  it("allows exact-trace deterministic answers to short-circuit when the gate passes", () => {
+    expect(
+      shouldShortCircuitDeterministicMethodAnswer({
+        question:
+          "AccBenefitClaimController 안의 claim/doc/insert api가 있고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 분석해줘.",
+        questionType: "symbol_deep_trace",
+        strategy: "method_trace",
+        gatePassed: true,
+        answerKind: "exact-trace"
+      })
+    ).toBe(true);
   });
 });

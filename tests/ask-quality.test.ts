@@ -217,6 +217,42 @@ describe("ask quality gate", () => {
     expect(gate.passed).toBe(true);
   });
 
+  it("passes exact endpoint trace answers when code-body evidence and ordered workflow detail are explicit", () => {
+    const gate = qualityGateForAskOutput({
+      output: {
+        answer:
+          "확정(코드 기준): 질문에서 지정한 endpoint는 `/accBenefit/claim/doc/insert` 이고 대응 controller 메서드는 `AccBenefitClaimController.insertBenefitClaimDoc` 이다. controller 단계에서는 `getUploadKey`, `sendLmsTok`, `saveBenefitClaimDoc`, `redisDataSupport.delete`, `resolveResponse` 순으로 이어진다. service/downstream 에서는 `AccBenefitClaimService.saveBenefitClaimDoc` 이 `getRedisInfo -> selectClamDocument -> callMODC0008 -> moveConvertUploadFile -> callMODC0010 -> callF1FCZ0045 -> saveClamDocumentFile -> updateSubmitdate` 흐름을 수행한다. 질문에서 지정한 순서 흐름은 `spotSave -> validate -> /accBenefit/claim/insert -> /accBenefit/claim/doc/insert` 이다.",
+        confidence: 0.82,
+        evidence: ["controller body", "service body", "workflow sequence"],
+        caveats: []
+      },
+      question:
+        "AccBenefitClaimController 안의 claim/doc/insert api가 있고, spotSave, validate, insert, doc/insert 순으로 호출하는 흐름도 분석해줘.",
+      questionType: "symbol_deep_trace",
+      strategy: "method_trace",
+      hitPaths: [
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+        "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java"
+      ],
+      hydratedEvidence: [
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimController.java",
+          reason: "symbol:AccBenefitClaimController.insertBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        },
+        {
+          path: "dcp-insurance/src/main/java/com/acme/AccBenefitClaimService.java",
+          reason: "callee:AccBenefitClaimService.saveBenefitClaimDoc",
+          codeFile: true,
+          moduleMatched: true
+        }
+      ]
+    });
+
+    expect(gate.passed).toBe(true);
+  });
+
   it("fails module-scoped answers when hydrated evidence does not stay inside the requested module", () => {
     const gate = qualityGateForAskOutput({
       output: {

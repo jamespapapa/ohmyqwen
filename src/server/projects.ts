@@ -5766,6 +5766,483 @@ function summarizeMethodSignature(snippet: string): string {
   return firstLine.slice(0, 220);
 }
 
+function normalizeDeterministicEndpointTarget(value: string): string {
+  return value.trim().replace(/^\/+/, "").replace(/\/+/g, "/").toLowerCase();
+}
+
+interface RequestMappedMethodRef {
+  path: string;
+  methodName: string;
+  line: number;
+}
+
+function extractRequestMappedMethods(content: string): RequestMappedMethodRef[] {
+  const lines = content.split(/\r?\n/);
+  const results: RequestMappedMethodRef[] = [];
+  let annotationBuffer: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]?.trim() ?? "";
+    if (!trimmed) {
+      continue;
+    }
+    if (trimmed.startsWith("@")) {
+      annotationBuffer.push(trimmed);
+      continue;
+    }
+    const signatureMatch =
+      /(?:public|protected|private)\s+(?:static\s+)?[A-Za-z0-9_<>\[\], ?]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(trimmed) ??
+      undefined;
+    if (!signatureMatch) {
+      annotationBuffer = [];
+      continue;
+    }
+    const annotationText = annotationBuffer.join(" ");
+    annotationBuffer = [];
+    if (!/@RequestMapping/.test(annotationText)) {
+      continue;
+    }
+    const methodName = signatureMatch[1] ?? "";
+    const pathMatches = [
+      ...annotationText.matchAll(/(?:value|path)\s*=\s*\{?\s*"([^"]+)"/g),
+      ...annotationText.matchAll(/@RequestMapping\s*\(\s*"([^"]+)"/g)
+    ];
+    if (pathMatches.length === 0) {
+      continue;
+    }
+    for (const match of pathMatches) {
+      const mappingPath = match[1]?.trim();
+      if (!mappingPath) {
+        continue;
+      }
+      results.push({
+        path: mappingPath,
+        methodName,
+        line: index + 1
+      });
+    }
+  }
+  return results;
+}
+
+function resolveFieldTypeByOwnerName(content: string, ownerName: string): string | undefined {
+  const escapedOwner = ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(
+    String.raw`(?:private|protected|public)\s+([A-Z][A-Za-z0-9_<>,.?]+)\s+${escapedOwner}\s*;`,
+    "m"
+  );
+  const match = regex.exec(content);
+  return match?.[1]?.replace(/<.*$/, "").trim() || undefined;
+}
+
+function scoreMappedMethodAgainstStep(step: string, candidate: RequestMappedMethodRef): number {
+  const normalizedStep = normalizeDeterministicEndpointTarget(step);
+  const normalizedPath = normalizeDeterministicEndpointTarget(candidate.path);
+  const methodName = candidate.methodName.toLowerCase();
+  let score = 0;
+  if (!normalizedStep) {
+    return score;
+  }
+  if (normalizedPath === normalizedStep) {
+    score += 220;
+  }
+  if (normalizedPath.endsWith(`/${normalizedStep}`)) {
+    score += 140;
+    score -= normalizedPath.split("/").length;
+  }
+  if (normalizedPath.includes(`/${normalizedStep}/`)) {
+    score += 95;
+  }
+  if (methodName === normalizedStep) {
+    score += 180;
+  }
+  if (methodName.includes(normalizedStep)) {
+    score += 88;
+  }
+  if (normalizedStep.includes("/") && normalizedPath.includes(normalizedStep)) {
+    score += 120;
+  }
+  return score;
+}
+
+function selectBestRequestMappedMethod(options: {
+  methods: RequestMappedMethodRef[];
+  endpointTargets?: string[];
+  workflowStep?: string;
+}): RequestMappedMethodRef | undefined {
+  const endpointTargets = options.endpointTargets ?? [];
+  return [...options.methods]
+    .map((candidate) => {
+      let score = 0;
+      for (const target of endpointTargets) {
+        score += scoreMappedMethodAgainstStep(target, candidate);
+      }
+      if (options.workflowStep) {
+        score += scoreMappedMethodAgainstStep(options.workflowStep, candidate);
+      }
+      return { candidate, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.candidate.line - b.candidate.line)[0]?.candidate;
+}
+
+function summarizeCallRole(name: string): string {
+  const lower = name.toLowerCase();
+  if (/callf[a-z0-9]+|callmodc[a-z0-9]+/.test(lower)) {
+    return "대외/변환 연계 호출";
+  }
+  if (/moveconvertuploadfile|upload|file|pdf|document|doc/.test(lower)) {
+    return "문서/첨부 처리 단계";
+  }
+  if (/getredis|setredis|redis/.test(lower)) {
+    return "세션/Redis 상태 처리";
+  }
+  if (/validate|verify|check|guard/.test(lower)) {
+    return "검증 단계";
+  }
+  if (/save|insert|create|add|persist/.test(lower)) {
+    return "저장/등록 단계";
+  }
+  if (/select|get|load|query|inqury|inquiry/.test(lower)) {
+    return "조회 단계";
+  }
+  if (/delete|remove|clear|expire/.test(lower)) {
+    return "삭제/정리 단계";
+  }
+  if (/update|modify|change/.test(lower)) {
+    return "상태/데이터 갱신 단계";
+  }
+  if (/sendlms|sendtok|notify|message/.test(lower)) {
+    return "알림 발송 단계";
+  }
+  if (/resolveresponse|return/.test(lower)) {
+    return "응답 반환 단계";
+  }
+  return "후속 처리 단계";
+}
+
+function scoreTraceCallSignal(name: string, focusTokens: string[]): number {
+  const lower = name.toLowerCase();
+  let score = 0;
+  if (/^(debug|trace|info|warn|error|isdebugenabled|tostring|hashcode|equals)$/.test(lower)) {
+    score -= 80;
+  }
+  if (/^[A-Z]/.test(name)) {
+    score -= 28;
+  }
+  if (/(exception|logger|log|messageexception)$/.test(lower)) {
+    score -= 36;
+  }
+  if (/(model|vo|dto|entity|request|response|result|proxy)$/.test(lower)) {
+    score -= 18;
+  }
+  if (/^(get|set|is)[a-z0-9_]+$/.test(lower)) {
+    score -= 12;
+  }
+  if (
+    /(redis|session|cache|token|auth|verify|valid|check|save|insert|update|delete|remove|clear|expire|select|query|load|find|search|upload|convert|move|file|doc|pdf|submit|apply|process|dispatch|consume|publish|callback|webhook|notify|message|send|callf|callmodc|resolve)/.test(
+      lower
+    )
+  ) {
+    score += 42;
+  }
+  if (/^get(redis|session|token|cache|claim|doc|file|upload|auth|status)/.test(lower)) {
+    score += 22;
+  }
+  if (/^set(redis|session|token|cache|claim|doc|file|upload|auth|status)/.test(lower)) {
+    score += 18;
+  }
+  for (const token of focusTokens) {
+    if (token.length >= 3 && lower.includes(token.toLowerCase())) {
+      score += 8;
+    }
+  }
+  return score;
+}
+
+function selectInformativeCalls(
+  callNames: string[],
+  focusTokens: string[],
+  options?: { exclude?: string[]; max?: number }
+): string[] {
+  const exclude = new Set((options?.exclude ?? []).map((item) => item.toLowerCase()));
+  const scored = callNames
+    .map((name, index) => ({
+      name,
+      index,
+      score: exclude.has(name.toLowerCase()) ? -999 : scoreTraceCallSignal(name, focusTokens)
+    }))
+    .filter((entry) => !exclude.has(entry.name.toLowerCase()));
+
+  const positive = scored.filter((entry) => entry.score > 0);
+  const selectedBase = (positive.length > 0 ? positive : scored)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, options?.max ?? 8)
+    .sort((a, b) => a.index - b.index);
+
+  return selectedBase.map((entry) => entry.name);
+}
+
+function summarizeServiceStageHints(calls: string[]): string[] {
+  return calls.slice(0, 8).map((callName) => `- ${callName}: ${summarizeCallRole(callName)}`);
+}
+
+function buildSequenceSummaryLine(options: {
+  step: string;
+  resolvedMethod?: RequestMappedMethodRef;
+  serviceCallName?: string;
+  controllerClassName?: string;
+}): string {
+  const resolvedMethod = options.resolvedMethod;
+  if (!resolvedMethod) {
+    return `- ${options.step}: 직접 대응하는 endpoint/controller 메서드는 현재 코드 스캔에서 확정하지 못했다.`;
+  }
+  const controllerPrefix = options.controllerClassName ? `${options.controllerClassName}.` : "";
+  return `- ${options.step}: \`${resolvedMethod.path}\` -> \`${controllerPrefix}${resolvedMethod.methodName}\`${
+    options.serviceCallName ? ` -> \`${options.serviceCallName}\`` : ""
+  }`;
+}
+
+export async function buildDeterministicExactTraceAnswer(options: {
+  project: ServerProject;
+  question: string;
+  structure: StructureIndexSnapshot;
+}): Promise<
+  | {
+      kind: "exact-trace";
+      answer: string;
+      confidence: number;
+      evidence: string[];
+      caveats: string[];
+      symbol: string;
+      hit: ProjectSearchHit;
+      hydratedEvidence: AskHydratedEvidenceItem[];
+    }
+  | undefined
+> {
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
+  const explicitEndpointFocused =
+    flowTargets.endpointPaths.length > 0 ||
+    flowTargets.controllerClasses.length > 0 ||
+    flowTargets.workflowSequence.length >= 2;
+  if (!explicitEndpointFocused) {
+    return undefined;
+  }
+
+  const focusTokens = buildAskFocusTokens(options.question);
+  const controllerCandidates = unique([
+    ...flowTargets.controllerClasses,
+    ...extractClassCandidates(options.question).filter((item) => /Controller$/.test(item))
+  ]);
+  const controllerEntries = controllerCandidates
+    .map((className) =>
+      findStructureEntryByClassName({
+        structure: options.structure,
+        className,
+        moduleCandidates: []
+      })
+    )
+    .filter((entry): entry is StructureFileEntry => Boolean(entry));
+
+  let best:
+    | {
+        entry: StructureFileEntry;
+        content: string;
+        mappedMethods: RequestMappedMethodRef[];
+        primaryMethod: RequestMappedMethodRef;
+        className?: string;
+      }
+    | undefined;
+
+  for (const entry of controllerEntries) {
+    const absolutePath = path.resolve(options.project.workspaceDir, entry.path);
+    const content = await readTextFileSafe(absolutePath);
+    if (!content) {
+      continue;
+    }
+    const mappedMethods = extractRequestMappedMethods(content);
+    const primaryMethod =
+      selectBestRequestMappedMethod({
+        methods: mappedMethods,
+        endpointTargets: flowTargets.endpointPaths
+      }) ??
+      selectBestRequestMappedMethod({
+        methods: mappedMethods,
+        workflowStep: flowTargets.workflowSequence.find((step) => step.includes("/"))
+      });
+    if (!primaryMethod) {
+      continue;
+    }
+    best = {
+      entry,
+      content,
+      mappedMethods,
+      primaryMethod,
+      className: entry.classes[0]?.name
+    };
+    break;
+  }
+
+  if (!best) {
+    return undefined;
+  }
+
+  const primaryBlock = findMethodBlock(best.content, best.primaryMethod.methodName);
+  if (!primaryBlock) {
+    return undefined;
+  }
+
+  const ownedCalls = extractOwnedCallCandidates(primaryBlock.snippet)
+    .sort(
+      (a, b) =>
+        scoreOwnedCallCandidate({ owner: b.owner, method: b.method, focusTokens }) -
+        scoreOwnedCallCandidate({ owner: a.owner, method: a.method, focusTokens })
+    )
+    .slice(0, 8);
+  const primaryControllerCalls = selectInformativeCalls(extractOrderedMethodCalls(primaryBlock.snippet), focusTokens, {
+    exclude: [best.primaryMethod.methodName],
+    max: 8
+  });
+
+  const primaryServiceTraceLines: string[] = [];
+  const primaryServiceStageHints: string[] = [];
+  const nestedEvidence: string[] = [];
+  const hydratedEvidence: AskHydratedEvidenceItem[] = [
+    {
+      path: best.entry.path,
+      reason: `symbol:${best.className ? `${best.className}.` : ""}${best.primaryMethod.methodName}`,
+      snippet: primaryBlock.snippet,
+      kind: "method_block",
+      codeFile: true,
+      moduleMatched: false,
+      lineStart: primaryBlock.startLine,
+      lineEnd: primaryBlock.endLine
+    }
+  ];
+  let primaryServiceSymbol: string | undefined;
+
+  for (const owned of ownedCalls.slice(0, 3)) {
+    const ownerType = resolveFieldTypeByOwnerName(best.content, owned.owner) ?? toProbableClassName(owned.owner);
+    const serviceEntry = findStructureEntryByClassName({
+      structure: options.structure,
+      className: ownerType,
+      moduleCandidates: []
+    });
+    if (!serviceEntry) {
+      continue;
+    }
+    const servicePath = path.resolve(options.project.workspaceDir, serviceEntry.path);
+    const serviceContent = await readTextFileSafe(servicePath);
+    if (!serviceContent) {
+      continue;
+    }
+    const serviceBlock = findMethodBlock(serviceContent, owned.method);
+    if (!serviceBlock) {
+      continue;
+    }
+    primaryServiceSymbol = `${ownerType}.${owned.method}`;
+    const nestedCalls = selectInformativeCalls(extractOrderedMethodCalls(serviceBlock.snippet), focusTokens, {
+      exclude: [owned.method],
+      max: 14
+    });
+    primaryServiceTraceLines.push(
+      `- \`${primaryServiceSymbol}\` (${serviceEntry.path}:${serviceBlock.startLine}) -> ${nestedCalls.length > 0 ? nestedCalls.join(" -> ") : "하위 callee 미검출"}`
+    );
+    primaryServiceStageHints.push(...summarizeServiceStageHints(nestedCalls));
+    nestedEvidence.push(
+      `${serviceEntry.path}:${serviceBlock.startLine}-${serviceBlock.endLine} - callee ${primaryServiceSymbol} analyzed`
+    );
+    hydratedEvidence.push({
+      path: serviceEntry.path,
+      reason: `callee:${primaryServiceSymbol}`,
+      snippet: serviceBlock.snippet,
+      kind: "method_block",
+      codeFile: true,
+      moduleMatched: false,
+      lineStart: serviceBlock.startLine,
+      lineEnd: serviceBlock.endLine
+    });
+    break;
+  }
+
+  const workflowSequenceLines = flowTargets.workflowSequence.map((step) => {
+    const resolvedMethod =
+      selectBestRequestMappedMethod({
+        methods: best?.mappedMethods ?? [],
+        workflowStep: step
+      }) ??
+      selectBestRequestMappedMethod({
+        methods: best?.mappedMethods ?? [],
+        endpointTargets: [step]
+      });
+    const serviceCallName =
+      resolvedMethod && findMethodBlock(best.content, resolvedMethod.methodName)
+        ? extractOwnedCallCandidates(findMethodBlock(best.content, resolvedMethod.methodName)?.snippet ?? "")
+            .sort(
+              (a, b) =>
+                scoreOwnedCallCandidate({ owner: b.owner, method: b.method, focusTokens }) -
+                scoreOwnedCallCandidate({ owner: a.owner, method: a.method, focusTokens })
+            )[0]
+        : undefined;
+    return buildSequenceSummaryLine({
+      step,
+      resolvedMethod,
+      serviceCallName: serviceCallName ? `${serviceCallName.owner}.${serviceCallName.method}` : undefined,
+      controllerClassName: best.className
+    });
+  });
+
+  const answerLines = [
+    `확정(코드 기준): 질문에서 지정한 endpoint는 \`${best.primaryMethod.path}\` 이고, 대응 controller 메서드는 \`${best.className ? `${best.className}.` : ""}${best.primaryMethod.methodName}\` (\`${best.entry.path}:${best.primaryMethod.line}\`)이다.`,
+    "",
+    `### target API (\`${best.primaryMethod.path}\`)가 하는 일`,
+    `- controller 진입: \`${best.primaryMethod.path}\` 요청을 받아 \`${best.primaryMethod.methodName}\` 본문에서 처리한다.`,
+    ...primaryControllerCalls.slice(0, 6).map((callName) => `- controller 단계 \`${callName}\`: ${summarizeCallRole(callName)}`),
+    ...(primaryServiceTraceLines.length > 0 ? ["", "### target API의 service/downstream", ...primaryServiceTraceLines] : []),
+    ...(primaryServiceStageHints.length > 0 ? ["", "### service 내부 주요 단계", ...unique(primaryServiceStageHints).slice(0, 8)] : []),
+    "",
+    "### 질문에서 지정한 순서 흐름",
+    ...workflowSequenceLines,
+    "",
+    "요약: 이 질문은 broad capability 설명이 아니라, controller endpoint와 ordered workflow sequence를 직접 지정한 trace 질문이다. 위 내용은 해당 controller/service 본문을 직접 열어 정적 추적한 결과다."
+  ];
+
+  const exactTargetCount =
+    flowTargets.endpointPaths.filter((target) => normalizeDeterministicEndpointTarget(best.primaryMethod.path).includes(normalizeDeterministicEndpointTarget(target))).length +
+    flowTargets.workflowSequence.length;
+  const confidence = Math.min(
+    0.84,
+    0.66 +
+      (primaryServiceTraceLines.length > 0 ? 0.08 : 0) +
+      (workflowSequenceLines.length > 0 ? Math.min(0.08, workflowSequenceLines.length * 0.02) : 0) +
+      Math.min(0.04, exactTargetCount * 0.01)
+  );
+
+  return {
+    kind: "exact-trace",
+    answer: answerLines.join("\n"),
+    confidence,
+    evidence: [
+      `${best.entry.path}:${best.primaryMethod.line} - request mapping: ${best.primaryMethod.path} -> ${best.className ? `${best.className}.` : ""}${best.primaryMethod.methodName}`,
+      `${best.entry.path}:${primaryBlock.startLine}-${primaryBlock.endLine} - controller method body inspected`,
+      ...nestedEvidence.slice(0, 4)
+    ],
+    caveats: [
+      "정적 분석 결과이며 런타임 분기/외부 응답에 따라 실제 호출 순서는 달라질 수 있다.",
+      primaryServiceTraceLines.length === 0
+        ? "controller 이후 service 메서드 본문은 직접 해석하지 못해 controller 레벨 근거까지만 확정했다."
+        : "service 이후 DAO/EAI/비동기 하위 경계는 직접 확인된 callee 범위까지만 요약했다."
+    ],
+    symbol: `${best.className ? `${best.className}.` : ""}${best.primaryMethod.methodName}`,
+    hit: {
+      path: best.entry.path,
+      score: 24,
+      source: "lexical",
+      reasons: [`deterministic-endpoint-match:${best.primaryMethod.path}`]
+    },
+    hydratedEvidence
+  };
+}
+
 function extractModuleCandidates(question: string): string[] {
   return unique(question.match(/\bdcp-[a-z0-9-]+\b/gi) ?? []).map((item) => item.toLowerCase());
 }
@@ -6283,6 +6760,32 @@ function strategyToIntent(strategy: AskStrategyType): {
   };
 }
 
+export function shouldShortCircuitDeterministicMethodAnswer(options: {
+  question: string;
+  questionType: AskQuestionType;
+  strategy: AskStrategyType;
+  gatePassed: boolean;
+  answerKind?: "method" | "exact-trace";
+}): boolean {
+  if (!options.gatePassed) {
+    return false;
+  }
+  if (options.answerKind === "exact-trace") {
+    return true;
+  }
+  if (options.questionType !== "symbol_deep_trace" && options.strategy !== "method_trace") {
+    return false;
+  }
+  const flowTargets = extractAskQuestionFlowTargets(options.question);
+  if (flowTargets.workflowSequence.length >= 2) {
+    return false;
+  }
+  if (flowTargets.endpointPaths.length > 0) {
+    return false;
+  }
+  return true;
+}
+
 function findMethodBlock(content: string, methodName: string): { startLine: number; endLine: number; snippet: string } | undefined {
   const methodPattern = new RegExp(`\\b${methodName}\\s*\\([^;{}]*\\)\\s*(?:throws [^{]+)?\\{`, "m");
   const match = methodPattern.exec(content);
@@ -6331,15 +6834,22 @@ async function buildDeterministicMethodAnswer(options: {
   structure: StructureIndexSnapshot;
 }): Promise<
   | {
+      kind: "method" | "exact-trace";
       answer: string;
       confidence: number;
       evidence: string[];
       caveats: string[];
       symbol: string;
       hit: ProjectSearchHit;
+      hydratedEvidence?: AskHydratedEvidenceItem[];
     }
   | undefined
 > {
+  const exactTrace = await buildDeterministicExactTraceAnswer(options);
+  if (exactTrace) {
+    return exactTrace;
+  }
+
   const methodCandidates = extractMethodCandidates(options.question);
   if (methodCandidates.length === 0) {
     return undefined;
@@ -6440,6 +6950,7 @@ async function buildDeterministicMethodAnswer(options: {
   ];
 
   return {
+    kind: "method",
     answer: answerLines.join("\n"),
     confidence: 0.86,
     evidence: [
@@ -6458,7 +6969,19 @@ async function buildDeterministicMethodAnswer(options: {
       score: 18,
       source: "lexical",
       reasons: [`deterministic-symbol-match:${symbol}`]
-    }
+    },
+    hydratedEvidence: [
+      {
+        path: best.entry.path,
+        reason: `symbol:${symbol}`,
+        snippet: methodBlock.snippet,
+        kind: "method_block",
+        codeFile: true,
+        moduleMatched: false,
+        lineStart: methodBlock.startLine,
+        lineEnd: methodBlock.endLine
+      }
+    ]
   };
 }
 
@@ -8181,8 +8704,38 @@ export async function askServerProject(options: {
           hits: deterministicHits,
           strategy: strategyDecision.strategy,
           questionType: questionTypeDecision.type,
+          hydratedEvidence: deterministic.hydratedEvidence,
           matchedRetrievalUnitStatuses: []
         });
+        const shouldShortCircuitDeterministic = shouldShortCircuitDeterministicMethodAnswer({
+          question,
+          questionType: questionTypeDecision.type,
+          strategy: strategyDecision.strategy,
+          gatePassed: deterministicGate.passed,
+          answerKind: deterministic.kind
+        });
+
+        await appendProjectDebugEvent({
+          timestamp: nowIso(),
+          projectId: options.projectId,
+          stage: "ask",
+          status: "info",
+          message: shouldShortCircuitDeterministic
+            ? "deterministic method answer accepted for direct return"
+            : "deterministic method answer retained as fallback only",
+          metadata: {
+            gatePassed: deterministicGate.passed,
+            failures: deterministicGate.failures,
+            symbol: deterministic.symbol,
+            answerKind: deterministic.kind,
+            questionType: questionTypeDecision.type,
+            strategy: strategyDecision.strategy
+          }
+        });
+
+        if (!shouldShortCircuitDeterministic) {
+          // Continue into the full ontology/retrieval-backed ask loop.
+        } else {
 
         const deterministicReportLines: string[] = [
           "# Query Report",
@@ -8285,6 +8838,7 @@ export async function askServerProject(options: {
           }
         });
         return response;
+        }
       }
     }
 
