@@ -787,6 +787,9 @@ interface StructureFileEntry {
   methods: StructureSymbolRef[];
   functions: StructureSymbolRef[];
   calls: string[];
+  imports?: string[];
+  extendsNames?: string[];
+  implementsNames?: string[];
   resources?: StructureResourceHints;
   summary: string;
 }
@@ -4646,6 +4649,30 @@ function buildOntologyProjectionSummary(
   };
 }
 
+function estimateOntologyGraphMagnitude(options: {
+  knowledgeSchema: KnowledgeSchemaSnapshot;
+  retrievalUnits?: RetrievalUnitSnapshot;
+}): { estimatedNodeCount: number; estimatedEdgeCount: number } {
+  const entityCount = options.knowledgeSchema.summary.entityCount;
+  const edgeCount = options.knowledgeSchema.summary.edgeCount;
+  const retrievalUnitCount = options.retrievalUnits?.summary.unitCount ?? 0;
+  const retrievalEntityRefs = options.retrievalUnits?.units.reduce(
+    (sum, unit) => sum + unit.entityIds.length,
+    0
+  ) ?? 0;
+  const retrievalEdgeRefs = options.retrievalUnits?.units.reduce(
+    (sum, unit) => sum + unit.edgeIds.length,
+    0
+  ) ?? 0;
+  const estimatedPathNodeCount = retrievalEdgeRefs;
+  const estimatedNodeCount = entityCount + retrievalUnitCount + estimatedPathNodeCount;
+  const estimatedEdgeCount = edgeCount + retrievalEntityRefs + retrievalEdgeRefs;
+  return {
+    estimatedNodeCount,
+    estimatedEdgeCount
+  };
+}
+
 function resolveAnalyzeOntologyGraphLimits(options: {
   knowledgeSchema: KnowledgeSchemaSnapshot;
   retrievalUnits?: RetrievalUnitSnapshot;
@@ -4653,10 +4680,23 @@ function resolveAnalyzeOntologyGraphLimits(options: {
   const entityCount = options.knowledgeSchema.summary.entityCount;
   const edgeCount = options.knowledgeSchema.summary.edgeCount;
   const retrievalUnitCount = options.retrievalUnits?.summary.unitCount ?? 0;
+  const { estimatedNodeCount, estimatedEdgeCount } = estimateOntologyGraphMagnitude(options);
+  const graphNodeThreshold = Math.max(
+    ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxKnowledgeEntities ?? 0,
+    (ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxRetrievalUnits ?? 0) * 6,
+    3200
+  );
+  const graphEdgeThreshold = Math.max(
+    ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxKnowledgeEdges ?? 0,
+    (ONTOLOGY_ANALYZE_COMPACT_LIMITS.maxRetrievalUnits ?? 0) * 18,
+    14000
+  );
   if (
     entityCount < ONTOLOGY_ANALYZE_COMPACT_ENTITY_THRESHOLD &&
     edgeCount < ONTOLOGY_ANALYZE_COMPACT_EDGE_THRESHOLD &&
-    retrievalUnitCount < ONTOLOGY_ANALYZE_COMPACT_UNIT_THRESHOLD
+    retrievalUnitCount < ONTOLOGY_ANALYZE_COMPACT_UNIT_THRESHOLD &&
+    estimatedNodeCount < graphNodeThreshold &&
+    estimatedEdgeCount < graphEdgeThreshold
   ) {
     return undefined;
   }
@@ -4797,6 +4837,9 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
   const classes: StructureSymbolRef[] = [];
   const methods: StructureSymbolRef[] = [];
   const calls = new Set<string>();
+  const imports = new Set<string>();
+  const extendsNames = new Set<string>();
+  const implementsNames = new Set<string>();
   let packageName: string | undefined;
   let primaryClass: string | undefined;
 
@@ -4813,7 +4856,14 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
       }
     }
 
-    const classMatch = line.match(/\b(class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
+    const importMatch = line.match(/^\s*import\s+(?:static\s+)?([A-Za-z0-9_.*]+)\s*;/);
+    if (importMatch?.[1]) {
+      imports.add(importMatch[1].trim());
+    }
+
+    const classMatch = line.match(
+      /\b(class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+extends\s+([A-Za-z0-9_<>,.?& ]+))?(?:\s+implements\s+([A-Za-z0-9_<>,.?& ]+))?/ 
+    );
     if (classMatch?.[2]) {
       const name = classMatch[2].trim();
       classes.push({
@@ -4821,6 +4871,18 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
         line: index + 1
       });
       primaryClass ??= name;
+      const extendsPart = classMatch[3]?.trim() ?? "";
+      const implementsPart = classMatch[4]?.trim() ?? "";
+      if (extendsPart) {
+        for (const item of extendsPart.split(",").map((part) => part.trim()).filter(Boolean)) {
+          extendsNames.add(normalizeInjectedType(item));
+        }
+      }
+      if (implementsPart) {
+        for (const item of implementsPart.split(",").map((part) => part.trim()).filter(Boolean)) {
+          implementsNames.add(normalizeInjectedType(item));
+        }
+      }
     }
 
     const methodMatch = line.match(
@@ -4861,6 +4923,9 @@ function parseStructureFromJavaLikeFile(content: string): Omit<StructureFileEntr
     methods: methods.slice(0, 240),
     functions: [],
     calls: Array.from(calls).slice(0, 300),
+    imports: Array.from(imports).slice(0, 120),
+    extendsNames: Array.from(extendsNames).slice(0, 24),
+    implementsNames: Array.from(implementsNames).slice(0, 32),
     summary: summarizeContentLine(content)
   };
 }
@@ -4871,6 +4936,8 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
   const methods: StructureSymbolRef[] = [];
   const functions: StructureSymbolRef[] = [];
   const calls = new Set<string>();
+  const imports = new Set<string>();
+  const extendsNames = new Set<string>();
   let primaryClass: string | undefined;
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -4879,7 +4946,20 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
       continue;
     }
 
-    const classMatch = line.match(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
+    const importFromMatch = line.match(/^\s*import\s+.+?\s+from\s+["']([^"']+)["']/);
+    if (importFromMatch?.[1]) {
+      imports.add(importFromMatch[1].trim());
+    }
+    const bareImportMatch = line.match(/^\s*import\s+["']([^"']+)["']/);
+    if (bareImportMatch?.[1]) {
+      imports.add(bareImportMatch[1].trim());
+    }
+    const requireMatch = line.match(/\brequire\s*\(\s*["']([^"']+)["']\s*\)/);
+    if (requireMatch?.[1]) {
+      imports.add(requireMatch[1].trim());
+    }
+
+    const classMatch = line.match(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b(?:\s+extends\s+([A-Za-z_$][A-Za-z0-9_$.]*))?/);
     if (classMatch?.[1]) {
       const name = classMatch[1].trim();
       classes.push({
@@ -4887,6 +4967,9 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
         line: index + 1
       });
       primaryClass ??= name;
+      if (classMatch[2]) {
+        extendsNames.add(classMatch[2].trim());
+      }
     }
 
     const functionMatch = line.match(
@@ -4957,6 +5040,9 @@ function parseStructureFromJavascriptLikeFile(content: string): Omit<StructureFi
     methods: methods.slice(0, 240),
     functions: functions.slice(0, 120),
     calls: Array.from(calls).slice(0, 300),
+    imports: Array.from(imports).slice(0, 120),
+    extendsNames: Array.from(extendsNames).slice(0, 24),
+    implementsNames: [],
     summary: summarizeContentLine(content)
   };
 }
@@ -4965,11 +5051,31 @@ function parseStructureFromGenericCodeFile(content: string): Omit<StructureFileE
   const lines = content.split(/\r?\n/);
   const functions: StructureSymbolRef[] = [];
   const calls = new Set<string>();
+  const imports = new Set<string>();
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (line.length > 2000) {
       continue;
+    }
+
+    const pythonImportMatch = line.match(/^\s*import\s+([A-Za-z0-9_.,\s]+)/);
+    if (pythonImportMatch?.[1]) {
+      for (const item of pythonImportMatch[1].split(",").map((part) => part.trim()).filter(Boolean)) {
+        imports.add(item);
+      }
+    }
+    const pythonFromImportMatch = line.match(/^\s*from\s+([A-Za-z0-9_.]+)\s+import\s+(.+)/);
+    if (pythonFromImportMatch?.[1]) {
+      imports.add(pythonFromImportMatch[1].trim());
+    }
+    const rustUseMatch = line.match(/^\s*use\s+([A-Za-z0-9_:{}*,\s]+)\s*;/);
+    if (rustUseMatch?.[1]) {
+      imports.add(rustUseMatch[1].trim());
+    }
+    const goImportMatch = line.match(/^\s*import\s+(?:[A-Za-z0-9_]+\s+)?["`]([^"`]+)["`]/);
+    if (goImportMatch?.[1]) {
+      imports.add(goImportMatch[1].trim());
     }
 
     const functionMatch = line.match(/^\s*(?:def|fn)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[\(<]/);
@@ -4995,6 +5101,9 @@ function parseStructureFromGenericCodeFile(content: string): Omit<StructureFileE
     methods: [],
     functions: functions.slice(0, 120),
     calls: Array.from(calls).slice(0, 300),
+    imports: Array.from(imports).slice(0, 120),
+    extendsNames: [],
+    implementsNames: [],
     summary: summarizeContentLine(content)
   };
 }
@@ -5007,6 +5116,9 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
       methods: [],
       functions: [],
       calls: [],
+      imports: [],
+      extendsNames: [],
+      implementsNames: [],
       summary: summarizeContentLine(content)
     };
   }
@@ -5055,6 +5167,9 @@ function parseStructureFromFile(relativePath: string, content: string): Omit<Str
     methods: [],
     functions: [],
     calls: [],
+    imports: [],
+    extendsNames: [],
+    implementsNames: [],
     resources: buildStructureResourceHints({
       relativePath,
       content,
@@ -6810,6 +6925,10 @@ export async function analyzeServerProject(options: {
     });
     const existingEvaluationReplay = await readEvaluationReplaySnapshotFull(memoryRoot);
     const existingEvaluationPromotions = await readEvaluationPromotionSnapshotFull(memoryRoot);
+    const ontologyMagnitude = estimateOntologyGraphMagnitude({
+      knowledgeSchema,
+      retrievalUnits
+    });
     const ontologyLimits = resolveAnalyzeOntologyGraphLimits({
       knowledgeSchema,
       retrievalUnits
@@ -6825,6 +6944,8 @@ export async function analyzeServerProject(options: {
           entityCount: knowledgeSchema.summary.entityCount,
           edgeCount: knowledgeSchema.summary.edgeCount,
           retrievalUnitCount: retrievalUnits.summary.unitCount,
+          estimatedNodeCount: ontologyMagnitude.estimatedNodeCount,
+          estimatedEdgeCount: ontologyMagnitude.estimatedEdgeCount,
           limits: ontologyLimits
         }
       });

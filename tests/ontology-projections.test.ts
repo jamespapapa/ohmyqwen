@@ -522,4 +522,183 @@ describe("ontology projections", () => {
       expect.arrayContaining(["edge:ui-action-api", "edge:api-gateway", "edge:gateway-controller"])
     );
   });
+
+  it("derives representative structural paths for code-structure projections", () => {
+    const structuralGraph = buildOntologyGraphSnapshot({
+      knowledgeSchema: {
+        ...knowledgeSchema,
+        entities: [
+          {
+            id: "module:dcp-insurance",
+            type: "module",
+            label: "dcp-insurance",
+            summary: "insurance module",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: [],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.8,
+              evidencePaths: ["dcp-insurance"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { moduleName: "dcp-insurance" }
+          },
+          {
+            id: "file:backend:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            type: "file",
+            label: "AccBenefitClaimController.java",
+            summary: "claim controller file",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.76,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { path: "dcp-insurance/src/main/java/demo/AccBenefitClaimController.java" }
+          },
+          {
+            id: "symbol:method:AccBenefitClaimController.spotSave:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            type: "symbol",
+            label: "AccBenefitClaimController.spotSave",
+            summary: "claim save method",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.82,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { methodName: "spotSave" }
+          },
+          {
+            id: "symbol:method:AccBenefitClaimService.saveBenefitClaim:dcp-insurance/src/main/java/demo/AccBenefitClaimService.java",
+            type: "symbol",
+            label: "AccBenefitClaimService.saveBenefitClaim",
+            summary: "claim service save method",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.8,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimService.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { methodName: "saveBenefitClaim" }
+          }
+        ],
+        edges: [
+          {
+            id: "edge:contains:module-file",
+            type: "contains",
+            fromId: "module:dcp-insurance",
+            toId: "file:backend:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            label: "module contains file",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: [],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.78,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          },
+          {
+            id: "edge:declares:file-symbol",
+            type: "declares",
+            fromId: "file:backend:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            toId: "symbol:method:AccBenefitClaimController.spotSave:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            label: "file declares symbol",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.8,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          },
+          {
+            id: "edge:calls:symbol-service",
+            type: "calls",
+            fromId: "symbol:method:AccBenefitClaimController.spotSave:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+            toId: "symbol:method:AccBenefitClaimService.saveBenefitClaim:dcp-insurance/src/main/java/demo/AccBenefitClaimService.java",
+            label: "symbol calls service symbol",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.82,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/AccBenefitClaimController.java"],
+              sourceType: "derived",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          }
+        ],
+        summary: {
+          ...knowledgeSchema.summary,
+          entityCount: 4,
+          edgeCount: 3,
+          entityTypeCounts: { module: 1, file: 1, symbol: 2 },
+          edgeTypeCounts: { contains: 1, declares: 1, calls: 1 }
+        }
+      },
+      retrievalUnits: {
+        ...retrievalUnits,
+        units: [],
+        summary: {
+          ...retrievalUnits.summary,
+          unitCount: 0,
+          unitTypeCounts: {},
+          unitStatusCounts: {}
+        }
+      }
+    });
+
+    const snapshot = buildOntologyProjectionSnapshot({ ontologyGraph: structuralGraph });
+    const codeStructure = snapshot.projections.find((projection) => projection.type === "code-structure");
+
+    expect(codeStructure?.representativePaths.length).toBeGreaterThan(0);
+    expect(codeStructure?.representativePaths[0]?.nodeIds).toEqual(
+      expect.arrayContaining([
+        "module:dcp-insurance",
+        "file:backend:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+        "symbol:method:AccBenefitClaimController.spotSave:dcp-insurance/src/main/java/demo/AccBenefitClaimController.java",
+        "symbol:method:AccBenefitClaimService.saveBenefitClaim:dcp-insurance/src/main/java/demo/AccBenefitClaimService.java"
+      ])
+    );
+    expect(codeStructure?.summary).toContain("representativeStructures=");
+  });
 });

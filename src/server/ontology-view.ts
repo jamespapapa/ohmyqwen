@@ -468,7 +468,7 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
   const requestedNodeType = String(options.nodeType || "all").trim();
   const requestedFocusMode =
     options.focusMode ??
-    (selectedProjection.type === "front-back-flow" || selectedProjection.type === "integration" ? "path" : "projection");
+    (selectedProjection.representativePaths.length > 0 ? "path" : "projection");
   const highlightedNodes = new Set(effectiveHighlightedNodeIds);
   const highlightedEdges = new Set(effectiveHighlightedEdgeIds);
   const pathNodes = nodeMembershipSet(effectiveRepresentativePaths);

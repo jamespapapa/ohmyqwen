@@ -145,6 +145,10 @@ interface StructureFileEntryLike {
   classes: StructureSymbolLike[];
   methods: StructureSymbolLike[];
   functions: StructureSymbolLike[];
+  calls?: string[];
+  imports?: string[];
+  extendsNames?: string[];
+  implementsNames?: string[];
   resources?: {
     storeKinds?: string[];
     redisAccessTypes?: string[];
@@ -546,6 +550,204 @@ function extractModuleName(relativePath: string, fallback?: string): string {
   return fallback ? slugify(fallback) : "workspace-root";
 }
 
+function importBasename(value: string): string {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  const stripped = normalized
+    .replace(/[{}*]/g, " ")
+    .replace(/\bas\b/gi, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .pop() ?? "";
+  const cleaned = stripped
+    .split(/[\\/.:]/)
+    .filter(Boolean)
+    .pop() ?? stripped;
+  return cleaned.replace(/[^A-Za-z0-9_]/g, "");
+}
+
+const GENERIC_STRUCTURE_CALL_NAMES = new Set([
+  "get",
+  "set",
+  "add",
+  "put",
+  "read",
+  "write",
+  "load",
+  "save",
+  "update",
+  "delete",
+  "remove",
+  "create",
+  "build",
+  "run",
+  "call",
+  "process",
+  "execute",
+  "convert",
+  "map",
+  "handle",
+  "list",
+  "count",
+  "find",
+  "select",
+  "insert",
+  "query",
+  "getstring",
+  "getint",
+  "getlong",
+  "getdate",
+  "tostring"
+]);
+
+function resolveRelativeImportCandidates(relativePath: string): string[] {
+  const normalized = toForwardSlash(relativePath);
+  const ext = path.extname(normalized);
+  const base = ext ? normalized.slice(0, -ext.length) : normalized;
+  return unique([
+    normalized,
+    `${base}.ts`,
+    `${base}.tsx`,
+    `${base}.js`,
+    `${base}.jsx`,
+    `${base}.mjs`,
+    `${base}.cjs`,
+    `${base}.java`,
+    `${base}.kt`,
+    `${base}.kts`,
+    `${base}.py`,
+    `${base}.go`,
+    `${base}.rs`,
+    `${base}.vue`,
+    `${normalized}/index.ts`,
+    `${normalized}/index.tsx`,
+    `${normalized}/index.js`,
+    `${normalized}/index.jsx`,
+    `${normalized}/index.mjs`,
+    `${normalized}/index.cjs`,
+    `${normalized}/index.java`,
+    `${normalized}/index.kt`,
+    `${normalized}/index.py`,
+    `${normalized}/index.go`,
+    `${normalized}/index.rs`,
+    `${normalized}/index.vue`
+  ]);
+}
+
+function resolveStructureImportPaths(options: {
+  fromPath: string;
+  importValue: string;
+  knownPaths: Set<string>;
+  packageIndex: Map<string, string[]>;
+  classFilePathsByName: Map<string, string[]>;
+}): string[] {
+  const importValue = String(options.importValue ?? "").trim();
+  if (!importValue) {
+    return [];
+  }
+
+  if (importValue.startsWith(".")) {
+    const baseDir = path.posix.dirname(toForwardSlash(options.fromPath));
+    const resolved = toForwardSlash(path.posix.normalize(path.posix.join(baseDir, importValue)));
+    return resolveRelativeImportCandidates(resolved).filter((candidate) => options.knownPaths.has(candidate));
+  }
+
+  const directPackageMatches = options.packageIndex.get(importValue) ?? [];
+  if (directPackageMatches.length > 0) {
+    return directPackageMatches;
+  }
+
+  const wildcardPrefix = importValue.endsWith(".*") ? importValue.slice(0, -2) : "";
+  if (wildcardPrefix) {
+    const matches = Array.from(options.packageIndex.entries())
+      .filter(([packageName]) => packageName === wildcardPrefix || packageName.startsWith(`${wildcardPrefix}.`))
+      .flatMap(([, paths]) => paths);
+    if (matches.length > 0) {
+      return unique(matches);
+    }
+  }
+
+  const basename = importBasename(importValue);
+  if (!basename) {
+    return [];
+  }
+  return unique(options.classFilePathsByName.get(basename) ?? []);
+}
+
+function resolveStructureCallTargets(options: {
+  callValue: string;
+  sourcePath: string;
+  methodSymbolMap: Map<string, string>;
+  methodSymbolIdsByName: Map<string, string[]>;
+  classSymbolIdsByName: Map<string, string[]>;
+  classFilePathsByName: Map<string, string[]>;
+  fileIdByPath: Map<string, string>;
+}): Array<{
+  targetId: string;
+  targetKind: "symbol" | "file";
+  targetPath?: string;
+}> {
+  const rawCall = String(options.callValue ?? "").trim();
+  if (!rawCall) {
+    return [];
+  }
+
+  const exactMethodTarget = options.methodSymbolMap.get(rawCall);
+  if (exactMethodTarget) {
+    return [{ targetId: exactMethodTarget, targetKind: "symbol" }];
+  }
+
+  const segments = rawCall.split(".").filter(Boolean);
+  const simpleMethodName = segments.at(-1) ?? rawCall;
+  const ownerHint = segments.length > 1 ? importBasename(segments.at(-2) ?? "") : "";
+
+  const exactOwnerTarget =
+    ownerHint && options.methodSymbolMap.has(`${ownerHint}.${simpleMethodName}`)
+      ? options.methodSymbolMap.get(`${ownerHint}.${simpleMethodName}`)
+      : undefined;
+  if (exactOwnerTarget) {
+    return [{ targetId: exactOwnerTarget, targetKind: "symbol" }];
+  }
+
+  const sameFileMethodTargets = (options.methodSymbolIdsByName.get(simpleMethodName) ?? []).filter((targetId) =>
+    targetId.endsWith(`:${options.sourcePath}`)
+  );
+  if (sameFileMethodTargets.length > 0) {
+    return unique(sameFileMethodTargets).map((targetId) => ({ targetId, targetKind: "symbol" as const }));
+  }
+
+  const globalMethodTargets = unique(options.methodSymbolIdsByName.get(simpleMethodName) ?? []);
+  if (
+    globalMethodTargets.length === 1 &&
+    simpleMethodName.length >= 5 &&
+    !GENERIC_STRUCTURE_CALL_NAMES.has(simpleMethodName.toLowerCase())
+  ) {
+    return [{ targetId: globalMethodTargets[0], targetKind: "symbol" }];
+  }
+
+  if (ownerHint) {
+    const ownerClassTargets = unique(options.classSymbolIdsByName.get(ownerHint) ?? []);
+    if (ownerClassTargets.length === 1) {
+      return [{ targetId: ownerClassTargets[0], targetKind: "symbol" }];
+    }
+
+    const ownerFileTargets = unique(options.classFilePathsByName.get(ownerHint) ?? [])
+      .map((targetPath) => ({
+        targetId: options.fileIdByPath.get(targetPath) ?? "",
+        targetKind: "file" as const,
+        targetPath
+      }))
+      .filter((target) => target.targetId);
+    if (ownerFileTargets.length === 1) {
+      return ownerFileTargets;
+    }
+  }
+
+  return [];
+}
+
 function classifyCapabilityTags(tags: string[]): Pick<KnowledgeMetadata, "domains" | "subdomains" | "actions"> {
   const domains = new Set<string>();
   const subdomains = new Set<string>();
@@ -664,6 +866,98 @@ function knowledgeStatusPriority(status: KnowledgeValidatedStatus): number {
   }
 }
 
+function knowledgeEntityCompactQuota(type: KnowledgeEntityType): number {
+  switch (type) {
+    case "module":
+      return 0.05;
+    case "file":
+      return 0.16;
+    case "symbol":
+      return 0.18;
+    case "route":
+    case "ui-action":
+    case "api":
+    case "gateway-handler":
+      return 0.03;
+    case "controller":
+      return 0.05;
+    case "service":
+      return 0.16;
+    case "eai-interface":
+      return 0.12;
+    case "data-store":
+    case "async-channel":
+      return 0.03;
+    case "data-contract":
+      return 0.04;
+    case "data-model":
+      return 0.04;
+    case "data-query":
+      return 0.06;
+    case "data-table":
+      return 0.05;
+    case "cache-key":
+      return 0.03;
+    case "control-guard":
+    case "decision-path":
+      return 0.04;
+    case "knowledge-cluster":
+      return 0.03;
+    default:
+      return 0.02;
+  }
+}
+
+function knowledgeEdgeFamily(type: KnowledgeEdgeType): "structural" | "flow" | "integration" | "semantic" {
+  if (["contains", "declares", "maps-to", "depends-on", "calls", "proxies-to"].includes(type)) {
+    return "structural";
+  }
+  if (
+    [
+      "routes-to",
+      "transitions-to",
+      "dispatches-to",
+      "consumes-from",
+      "propagates-contract",
+      "emits-contract",
+      "receives-contract",
+      "accepts-contract",
+      "returns-contract"
+    ].includes(type)
+  ) {
+    return "flow";
+  }
+  if (
+    [
+      "uses-eai",
+      "uses-store",
+      "stores-model",
+      "maps-to-table",
+      "queries-table",
+      "uses-cache-key",
+      "validates",
+      "branches-to"
+    ].includes(type)
+  ) {
+    return "integration";
+  }
+  return "semantic";
+}
+
+function knowledgeEdgeFamilyQuota(family: ReturnType<typeof knowledgeEdgeFamily>): number {
+  switch (family) {
+    case "structural":
+      return 0.42;
+    case "flow":
+      return 0.28;
+    case "integration":
+      return 0.25;
+    case "semantic":
+    default:
+      return 0.05;
+  }
+}
+
 function buildEntityTypeCounts(entities: KnowledgeEntity[]): Record<string, number> {
   const counts = new Map<string, number>();
   for (const entity of entities) {
@@ -767,6 +1061,32 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
   const classFileMap = new Map<string, string>();
   const classSymbolMap = new Map<string, string>();
   const methodSymbolMap = new Map<string, string>();
+  const methodSymbolIdsByName = new Map<string, string[]>();
+  const symbolPathById = new Map<string, string>();
+  const classFilePathsByName = new Map<string, string[]>();
+  const classSymbolIdsByName = new Map<string, string[]>();
+  const fileIdByPath = new Map<string, string>();
+  const moduleIdByFilePath = new Map<string, string>();
+  const packageIndex = new Map<string, string[]>();
+  const pendingImportRelations: Array<{
+    fileId: string;
+    filePath: string;
+    moduleId: string;
+    moduleName: string;
+    imports: string[];
+  }> = [];
+  const pendingInheritanceRelations: Array<{
+    sourceClassSymbolId: string;
+    sourceFilePath: string;
+    dependencyNames: string[];
+  }> = [];
+  const pendingFileCallRelations: Array<{
+    fileId: string;
+    filePath: string;
+    moduleId: string;
+    moduleName: string;
+    callNames: string[];
+  }> = [];
 
   const upsertEntity = (entity: KnowledgeEntity) => {
     const next = maybeValidateSnapshot(KnowledgeEntitySchema, entity);
@@ -1261,6 +1581,27 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     const moduleName = extractModuleName(normalizedPath, backendWorkspaceBase);
     const moduleId = ensureModule(moduleName, "structure-index", normalizedPath);
     const fileId = `file:backend:${normalizedPath}`;
+    fileIdByPath.set(normalizedPath, fileId);
+    moduleIdByFilePath.set(normalizedPath, moduleId);
+    if (entry.packageName) {
+      const bucket = packageIndex.get(entry.packageName) ?? [];
+      bucket.push(normalizedPath);
+      packageIndex.set(entry.packageName, unique(bucket));
+    }
+    pendingImportRelations.push({
+      fileId,
+      filePath: normalizedPath,
+      moduleId,
+      moduleName,
+      imports: unique(entry.imports ?? [])
+    });
+    pendingFileCallRelations.push({
+      fileId,
+      filePath: normalizedPath,
+      moduleId,
+      moduleName,
+      callNames: unique(entry.calls ?? [])
+    });
     upsertEntity({
       id: fileId,
       type: "file",
@@ -1588,6 +1929,9 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
       const symbolId = `symbol:class:${classRef.name}:${normalizedPath}`;
       classFileMap.set(classRef.name, normalizedPath);
       classSymbolMap.set(classRef.name, symbolId);
+      symbolPathById.set(symbolId, normalizedPath);
+      classFilePathsByName.set(classRef.name, unique([...(classFilePathsByName.get(classRef.name) ?? []), normalizedPath]));
+      classSymbolIdsByName.set(classRef.name, unique([...(classSymbolIdsByName.get(classRef.name) ?? []), symbolId]));
       upsertEntity({
         id: symbolId,
         type: "symbol",
@@ -1701,12 +2045,29 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           edgeKind: asyncEdgeType
         });
       }
+
+      const inheritanceTargets = unique([
+        ...(entry.extendsNames ?? []),
+        ...(entry.implementsNames ?? [])
+      ]);
+      if (inheritanceTargets.length > 0) {
+        pendingInheritanceRelations.push({
+          sourceClassSymbolId: symbolId,
+          sourceFilePath: normalizedPath,
+          dependencyNames: inheritanceTargets
+        });
+      }
     }
 
     for (const methodRef of [...entry.methods, ...entry.functions]) {
       const classPart = methodRef.className ?? "(global)";
       const symbolId = `symbol:method:${classPart}.${methodRef.name}:${normalizedPath}`;
       methodSymbolMap.set(`${classPart}.${methodRef.name}`, symbolId);
+      symbolPathById.set(symbolId, normalizedPath);
+      methodSymbolIdsByName.set(
+        methodRef.name,
+        unique([...(methodSymbolIdsByName.get(methodRef.name) ?? []), symbolId])
+      );
       upsertEntity({
         id: symbolId,
         type: "symbol",
@@ -1985,6 +2346,169 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
           }),
           attributes: {}
         });
+      }
+    }
+  }
+
+  const knownStructurePaths = new Set(
+    Object.keys(options.structure?.entries ?? {}).map((entryPath) => toForwardSlash(entryPath))
+  );
+
+  for (const relation of pendingImportRelations) {
+    for (const importValue of relation.imports) {
+      const targetPaths = resolveStructureImportPaths({
+        fromPath: relation.filePath,
+        importValue,
+        knownPaths: knownStructurePaths,
+        packageIndex,
+        classFilePathsByName
+      });
+      for (const targetPath of targetPaths) {
+        const targetFileId = fileIdByPath.get(targetPath);
+        const targetModuleId = moduleIdByFilePath.get(targetPath);
+        if (targetFileId && targetFileId !== relation.fileId) {
+          upsertEdge({
+            id: `edge:depends-on:${relation.fileId}:${targetFileId}:import:${slugify(importValue)}`,
+            type: "depends-on",
+            fromId: relation.fileId,
+            toId: targetFileId,
+            label: "file depends on imported file",
+            metadata: makeMetadata({
+              actions: inferActionsFromTexts(importValue, relation.filePath, targetPath, "import dependency"),
+              moduleRoles: ["code-structure"],
+              confidence: 0.74,
+              evidencePaths: [relation.filePath, targetPath],
+              sourceType: "derived",
+              validatedStatus: "derived"
+            }),
+            attributes: {
+              importValue
+            }
+          });
+        }
+        if (
+          targetModuleId &&
+          targetModuleId !== relation.moduleId
+        ) {
+          upsertEdge({
+            id: `edge:depends-on:${relation.moduleId}:${targetModuleId}:import:${slugify(importValue)}`,
+            type: "depends-on",
+            fromId: relation.moduleId,
+            toId: targetModuleId,
+            label: "module depends on imported module",
+            metadata: makeMetadata({
+              actions: inferActionsFromTexts(importValue, relation.moduleName, targetPath, "module dependency"),
+              moduleRoles: ["code-structure"],
+              confidence: 0.72,
+              evidencePaths: [relation.filePath, targetPath],
+              sourceType: "derived",
+              validatedStatus: "derived"
+            }),
+            attributes: {
+              importValue
+            }
+          });
+        }
+      }
+    }
+  }
+
+  for (const relation of pendingInheritanceRelations) {
+    for (const rawDependencyName of relation.dependencyNames) {
+      const dependencyName = importBasename(rawDependencyName);
+      if (!dependencyName) {
+        continue;
+      }
+      const targetClassIds = classSymbolIdsByName.get(dependencyName) ?? [];
+      for (const targetClassId of targetClassIds) {
+        if (targetClassId === relation.sourceClassSymbolId) {
+          continue;
+        }
+        upsertEdge({
+          id: `edge:depends-on:${relation.sourceClassSymbolId}:${targetClassId}:inherits`,
+          type: "depends-on",
+          fromId: relation.sourceClassSymbolId,
+          toId: targetClassId,
+          label: "class depends on inherited contract",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(rawDependencyName, relation.sourceFilePath, "extends implements inheritance"),
+            moduleRoles: ["code-structure"],
+            confidence: 0.78,
+            evidencePaths: [relation.sourceFilePath],
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            dependencyName
+          }
+        });
+      }
+    }
+  }
+
+  for (const relation of pendingFileCallRelations) {
+    for (const callName of relation.callNames.slice(0, 64)) {
+      const targets = resolveStructureCallTargets({
+        callValue: callName,
+        sourcePath: relation.filePath,
+        methodSymbolMap,
+        methodSymbolIdsByName,
+        classSymbolIdsByName,
+        classFilePathsByName,
+        fileIdByPath
+      });
+      for (const target of targets) {
+        if (!target.targetId || target.targetId === relation.fileId) {
+          continue;
+        }
+        const targetPath =
+          target.targetKind === "file"
+            ? target.targetPath
+            : symbolPathById.get(target.targetId);
+        const targetFileId = targetPath ? fileIdByPath.get(targetPath) : undefined;
+        upsertEdge({
+          id: `edge:calls:${relation.fileId}:${target.targetId}:call:${slugify(callName)}`,
+          type: "calls",
+          fromId: relation.fileId,
+          toId: target.targetId,
+          label:
+            target.targetKind === "symbol"
+              ? "file calls symbol"
+              : "file calls imported file",
+          metadata: makeMetadata({
+            actions: inferActionsFromTexts(callName, relation.filePath, targetPath, "structural call"),
+            moduleRoles: ["code-structure"],
+            confidence: target.targetKind === "symbol" ? 0.72 : 0.66,
+            evidencePaths: unique([relation.filePath, targetPath].filter(Boolean) as string[]),
+            sourceType: "derived",
+            validatedStatus: "derived"
+          }),
+          attributes: {
+            callName,
+            targetKind: target.targetKind
+          }
+        });
+        if (targetFileId && targetFileId !== relation.fileId) {
+          upsertEdge({
+            id: `edge:depends-on:${relation.fileId}:${targetFileId}:call:${slugify(callName)}`,
+            type: "depends-on",
+            fromId: relation.fileId,
+            toId: targetFileId,
+            label: "file depends on called file",
+            metadata: makeMetadata({
+              actions: inferActionsFromTexts(callName, relation.filePath, targetPath, "structural call dependency"),
+              moduleRoles: ["code-structure"],
+              confidence: 0.7,
+              evidencePaths: unique([relation.filePath, targetPath].filter(Boolean) as string[]),
+              sourceType: "derived",
+              validatedStatus: "derived"
+            }),
+            attributes: {
+              callName,
+              dependencyKind: "call"
+            }
+          });
+        }
       }
     }
   }
@@ -3966,33 +4490,17 @@ export function compactKnowledgeSchemaSnapshot(
     if (!maxEntities || rankedEntities.length <= maxEntities) {
       return rankedEntities.sort((a, b) => a.id.localeCompare(b.id));
     }
-
-    const coverageOrder: KnowledgeEntityType[] = [
-      "route",
-      "ui-action",
-      "api",
-      "gateway-handler",
-      "controller",
-      "service",
-      "knowledge-cluster",
-      "data-store",
-      "async-channel",
-      "eai-interface",
-      "control-guard",
-      "data-query",
-      "data-model",
-      "data-table",
-      "cache-key",
-      "module",
-      "file",
-      "symbol"
-    ];
-
+    const entitiesByType = new Map<KnowledgeEntityType, KnowledgeEntity[]>();
+    for (const entity of rankedEntities) {
+      const bucket = entitiesByType.get(entity.type) ?? [];
+      bucket.push(entity);
+      entitiesByType.set(entity.type, bucket);
+    }
     const chosen = new Map<string, KnowledgeEntity>();
-    for (const type of coverageOrder) {
-      if (chosen.size >= maxEntities) break;
-      const entity = rankedEntities.find((item) => item.type === type && !chosen.has(item.id));
-      if (entity) {
+    for (const [type, bucket] of entitiesByType.entries()) {
+      const quota = Math.max(1, Math.floor(maxEntities * knowledgeEntityCompactQuota(type)));
+      for (const entity of bucket.slice(0, quota)) {
+        if (chosen.size >= maxEntities) break;
         chosen.set(entity.id, entity);
       }
     }
@@ -4006,25 +4514,47 @@ export function compactKnowledgeSchemaSnapshot(
   })();
 
   const selectedEntityIds = new Set(selectedEntities.map((entity) => entity.id));
+  const eligibleEdges = parsed.edges
+    .filter((edge) => selectedEntityIds.has(edge.fromId) && selectedEntityIds.has(edge.toId))
+    .sort((a, b) => {
+      const priorityDiff = knowledgeEdgePriority(b) - knowledgeEdgePriority(a);
+      if (priorityDiff !== 0) return priorityDiff;
+      const statusDiff =
+        knowledgeStatusPriority(b.metadata.validatedStatus) -
+        knowledgeStatusPriority(a.metadata.validatedStatus);
+      if (statusDiff !== 0) return statusDiff;
+      const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    });
+
   const selectedEdges = (
-    !maxEdges
-      ? parsed.edges.filter(
-          (edge) => selectedEntityIds.has(edge.fromId) && selectedEntityIds.has(edge.toId)
-        )
-      : parsed.edges
-          .filter((edge) => selectedEntityIds.has(edge.fromId) && selectedEntityIds.has(edge.toId))
-          .sort((a, b) => {
-            const priorityDiff = knowledgeEdgePriority(b) - knowledgeEdgePriority(a);
-            if (priorityDiff !== 0) return priorityDiff;
-            const statusDiff =
-              knowledgeStatusPriority(b.metadata.validatedStatus) -
-              knowledgeStatusPriority(a.metadata.validatedStatus);
-            if (statusDiff !== 0) return statusDiff;
-            const confidenceDiff = b.metadata.confidence - a.metadata.confidence;
-            if (confidenceDiff !== 0) return confidenceDiff;
-            return a.id.localeCompare(b.id);
-          })
-          .slice(0, maxEdges)
+    !maxEdges || eligibleEdges.length <= maxEdges
+      ? eligibleEdges
+      : (() => {
+          const edgesByFamily = new Map<ReturnType<typeof knowledgeEdgeFamily>, KnowledgeEdge[]>();
+          for (const edge of eligibleEdges) {
+            const family = knowledgeEdgeFamily(edge.type);
+            const bucket = edgesByFamily.get(family) ?? [];
+            bucket.push(edge);
+            edgesByFamily.set(family, bucket);
+          }
+          const chosen = new Map<string, KnowledgeEdge>();
+          for (const [family, bucket] of edgesByFamily.entries()) {
+            const quota = Math.max(1, Math.floor(maxEdges * knowledgeEdgeFamilyQuota(family)));
+            for (const edge of bucket.slice(0, quota)) {
+              if (chosen.size >= maxEdges) break;
+              chosen.set(edge.id, edge);
+            }
+          }
+          for (const edge of eligibleEdges) {
+            if (chosen.size >= maxEdges) break;
+            if (!chosen.has(edge.id)) {
+              chosen.set(edge.id, edge);
+            }
+          }
+          return Array.from(chosen.values());
+        })()
   ).sort((a, b) => a.id.localeCompare(b.id));
 
   const clusterEntities = selectedEntities.filter((entity) => entity.type === "knowledge-cluster");

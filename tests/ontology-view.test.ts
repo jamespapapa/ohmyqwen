@@ -472,4 +472,149 @@ describe("buildOntologyViewerPayload", () => {
     expect(payload.selectedProjection.nodes.some((node) => node.id === "route:/insurance/claim")).toBe(true);
     expect(payload.selectedProjection.nodes.some((node) => node.id === "api:/gw/api/insurance/claim/spotSave")).toBe(true);
   });
+
+  it("defaults code-structure projections to path focus when representative structures exist", () => {
+    const graph = buildOntologyGraphSnapshot({
+      knowledgeSchema: {
+        ...knowledgeSchema,
+        entities: [
+          {
+            id: "module:dcp-insurance",
+            type: "module",
+            label: "dcp-insurance",
+            summary: "insurance module",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: [],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.8,
+              evidencePaths: ["dcp-insurance"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { moduleName: "dcp-insurance" }
+          },
+          {
+            id: "file:backend:dcp-insurance/src/main/java/demo/ClaimController.java",
+            type: "file",
+            label: "ClaimController.java",
+            summary: "claim file",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.77,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/ClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { path: "dcp-insurance/src/main/java/demo/ClaimController.java" }
+          },
+          {
+            id: "symbol:method:ClaimController.spotSave:dcp-insurance/src/main/java/demo/ClaimController.java",
+            type: "symbol",
+            label: "ClaimController.spotSave",
+            summary: "spot save method",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.8,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/ClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: { methodName: "spotSave" }
+          }
+        ],
+        edges: [
+          {
+            id: "edge:module-file",
+            type: "contains",
+            fromId: "module:dcp-insurance",
+            toId: "file:backend:dcp-insurance/src/main/java/demo/ClaimController.java",
+            label: "module contains file",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: [],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.77,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/ClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          },
+          {
+            id: "edge:file-symbol",
+            type: "declares",
+            fromId: "file:backend:dcp-insurance/src/main/java/demo/ClaimController.java",
+            toId: "symbol:method:ClaimController.spotSave:dcp-insurance/src/main/java/demo/ClaimController.java",
+            label: "file declares symbol",
+            metadata: {
+              domains: ["insurance-benefit-claim"],
+              subdomains: [],
+              channels: [],
+              actions: ["action-write"],
+              moduleRoles: ["code-structure"],
+              processRoles: [],
+              confidence: 0.79,
+              evidencePaths: ["dcp-insurance/src/main/java/demo/ClaimController.java"],
+              sourceType: "structure-index",
+              validatedStatus: "derived"
+            },
+            attributes: {}
+          }
+        ],
+        summary: {
+          ...knowledgeSchema.summary,
+          entityCount: 3,
+          edgeCount: 2,
+          entityTypeCounts: { module: 1, file: 1, symbol: 1 },
+          edgeTypeCounts: { contains: 1, declares: 1 }
+        }
+      },
+      retrievalUnits: { ...retrievalUnits, units: [], summary: { ...retrievalUnits.summary, unitCount: 0, unitTypeCounts: {}, unitStatusCounts: {} } },
+      feedbackArtifacts: [],
+      ontologyInputs: undefined,
+      ontologyReview: undefined,
+      evaluationReplay: undefined,
+      evaluationPromotions: undefined
+    });
+    const projections = buildOntologyProjectionSnapshot({ ontologyGraph: graph });
+
+    const payload = buildOntologyViewerPayload({
+      graph,
+      projections,
+      memoryRoot: "/workspace/.ohmyqwen/memory",
+      graphSnapshotPath: "/workspace/.ohmyqwen/memory/ontology-graph/latest.json",
+      projectionSnapshotPath: "/workspace/.ohmyqwen/memory/ontology-projections/latest.json",
+      analysisSnapshotPath: "/workspace/.ohmyqwen/memory/project-analysis/latest.json",
+      selectedProjectionId: "projection:code-structure",
+      nodeLimit: 8,
+      edgeLimit: 8
+    });
+
+    expect(payload.filters.focusMode).toBe("path");
+    expect(payload.selectedProjection.representativePaths.length).toBeGreaterThan(0);
+    expect(payload.selectedProjection.nodes.map((node) => node.id)).toEqual(
+      expect.arrayContaining([
+        "module:dcp-insurance",
+        "file:backend:dcp-insurance/src/main/java/demo/ClaimController.java",
+        "symbol:method:ClaimController.spotSave:dcp-insurance/src/main/java/demo/ClaimController.java"
+      ])
+    );
+  });
 });

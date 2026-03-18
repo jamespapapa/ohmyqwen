@@ -1085,4 +1085,112 @@ describe("knowledge schema foundation", () => {
     expect(compacted.entities.some((entity) => entity.label === "NoiseSymbol.noop11")).toBe(false);
   });
 
+  it("derives structural import, inheritance, and file call edges from code entries", () => {
+    const snapshot = buildKnowledgeSchemaSnapshot({
+      generatedAt: "2026-03-18T00:00:00.000Z",
+      workspaceDir: "/workspace/dcp-services",
+      structure: {
+        entries: {
+          "dcp-loan/src/main/java/demo/LoanController.java": {
+            path: "dcp-loan/src/main/java/demo/LoanController.java",
+            packageName: "demo",
+            summary: "loan controller",
+            classes: [{ name: "LoanController", line: 1 }],
+            methods: [{ name: "apply", line: 10, className: "LoanController" }],
+            functions: [],
+            calls: ["LoanService.apply"],
+            imports: ["demo.BaseController", "demo.ClaimFlow", "demo.LoanService"],
+            extendsNames: ["BaseController"],
+            implementsNames: ["ClaimFlow"]
+          },
+          "dcp-core/src/main/java/demo/LoanService.java": {
+            path: "dcp-core/src/main/java/demo/LoanService.java",
+            packageName: "demo",
+            summary: "loan service",
+            classes: [{ name: "LoanService", line: 1 }],
+            methods: [{ name: "apply", line: 8, className: "LoanService" }],
+            functions: [],
+            calls: []
+          },
+          "dcp-core/src/main/java/demo/BaseController.java": {
+            path: "dcp-core/src/main/java/demo/BaseController.java",
+            packageName: "demo",
+            summary: "shared base controller",
+            classes: [{ name: "BaseController", line: 1 }],
+            methods: [],
+            functions: [],
+            calls: []
+          },
+          "dcp-core/src/main/java/demo/ClaimFlow.java": {
+            path: "dcp-core/src/main/java/demo/ClaimFlow.java",
+            packageName: "demo",
+            summary: "claim flow contract",
+            classes: [{ name: "ClaimFlow", line: 1 }],
+            methods: [],
+            functions: [],
+            calls: []
+          }
+        }
+      },
+      frontBackGraph,
+      eaiEntries: [],
+      learnedKnowledge: {
+        version: 1,
+        generatedAt: "2026-03-18T00:00:00.000Z",
+        candidates: [],
+        summary: {
+          candidateCount: 0,
+          validatedCount: 0,
+          staleCount: 0,
+          domainCount: 0,
+          moduleRoleCount: 0,
+          processCount: 0,
+          channelCount: 0,
+          strongestCandidates: []
+        }
+      }
+    });
+
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "depends-on" &&
+          edge.fromId === "file:backend:dcp-loan/src/main/java/demo/LoanController.java" &&
+          edge.toId === "file:backend:dcp-core/src/main/java/demo/LoanService.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "depends-on" &&
+          edge.fromId === "module:dcp-loan" &&
+          edge.toId === "module:dcp-core"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "depends-on" &&
+          edge.fromId === "symbol:class:LoanController:dcp-loan/src/main/java/demo/LoanController.java" &&
+          edge.toId === "symbol:class:BaseController:dcp-core/src/main/java/demo/BaseController.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "depends-on" &&
+          edge.fromId === "symbol:class:LoanController:dcp-loan/src/main/java/demo/LoanController.java" &&
+          edge.toId === "symbol:class:ClaimFlow:dcp-core/src/main/java/demo/ClaimFlow.java"
+      )
+    ).toBe(true);
+    expect(
+      snapshot.edges.some(
+        (edge) =>
+          edge.type === "calls" &&
+          edge.fromId === "file:backend:dcp-loan/src/main/java/demo/LoanController.java" &&
+          edge.toId === "symbol:method:LoanService.apply:dcp-core/src/main/java/demo/LoanService.java"
+      )
+    ).toBe(true);
+  });
+
 });

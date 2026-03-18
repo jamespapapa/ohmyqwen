@@ -103,6 +103,46 @@ function flowNodeRank(type: string): number {
   return ranks[type] ?? 99;
 }
 
+function codeStructureNodeRank(type: string): number {
+  const ranks: Record<string, number> = {
+    module: 1,
+    file: 2,
+    symbol: 3,
+    controller: 4,
+    service: 5,
+    "data-query": 6,
+    "data-table": 7,
+    "data-store": 8,
+    "async-channel": 9,
+    "data-contract": 10,
+    "control-guard": 11,
+    "decision-path": 12
+  };
+  return ranks[type] ?? 99;
+}
+
+function codeStructureEdgeRank(type: string): number {
+  const ranks: Record<string, number> = {
+    contains: 1,
+    declares: 2,
+    "maps-to": 3,
+    "depends-on": 4,
+    calls: 5,
+    "proxies-to": 6,
+    "uses-store": 7,
+    "dispatches-to": 8,
+    "consumes-from": 9,
+    "propagates-contract": 10,
+    "accepts-contract": 11,
+    "returns-contract": 12,
+    "queries-table": 13,
+    "maps-to-table": 14,
+    "validates": 15,
+    "branches-to": 16
+  };
+  return ranks[type] ?? 99;
+}
+
 function scoreFrontBackPath(options: {
   nodeIds: string[];
   edgeIds: string[];
@@ -227,6 +267,146 @@ export function deriveFallbackFrontBackPaths(options: {
   return paths;
 }
 
+function deriveCodeStructurePaths(options: {
+  ontologyGraph: OntologyGraphSnapshot;
+  nodeIds: string[];
+  edgeIds: string[];
+}): Array<z.infer<typeof OntologyProjectionPathSchema>> {
+  const { ontologyGraph, nodeIds, edgeIds } = options;
+  const nodeSet = new Set(nodeIds);
+  const nodesById = new Map(
+    ontologyGraph.nodes.filter((node) => nodeSet.has(node.id)).map((node) => [node.id, node])
+  );
+  const edges = edgeIds
+    .map((id) => ontologyGraph.edges.find((edge) => edge.id === id))
+    .filter((edge): edge is OntologyGraphSnapshot["edges"][number] => Boolean(edge))
+    .sort((a, b) => {
+      const rankDiff = codeStructureEdgeRank(a.type) - codeStructureEdgeRank(b.type);
+      if (rankDiff !== 0) return rankDiff;
+      const confidenceDiff = (b.metadata.confidence ?? 0) - (a.metadata.confidence ?? 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    });
+  const edgesById = new Map(edges.map((edge) => [edge.id, edge]));
+  const adjacency = new Map<string, OntologyGraphSnapshot["edges"]>();
+  for (const edge of edges) {
+    if (!adjacency.has(edge.fromId)) adjacency.set(edge.fromId, []);
+    adjacency.get(edge.fromId)?.push(edge);
+  }
+  for (const bucket of adjacency.values()) {
+    bucket.sort((a, b) => {
+      const rankDiff = codeStructureEdgeRank(a.type) - codeStructureEdgeRank(b.type);
+      if (rankDiff !== 0) return rankDiff;
+      const confidenceDiff = (b.metadata.confidence ?? 0) - (a.metadata.confidence ?? 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.id.localeCompare(b.id);
+    });
+  }
+
+  const starts = nodeIds
+    .map((id) => nodesById.get(id))
+    .filter((node): node is OntologyGraphSnapshot["nodes"][number] => Boolean(node))
+    .sort((a, b) => {
+      const rankDiff = codeStructureNodeRank(a.type) - codeStructureNodeRank(b.type);
+      if (rankDiff !== 0) return rankDiff;
+      const confidenceDiff = (b.metadata.confidence ?? 0) - (a.metadata.confidence ?? 0);
+      if (confidenceDiff !== 0) return confidenceDiff;
+      return a.label.localeCompare(b.label);
+    });
+
+  const paths: Array<z.infer<typeof OntologyProjectionPathSchema>> = [];
+  const seen = new Set<string>();
+  const scorePath = (pathEdgeIds: string[], pathNodeIds: string[]) => {
+    const nodeTypes = pathNodeIds.map((id) => nodesById.get(id)?.type ?? "unknown");
+    const typeSet = new Set(nodeTypes);
+    const moduleCount = nodeTypes.filter((type) => type === "module").length;
+    const fileCount = nodeTypes.filter((type) => type === "file").length;
+    const symbolCount = nodeTypes.filter((type) => type === "symbol").length;
+    const runtimeCount = nodeTypes.filter((type) => ["controller", "service", "data-query", "data-table", "data-store", "async-channel"].includes(type)).length;
+    return (
+      pathEdgeIds.length * 100 +
+      pathNodeIds.length * 20 +
+      typeSet.size * 80 +
+      (fileCount > 0 ? 60 : 0) +
+      (symbolCount > 0 ? 80 : 0) +
+      (runtimeCount > 0 ? 50 : 0) -
+      (fileCount === 0 && symbolCount === 0 && runtimeCount === 0 ? 10000 : 0) -
+      (typeSet.size === 1 ? 5000 : 0) -
+      (moduleCount >= pathNodeIds.length - 1 ? 220 : 0) -
+      pathEdgeIds.reduce((sum, edgeId) => {
+        const edge = edgesById.get(edgeId);
+        return sum + (edge ? codeStructureEdgeRank(edge.type) : 99);
+      }, 0)
+    );
+  };
+
+  const exploreLongestPath = (
+    currentId: string,
+    visited: Set<string>,
+    nodePath: string[],
+    edgePath: string[],
+    depthRemaining: number
+  ): { nodeIds: string[]; edgeIds: string[] } => {
+    let best = {
+      nodeIds: [...nodePath],
+      edgeIds: [...edgePath]
+    };
+    if (depthRemaining <= 0) {
+      return best;
+    }
+    for (const nextEdge of adjacency.get(currentId) ?? []) {
+      if (visited.has(nextEdge.toId)) {
+        continue;
+      }
+      visited.add(nextEdge.toId);
+      nodePath.push(nextEdge.toId);
+      edgePath.push(nextEdge.id);
+      const candidate = exploreLongestPath(nextEdge.toId, visited, nodePath, edgePath, depthRemaining - 1);
+      if (
+        scorePath(candidate.edgeIds, candidate.nodeIds) >
+        scorePath(best.edgeIds, best.nodeIds)
+      ) {
+        best = candidate;
+      }
+      edgePath.pop();
+      nodePath.pop();
+      visited.delete(nextEdge.toId);
+    }
+    return best;
+  };
+
+  for (const start of starts) {
+    const bestPath = exploreLongestPath(start.id, new Set([start.id]), [start.id], [], 6);
+    if (bestPath.nodeIds.length < 3 || bestPath.edgeIds.length < 2) {
+      continue;
+    }
+
+    const key = bestPath.nodeIds.join("->");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    paths.push({
+      id: `path:structure:${start.id}`,
+      label: bestPath.nodeIds
+        .map((id) => nodesById.get(id)?.label)
+        .filter(Boolean)
+        .slice(0, 4)
+        .join(" -> "),
+      nodeIds: bestPath.nodeIds,
+      edgeIds: bestPath.edgeIds
+    });
+  }
+
+  return paths
+    .sort(
+      (a, b) =>
+        scorePath(b.edgeIds, b.nodeIds) - scorePath(a.edgeIds, a.nodeIds) ||
+        a.id.localeCompare(b.id)
+    )
+    .slice(0, 12);
+}
+
 function pickLargestProjectionType(projections: OntologyProjectionSnapshot["projections"]): string {
   const sorted = [...projections].sort((a, b) => {
     const sizeDiff = b.nodeIds.length + b.edgeIds.length - (a.nodeIds.length + a.edgeIds.length);
@@ -243,8 +423,13 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
     .filter((node) => ["module", "file", "symbol", "ui-action", "gateway-handler", "controller", "service", "control-guard", "decision-path", "data-contract", "data-model", "data-query", "data-table", "cache-key", "data-store", "async-channel"].includes(node.type))
     .map((node) => node.id);
   const codeStructureEdgeIds = ontologyGraph.edges
-    .filter((edge) => ["contains", "declares", "calls", "proxies-to", "depends-on", "supports-module-role", "uses-store", "dispatches-to", "consumes-from", "transitions-to", "propagates-contract", "emits-contract", "receives-contract", "accepts-contract", "returns-contract", "stores-model", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to"].includes(edge.type))
+    .filter((edge) => ["contains", "declares", "maps-to", "calls", "proxies-to", "depends-on", "supports-module-role", "uses-store", "dispatches-to", "consumes-from", "transitions-to", "propagates-contract", "emits-contract", "receives-contract", "accepts-contract", "returns-contract", "stores-model", "maps-to-table", "queries-table", "uses-cache-key", "validates", "branches-to"].includes(edge.type))
     .map((edge) => edge.id);
+  const codeStructurePaths = deriveCodeStructurePaths({
+    ontologyGraph,
+    nodeIds: codeStructureNodeIds,
+    edgeIds: codeStructureEdgeIds
+  });
 
   const flowPathsFromUnits = ontologyGraph.nodes
     .filter((node) => node.type === "retrieval-unit" && node.attributes.unitType === "flow")
@@ -313,13 +498,13 @@ export function buildOntologyProjectionSnapshot(options: { ontologyGraph: Ontolo
       id: "projection:code-structure",
       type: "code-structure" as const,
       title: "Code Structure",
-      summary: `modules/files/symbols/services=${codeStructureNodeIds.length}, edges=${codeStructureEdgeIds.length}`,
+      summary: `modules/files/symbols/services=${codeStructureNodeIds.length}, edges=${codeStructureEdgeIds.length}, representativeStructures=${codeStructurePaths.length}`,
       nodeIds: unique(codeStructureNodeIds),
       edgeIds: unique(codeStructureEdgeIds),
-      representativePaths: [],
+      representativePaths: codeStructurePaths,
       statusCounts: projectionStatusCounts(codeStructureNodeIds, nodesById),
-      highlightedNodeIds: codeStructureNodeIds.filter((id) => nodesById.get(id)?.type === "module").slice(0, 12),
-      highlightedEdgeIds: []
+      highlightedNodeIds: codeStructurePaths.flatMap((entry) => entry.nodeIds).slice(0, 20),
+      highlightedEdgeIds: codeStructurePaths.flatMap((entry) => entry.edgeIds).slice(0, 20)
     },
     {
       id: "projection:front-back-flow",
