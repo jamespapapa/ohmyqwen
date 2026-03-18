@@ -3385,6 +3385,82 @@ export function buildKnowledgeSchemaSnapshot(options: BuildKnowledgeSchemaOption
     });
   }
 
+  const directSupportEdgeTypes = new Set<KnowledgeEdgeType>([
+    "uses-store",
+    "uses-cache-key",
+    "stores-model",
+    "maps-to-table",
+    "queries-table",
+    "uses-eai",
+    "validates",
+    "branches-to",
+    "dispatches-to",
+    "consumes-from"
+  ]);
+  const directSupportPairs = new Set<string>();
+  for (const edge of edges.values()) {
+    if (!directSupportEdgeTypes.has(edge.type)) {
+      continue;
+    }
+    directSupportPairs.add(`${edge.fromId}:${edge.toId}`);
+  }
+  const transitionPropagationTargetTypes = new Set<KnowledgeEntityType>([
+    "data-query",
+    "data-model",
+    "data-table",
+    "data-store",
+    "cache-key",
+    "async-channel",
+    "control-guard",
+    "decision-path"
+  ]);
+  let transitionCarrierPropagationChanged = false;
+  for (const transitionEdge of Array.from(edges.values()).filter((edge) => edge.type === "transitions-to")) {
+    const targetEntity = entities.get(transitionEdge.toId);
+    if (!targetEntity || !transitionPropagationTargetTypes.has(targetEntity.type)) {
+      continue;
+    }
+    if (directSupportPairs.has(`${transitionEdge.fromId}:${transitionEdge.toId}`)) {
+      continue;
+    }
+
+    const requestContracts = requestCarrierContractsByNode.get(transitionEdge.fromId) ?? new Set<string>();
+    for (const contractId of requestContracts) {
+      const knownContracts = requestCarrierContractsByNode.get(transitionEdge.toId) ?? new Set<string>();
+      if (!knownContracts.has(contractId)) {
+        addContractForNode(requestCarrierContractsByNode, transitionEdge.toId, contractId);
+        transitionCarrierPropagationChanged = true;
+      }
+      addContractPropagationEdge({
+        fromId: transitionEdge.fromId,
+        toId: transitionEdge.toId,
+        contractId,
+        direction: "request",
+        flowEdge: transitionEdge
+      });
+    }
+
+    const responseContracts = responseCarrierContractsByNode.get(transitionEdge.fromId) ?? new Set<string>();
+    for (const contractId of responseContracts) {
+      const knownContracts = responseCarrierContractsByNode.get(transitionEdge.toId) ?? new Set<string>();
+      if (!knownContracts.has(contractId)) {
+        addContractForNode(responseCarrierContractsByNode, transitionEdge.toId, contractId);
+        transitionCarrierPropagationChanged = true;
+      }
+      addContractPropagationEdge({
+        fromId: transitionEdge.fromId,
+        toId: transitionEdge.toId,
+        contractId,
+        direction: "response",
+        flowEdge: transitionEdge
+      });
+    }
+  }
+  if (transitionCarrierPropagationChanged) {
+    propagateCarrierContracts(requestCarrierContractsByNode, "request");
+    propagateCarrierContracts(responseCarrierContractsByNode, "response");
+  }
+
   const matchableEntities = (): MatchableEntity[] =>
     Array.from(entities.values())
       .filter((entity) => entity.type !== "knowledge-cluster" && entity.type !== "eai-interface")
