@@ -644,8 +644,10 @@ export default function HomePage() {
   const [ontologyViewError, setOntologyViewError] = useState("");
   const [ontologyProjectionId, setOntologyProjectionId] = useState("projection:front-back-flow");
   const [ontologyNodeTypeFilter, setOntologyNodeTypeFilter] = useState("all");
+  const [ontologyFocusMode, setOntologyFocusMode] = useState("path");
   const [ontologySearchInput, setOntologySearchInput] = useState("");
   const [ontologyAppliedSearch, setOntologyAppliedSearch] = useState("");
+  const [ontologySelectedPathId, setOntologySelectedPathId] = useState("");
   const [ontologySelectedNodeId, setOntologySelectedNodeId] = useState("");
   const [askQuestion, setAskQuestion] = useState("");
   const [askMaxAttempts, setAskMaxAttempts] = useState(3);
@@ -1368,9 +1370,13 @@ export default function HomePage() {
       const query = new URLSearchParams();
       const projectionId = options.projectionId ?? ontologyProjectionId;
       const nodeType = options.nodeType ?? ontologyNodeTypeFilter;
+      const focusMode = options.focusMode ?? ontologyFocusMode;
+      const selectedPathId = options.selectedPathId ?? ontologySelectedPathId;
       const search = options.search ?? ontologyAppliedSearch;
       if (projectionId) query.set("projectionId", projectionId);
       if (nodeType && nodeType !== "all") query.set("nodeType", nodeType);
+      if (focusMode) query.set("focusMode", focusMode);
+      if (selectedPathId) query.set("selectedPathId", selectedPathId);
       if (search && String(search).trim()) query.set("search", String(search).trim());
       query.set("nodeLimit", String(options.nodeLimit ?? 72));
       query.set("edgeLimit", String(options.edgeLimit ?? 160));
@@ -1378,6 +1384,8 @@ export default function HomePage() {
       const response = await getJson(`/api/projects/${projectId}/ontology?${query.toString()}`);
       setOntologyViewData(response);
       setOntologyProjectionId(response?.ontology?.filters?.selectedProjectionId || projectionId || "projection:front-back-flow");
+      setOntologyFocusMode(response?.ontology?.filters?.focusMode || focusMode || "path");
+      setOntologySelectedPathId(response?.ontology?.filters?.selectedPathId || "");
       setOntologySelectedNodeId((current) => {
         const nodes = response?.ontology?.selectedProjection?.nodes || [];
         if (current && nodes.some((node) => node.id === current)) {
@@ -2057,10 +2065,13 @@ export default function HomePage() {
             onChange={(e) => {
               const value = e.target.value;
               setOntologyProjectionId(value);
+              setOntologySelectedPathId("");
               setOntologySelectedNodeId("");
               void loadOntologyView(selectedProjectId, {
                 projectionId: value,
                 nodeType: ontologyNodeTypeFilter,
+                focusMode: ontologyFocusMode,
+                selectedPathId: "",
                 search: ontologyAppliedSearch
               });
             }}
@@ -2084,6 +2095,8 @@ export default function HomePage() {
               void loadOntologyView(selectedProjectId, {
                 projectionId: ontologyProjectionId,
                 nodeType: value,
+                focusMode: ontologyFocusMode,
+                selectedPathId: ontologySelectedPathId,
                 search: ontologyAppliedSearch
               });
             }}
@@ -2094,6 +2107,29 @@ export default function HomePage() {
             {(ontologySelectedProjection?.availableNodeTypes || []).map((type) => (
               <option key={type} value={type}>{type}</option>
             ))}
+          </select>
+          <select
+            value={ontologyFocusMode}
+            onChange={(e) => {
+              const value = e.target.value;
+              setOntologyFocusMode(value);
+              setOntologySelectedNodeId("");
+              if (value !== "path") {
+                setOntologySelectedPathId("");
+              }
+              void loadOntologyView(selectedProjectId, {
+                projectionId: ontologyProjectionId,
+                nodeType: ontologyNodeTypeFilter,
+                focusMode: value,
+                selectedPathId: value === "path" ? ontologySelectedPathId : "",
+                search: ontologyAppliedSearch
+              });
+            }}
+            disabled={!selectedProjectId || ontologyViewLoading}
+            style={{ minWidth: 170 }}
+          >
+            <option value="path">대표 path 중심</option>
+            <option value="projection">전체 projection</option>
           </select>
           <input
             value={ontologySearchInput}
@@ -2110,6 +2146,8 @@ export default function HomePage() {
               void loadOntologyView(selectedProjectId, {
                 projectionId: ontologyProjectionId,
                 nodeType: ontologyNodeTypeFilter,
+                focusMode: ontologyFocusMode,
+                selectedPathId: ontologySelectedPathId,
                 search: ontologySearchInput.trim()
               });
             }}
@@ -2128,6 +2166,8 @@ export default function HomePage() {
               void loadOntologyView(selectedProjectId, {
                 projectionId: ontologyProjectionId,
                 nodeType: "all",
+                focusMode: ontologyFocusMode,
+                selectedPathId: ontologyFocusMode === "path" ? ontologySelectedPathId : "",
                 search: ""
               });
             }}
@@ -2138,7 +2178,13 @@ export default function HomePage() {
           <button
             type="button"
             className="secondary"
-            onClick={() => void loadOntologyView(selectedProjectId, { projectionId: ontologyProjectionId, nodeType: ontologyNodeTypeFilter, search: ontologyAppliedSearch })}
+            onClick={() => void loadOntologyView(selectedProjectId, {
+              projectionId: ontologyProjectionId,
+              nodeType: ontologyNodeTypeFilter,
+              focusMode: ontologyFocusMode,
+              selectedPathId: ontologySelectedPathId,
+              search: ontologyAppliedSearch
+            })}
             disabled={!selectedProjectId || ontologyViewLoading}
           >
             {ontologyViewLoading ? "불러오는 중" : "새로고침"}
@@ -2287,8 +2333,34 @@ export default function HomePage() {
                   ) : (
                     ontologySelectedProjection.representativePaths.map((path, index) => (
                       <li key={`${path.id}-${index}`} title={`${path.nodeIds.join(" -> ")}`}>
-                        <span>{shortText(path.label, 48)}</span>
-                        <span>{path.nodeIds.length}</span>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => {
+                            setOntologyFocusMode("path");
+                            setOntologySelectedPathId(path.id);
+                            setOntologySelectedNodeId(path.nodeIds[0] || "");
+                            void loadOntologyView(selectedProjectId, {
+                              projectionId: ontologyProjectionId,
+                              nodeType: ontologyNodeTypeFilter,
+                              focusMode: "path",
+                              selectedPathId: path.id,
+                              search: ontologyAppliedSearch
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            justifyContent: "space-between",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            textAlign: "left",
+                            background: ontologySelectedPathId === path.id ? "rgba(99,102,241,0.12)" : undefined,
+                            borderColor: ontologySelectedPathId === path.id ? "#6366f1" : undefined
+                          }}
+                        >
+                          <span>{shortText(path.label, 48)}</span>
+                          <span>{path.nodeIds.length}</span>
+                        </button>
                       </li>
                     ))
                   )}

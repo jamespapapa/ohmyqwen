@@ -105,6 +105,8 @@ export const OntologyViewerPayloadSchema = z.object({
     selectedProjectionId: z.string().min(1),
     nodeType: z.string().default("all"),
     search: z.string().default(""),
+    focusMode: z.enum(["projection", "path"]).default("path"),
+    selectedPathId: z.string().default(""),
     nodeLimit: z.number().int().min(1),
     edgeLimit: z.number().int().min(1)
   }),
@@ -124,6 +126,8 @@ export interface BuildOntologyViewerPayloadOptions {
   selectedProjectionId?: string;
   nodeType?: string;
   search?: string;
+  focusMode?: "projection" | "path";
+  selectedPathId?: string;
   nodeLimit?: number;
   edgeLimit?: number;
 }
@@ -240,6 +244,63 @@ function compareEdges(a: OntologyEdge, b: OntologyEdge, highlightedEdges: Set<st
   return a.id.localeCompare(b.id);
 }
 
+function selectPathFocusedSubgraph(options: {
+  path: z.infer<typeof OntologyViewerPathSchema>;
+  filteredNodes: OntologyNode[];
+  sortedEdges: OntologyEdge[];
+  nodeLimit: number;
+  edgeLimit: number;
+}): { visibleNodes: OntologyNode[]; visibleEdges: OntologyEdge[] } {
+  const { path, filteredNodes, sortedEdges, nodeLimit, edgeLimit } = options;
+  const nodesById = new Map(filteredNodes.map((node) => [node.id, node]));
+  const selectedNodeIds = new Set<string>();
+  const selectedEdgeIds = new Set<string>();
+  const visibleNodes: OntologyNode[] = [];
+  const visibleEdges: OntologyEdge[] = [];
+
+  const pushNode = (nodeId: string) => {
+    if (visibleNodes.length >= nodeLimit || selectedNodeIds.has(nodeId)) return;
+    const node = nodesById.get(nodeId);
+    if (!node) return;
+    selectedNodeIds.add(nodeId);
+    visibleNodes.push(node);
+  };
+
+  const pushEdge = (edge: OntologyEdge) => {
+    if (visibleEdges.length >= edgeLimit || selectedEdgeIds.has(edge.id)) return;
+    if (!selectedNodeIds.has(edge.fromId) || !selectedNodeIds.has(edge.toId)) return;
+    selectedEdgeIds.add(edge.id);
+    visibleEdges.push(edge);
+  };
+
+  for (const nodeId of path.nodeIds) {
+    pushNode(nodeId);
+  }
+
+  for (const edge of sortedEdges) {
+    if (path.edgeIds.includes(edge.id)) {
+      pushNode(edge.fromId);
+      pushNode(edge.toId);
+    }
+  }
+
+  for (const edge of sortedEdges) {
+    if (visibleNodes.length >= nodeLimit && visibleEdges.length >= edgeLimit) break;
+    const touchesPath = selectedNodeIds.has(edge.fromId) || selectedNodeIds.has(edge.toId);
+    if (!touchesPath) continue;
+    pushNode(edge.fromId);
+    pushNode(edge.toId);
+    pushEdge(edge);
+  }
+
+  for (const edge of sortedEdges) {
+    if (visibleEdges.length >= edgeLimit) break;
+    pushEdge(edge);
+  }
+
+  return { visibleNodes, visibleEdges };
+}
+
 function selectVisibleNodes(options: {
   sortedNodes: OntologyNode[];
   sortedEdges: OntologyEdge[];
@@ -351,6 +412,8 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
         selectedProjectionId: requestedProjectionId || "",
         nodeType: String(options.nodeType || "all"),
         search: String(options.search || ""),
+        focusMode: options.focusMode || "path",
+        selectedPathId: String(options.selectedPathId || ""),
         nodeLimit,
         edgeLimit
       },
@@ -403,6 +466,9 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
       : effectiveRepresentativePaths.flatMap((path) => path.edgeIds).slice(0, 24);
   const searchLower = String(options.search || "").trim().toLowerCase();
   const requestedNodeType = String(options.nodeType || "all").trim();
+  const requestedFocusMode =
+    options.focusMode ??
+    (selectedProjection.type === "front-back-flow" || selectedProjection.type === "integration" ? "path" : "projection");
   const highlightedNodes = new Set(effectiveHighlightedNodeIds);
   const highlightedEdges = new Set(effectiveHighlightedEdgeIds);
   const pathNodes = nodeMembershipSet(effectiveRepresentativePaths);
@@ -427,7 +493,22 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
     compareNodes(a, b, metrics, highlightedNodes, pathNodes)
   );
   const candidateEdges = [...filteredProjectionEdges].sort((a, b) => compareEdges(a, b, highlightedEdges, pathEdges));
-  const visibleNodes = selectVisibleNodes({
+  const activeRepresentativePath =
+    requestedFocusMode === "path"
+      ? effectiveRepresentativePaths.find((path) => path.id === String(options.selectedPathId || "").trim()) ??
+        effectiveRepresentativePaths[0]
+      : undefined;
+  const focused =
+    requestedFocusMode === "path" && activeRepresentativePath
+      ? selectPathFocusedSubgraph({
+          path: activeRepresentativePath,
+          filteredNodes: filteredProjectionNodes,
+          sortedEdges: candidateEdges,
+          nodeLimit,
+          edgeLimit
+        })
+      : null;
+  const visibleNodes = focused?.visibleNodes ?? selectVisibleNodes({
     sortedNodes,
     sortedEdges: candidateEdges,
     highlightedNodes,
@@ -437,7 +518,7 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
   });
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   const sortedEdges = candidateEdges.filter((edge) => visibleNodeIds.has(edge.fromId) && visibleNodeIds.has(edge.toId));
-  const visibleEdges = sortedEdges.slice(0, edgeLimit);
+  const visibleEdges = focused?.visibleEdges ?? sortedEdges.slice(0, edgeLimit);
   const visibleEdgeIds = new Set(visibleEdges.map((edge) => edge.id));
 
   const payload = {
@@ -465,6 +546,8 @@ export function buildOntologyViewerPayload(options: BuildOntologyViewerPayloadOp
       selectedProjectionId: selectedProjection.id,
       nodeType: requestedNodeType || "all",
       search: String(options.search || ""),
+      focusMode: requestedFocusMode,
+      selectedPathId: activeRepresentativePath?.id || "",
       nodeLimit,
       edgeLimit
     },

@@ -9471,6 +9471,8 @@ export async function getServerProjectOntologyView(options: {
   projectionId?: string;
   nodeType?: string;
   search?: string;
+  focusMode?: "projection" | "path";
+  selectedPathId?: string;
   nodeLimit?: number;
   edgeLimit?: number;
 }): Promise<{
@@ -9501,6 +9503,8 @@ export async function getServerProjectOntologyView(options: {
       selectedProjectionId: options.projectionId,
       nodeType: options.nodeType,
       search: options.search,
+      focusMode: options.focusMode,
+      selectedPathId: options.selectedPathId,
       nodeLimit: options.nodeLimit,
       edgeLimit: options.edgeLimit
     })

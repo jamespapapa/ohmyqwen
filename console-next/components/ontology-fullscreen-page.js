@@ -142,8 +142,10 @@ export default function OntologyFullscreenPage({ projectId }) {
   const [error, setError] = useState("");
   const [projectionId, setProjectionId] = useState("projection:front-back-flow");
   const [nodeTypeFilter, setNodeTypeFilter] = useState("all");
+  const [focusMode, setFocusMode] = useState("path");
   const [searchInput, setSearchInput] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
+  const [selectedPathId, setSelectedPathId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
 
   async function loadOntologyView(options = {}) {
@@ -154,15 +156,21 @@ export default function OntologyFullscreenPage({ projectId }) {
       const query = new URLSearchParams();
       const nextProjectionId = options.projectionId ?? projectionId;
       const nextNodeType = options.nodeType ?? nodeTypeFilter;
+      const nextFocusMode = options.focusMode ?? focusMode;
+      const nextSelectedPathId = options.selectedPathId ?? selectedPathId;
       const nextSearch = options.search ?? appliedSearch;
       if (nextProjectionId) query.set("projectionId", nextProjectionId);
       if (nextNodeType && nextNodeType !== "all") query.set("nodeType", nextNodeType);
+      if (nextFocusMode) query.set("focusMode", nextFocusMode);
+      if (nextSelectedPathId) query.set("selectedPathId", nextSelectedPathId);
       if (nextSearch && String(nextSearch).trim()) query.set("search", String(nextSearch).trim());
       query.set("nodeLimit", String(options.nodeLimit ?? 180));
       query.set("edgeLimit", String(options.edgeLimit ?? 360));
       const response = await getJson(`/api/projects/${projectId}/ontology?${query.toString()}`);
       setOntologyViewData(response);
       setProjectionId(response?.ontology?.filters?.selectedProjectionId || nextProjectionId || "projection:front-back-flow");
+      setFocusMode(response?.ontology?.filters?.focusMode || nextFocusMode || "path");
+      setSelectedPathId(response?.ontology?.filters?.selectedPathId || "");
       setSelectedNodeId((current) => {
         const nodes = response?.ontology?.selectedProjection?.nodes || [];
         if (current && nodes.some((node) => node.id === current)) return current;
@@ -220,8 +228,9 @@ export default function OntologyFullscreenPage({ projectId }) {
             onChange={(e) => {
               const value = e.target.value;
               setProjectionId(value);
+              setSelectedPathId("");
               setSelectedNodeId("");
-              void loadOntologyView({ projectionId: value, nodeType: nodeTypeFilter, search: appliedSearch });
+              void loadOntologyView({ projectionId: value, nodeType: nodeTypeFilter, focusMode, selectedPathId: "", search: appliedSearch });
             }}
             disabled={loading}
             style={{ minWidth: 240, width: "auto" }}
@@ -236,7 +245,7 @@ export default function OntologyFullscreenPage({ projectId }) {
               const value = e.target.value;
               setNodeTypeFilter(value);
               setSelectedNodeId("");
-              void loadOntologyView({ projectionId, nodeType: value, search: appliedSearch });
+              void loadOntologyView({ projectionId, nodeType: value, focusMode, selectedPathId, search: appliedSearch });
             }}
             disabled={loading}
             style={{ minWidth: 180, width: "auto" }}
@@ -246,11 +255,32 @@ export default function OntologyFullscreenPage({ projectId }) {
               <option key={type} value={type}>{type}</option>
             ))}
           </select>
+          <select
+            value={focusMode}
+            onChange={(e) => {
+              const value = e.target.value;
+              setFocusMode(value);
+              if (value !== "path") setSelectedPathId("");
+              setSelectedNodeId("");
+              void loadOntologyView({
+                projectionId,
+                nodeType: nodeTypeFilter,
+                focusMode: value,
+                selectedPathId: value === "path" ? selectedPathId : "",
+                search: appliedSearch
+              });
+            }}
+            disabled={loading}
+            style={{ minWidth: 180, width: "auto" }}
+          >
+            <option value="path">대표 path 중심</option>
+            <option value="projection">전체 projection</option>
+          </select>
           <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="node/path/action 검색" style={{ flex: 1 }} />
-          <button type="button" className="secondary" onClick={() => { setAppliedSearch(searchInput.trim()); setSelectedNodeId(""); void loadOntologyView({ projectionId, nodeType: nodeTypeFilter, search: searchInput.trim() }); }} disabled={loading} style={{ width: "auto" }}>
+          <button type="button" className="secondary" onClick={() => { setAppliedSearch(searchInput.trim()); setSelectedNodeId(""); void loadOntologyView({ projectionId, nodeType: nodeTypeFilter, focusMode, selectedPathId, search: searchInput.trim() }); }} disabled={loading} style={{ width: "auto" }}>
             적용
           </button>
-          <button type="button" className="secondary" onClick={() => { setSearchInput(""); setAppliedSearch(""); setNodeTypeFilter("all"); setSelectedNodeId(""); void loadOntologyView({ projectionId, nodeType: "all", search: "" }); }} disabled={loading} style={{ width: "auto" }}>
+          <button type="button" className="secondary" onClick={() => { setSearchInput(""); setAppliedSearch(""); setNodeTypeFilter("all"); setSelectedNodeId(""); void loadOntologyView({ projectionId, nodeType: "all", focusMode, selectedPathId, search: "" }); }} disabled={loading} style={{ width: "auto" }}>
             초기화
           </button>
         </div>
@@ -333,8 +363,28 @@ export default function OntologyFullscreenPage({ projectId }) {
               ) : (
                 projection.representativePaths.map((path, index) => (
                   <li key={`${path.id}-${index}`} title={path.nodeIds.join(" -> ")}>
-                    <span>{shortText(path.label, 48)}</span>
-                    <span>{path.nodeIds.length}</span>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setFocusMode("path");
+                        setSelectedPathId(path.id);
+                        setSelectedNodeId(path.nodeIds[0] || "");
+                        void loadOntologyView({ projectionId, nodeType: nodeTypeFilter, focusMode: "path", selectedPathId: path.id, search: appliedSearch });
+                      }}
+                      style={{
+                        width: "100%",
+                        display: "inline-flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        textAlign: "left",
+                        background: selectedPathId === path.id ? "rgba(99,102,241,0.12)" : undefined,
+                        borderColor: selectedPathId === path.id ? "#6366f1" : undefined
+                      }}
+                    >
+                      <span>{shortText(path.label, 48)}</span>
+                      <span>{path.nodeIds.length}</span>
+                    </button>
                   </li>
                 ))
               )}

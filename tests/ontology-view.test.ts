@@ -326,6 +326,8 @@ describe("buildOntologyViewerPayload", () => {
     });
 
     expect(payload.storage.kind).toBe("filesystem-artifacts");
+    expect(payload.filters.focusMode).toBe("path");
+    expect(payload.filters.selectedPathId).toBeTruthy();
     expect(payload.selectedProjection.id).toBe("projection:front-back-flow");
     expect(payload.selectedProjection.nodes.length).toBeGreaterThan(0);
     expect(payload.selectedProjection.edges.length).toBeGreaterThan(0);
@@ -463,7 +465,7 @@ describe("buildOntologyViewerPayload", () => {
       edgeLimit: 4
     });
 
-    expect(payload.selectedProjection.nodes.length).toBe(payload.filters.nodeLimit);
+    expect(payload.selectedProjection.nodes.length).toBeLessThanOrEqual(payload.filters.nodeLimit);
     expect(payload.selectedProjection.edges.length).toBeGreaterThan(0);
     expect(payload.selectedProjection.representativePaths.length).toBeGreaterThan(0);
     expect(new Set(payload.selectedProjection.nodes.map((node) => node.type)).size).toBeGreaterThan(1);
