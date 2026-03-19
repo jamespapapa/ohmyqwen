@@ -63,6 +63,8 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 8. 코드베이스에서 먼저 **최소 ontology graph**를 만들고, 사용자 힌트/피드백/CSV/문서/이력으로 semantic layer를 승격한다.
 9. `QMD = retrieval engine`, `ontology = semantic control plane`, `agentic workflow = orchestration / verification loop` 역할 분리를 유지한다.
 10. 코드베이스 기반 ontology 강화는 **extractor / derivation / projection / evaluation harness** 중심으로 통제하고, 질문 맞춤형 특수분기는 금지한다.
+11. **AST를 주 추출기, LSP를 보조 해석기**로 보는 방향을 유지한다. 프론트 HTTP 호출, gateway route, backend controller/service 연결은 AST + config parser + symbol resolution 조합으로 강화한다.
+12. 외부 참고 시스템은 UX/거버넌스 참고용으로만 본다. **MiroFish류의 LLM-주도 ontology 설계나 외부 graph memory 의존 구조를 본체로 삼지 않는다.**
 
 ---
 
@@ -173,6 +175,8 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - `QMD + vector/FTS + rerank`를 ontology-guided retrieval로 묶고, agentic workflow가 검증/재시도/중단을 담당
 - ontology viewer / fullscreen graph route / representative path focus / structural component focus 추가
 - exact endpoint / ordered workflow sequence / canonical path / workflow-family / contract propagation / async transition / persistence transition까지 code-only ontology seed 확장
+- code structure densification(method call / depends-on / structural component focus) 및 viewer 개선
+- exact endpoint / workflow-sequence 질문에 대한 deterministic exact-trace 경로 정비
 
 **현재 판단**
 
@@ -181,7 +185,9 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
   - 평가 하네스 강화
   - ontology governance 정리
   - human/runtime semantic layer 추가
+  - AST/LSP/config 기반 structure extractor 고도화 여부 판단
   쪽이 크다.
+- MiroFish 비교 결과, 외부 ontology 제품처럼 **단계형 UX/graph interaction**은 참고하되, ontology core는 계속 code-grounded / offline-first로 유지한다.
 
 **설계 문서 우선 참조**
 
@@ -191,6 +197,7 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
 - `docs/ONTOLOGY_SYSTEM_DESIGN.md`
 - `docs/ONTOLOGY_GRAPH_ASCII.md`
 - `docs/NEXT_STEP_ONTOLOGY_HARNESS.md`
+- `docs/EXECUTION_FINAL_READINESS.md`
 
 ---
 
@@ -214,12 +221,18 @@ LLM은 제안과 해석을 담당하고, **최종 실행/검증/상태 전이와
    - representative scenario synthesis
    - answer self-critique / abstain / retry contract 강화
 
-4. **사용자 상호작용 기반 semantic layer 승격**
+4. **AST/LSP/config 기반 추출기 판단 및 정비**
+   - AST를 주 추출기, LSP를 보조 해석기로 사용하는 방향 재검토
+   - 프론트 HTTP 호출 -> gateway -> controller -> service 연결에 필요한 config parser 범위 명확화
+   - hard/derived/semantic confidence 계층을 extractor 단계부터 유지
+
+5. **사용자 상호작용 기반 semantic layer 승격**
    - 자유 메모 / 구조화 폼 / CSV / 문서 입력 채널 정교화
    - draft / review / rollback / self-eval을 실제 품질 향상 루프와 연결
    - node / edge / path 검증을 시각화 위에서 수행 가능하게 만들기
 
-5. **오프라인 배포 안정화**
+6. **오프라인 배포 안정화 / 실행 최종준비**
    - Windows x64 bundle runtime 검증
    - qmd models / wrapper / frontend-backend startup 안정화
    - filesystem artifact 기반 ontology/QMD runtime 반입 절차 점검
+   - `docs/EXECUTION_FINAL_READINESS.md` 체크리스트 기준으로 반입 전 확인

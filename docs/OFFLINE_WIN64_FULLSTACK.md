@@ -1,5 +1,8 @@
 # Windows x64 폐쇄망 배포 가이드
 
+이 문서는 **실행 절차 요약**이다.  
+반입 전 체크리스트와 빠질 수 있는 항목은 `docs/EXECUTION_FINAL_READINESS.md`를 우선 본다.
+
 ## 산출물
 
 GitHub Actions `win64-offline-bundle` workflow는 두 개의 artifact를 생성한다.
@@ -30,6 +33,11 @@ OHMYQWEN_LLM_BASE_URL=https://api.t.drt.samsunglife.kr/llmproxy/v1/
 OHMYQWEN_LLM_MODEL=Qwen3-235B-A22B-Instruct-2507-FP8
 OHMYQWEN_LLM_ENDPOINT_KIND=openai
 ```
+
+주의:
+
+- 실제 폐쇄망에서는 위 값 대신 **현장 endpoint/model**에 맞춘 별도 `.env`가 필요하다.
+- LLM 서버/모델은 이 번들에 자동 포함되지 않는다.
 
 ## frontend 실행
 
@@ -62,7 +70,13 @@ PORT=3005
 
 ## workflow 권장 입력값
 
-- `Fail when local GGUF models are missing` → 해제
-- `Bundle the runner's Node runtime into the zip` → 체크
+- `Fail when local GGUF models are missing`
+  - 모델까지 반입할 때만 활성화
+- `Bundle the runner's Node runtime into the zip`
+  - 폐쇄망 대상에 Node가 없으면 반드시 체크
 
-모델까지 폐쇄망에 반입할 때만 `Fail when local GGUF models are missing`를 활성화한다.
+## 중요 보충
+
+- QMD 모델은 runner에 실제 모델 파일이 있어야 번들에 포함된다.
+- project-specific index / analyze artifact / ontology snapshot은 보통 번들에 미리 포함되지 않는다.
+- 반입 전 최종 점검은 `docs/EXECUTION_FINAL_READINESS.md` 체크리스트 기준으로 수행한다.
